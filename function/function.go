@@ -1,4 +1,4 @@
-package main
+package function
 
 import (
 	"flag"
@@ -7,6 +7,10 @@ import (
 
 	"github.com/azure/azure-functions-golang-worker/internal"
 )
+
+func hello() (string, error) {
+	return "Hello λ!", nil
+}
 
 func SetupWorker() {
 	// Define CLI flags (similar to Dotnet approach).
