@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 
-	// Import your generated protobuf code
 	functionrpc "github.com/azure/azure-functions-golang-worker/proto"
 )
 

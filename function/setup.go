@@ -8,10 +8,6 @@ import (
 	"github.com/azure/azure-functions-golang-worker/internal"
 )
 
-func hello() (string, error) {
-	return "Hello λ!", nil
-}
-
 func SetupWorker() {
 	// Define CLI flags (similar to Dotnet approach).
 	functionsURI := flag.String("functions-uri", "", "The host's gRPC endpoint URI (e.g. http://127.0.0.1:12345)")
@@ -53,7 +49,7 @@ func SetupWorker() {
 	}
 
 	// Now set up your worker as before:
-	functionRegistry := internal.NewFunctionRegistry()
+	functionRegistry := internal.GetFunctionRegistry()
 	dispatcher := internal.NewDispatcher(functionRegistry)
 
 	log.Printf("Starting Go Azure Functions worker on %s...\n", addr)

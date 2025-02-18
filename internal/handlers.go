@@ -2,6 +2,8 @@ package internal
 
 import (
 	"fmt"
+	"log"
+	"path/filepath"
 
 	// Import the generated protobuf code for Azure Functions
 	functionrpc "github.com/azure/azure-functions-golang-worker/proto"
@@ -32,6 +34,22 @@ func handleWorkerInitRequest(
 	return resp, nil
 }
 
+func handleFunctionMetadataRequest(
+	requestID string,
+	req *functionrpc.FunctionsMetadataRequest,
+) (*functionrpc.StreamingMessage, error) {
+	functionAppDir := req.GetFunctionAppDirectory()
+	scriptFileName := GetAppSetting(GoScriptFileName, GoScriptFileNameDefault)
+	functionPath := filepath.Join(functionAppDir, scriptFileName)
+
+	// TODO: add request ID from init
+	log.Println("Recevied FunctionMetadataRequest with functionPath:", functionPath)
+
+	// TODO: validate script file name here
+
+	return nil, nil
+}
+
 // handleFunctionLoadRequest processes a FunctionLoadRequest from the host.
 func handleFunctionLoadRequest(
 	requestID string,
@@ -39,13 +57,13 @@ func handleFunctionLoadRequest(
 	registry *FunctionRegistry, // optional: if you’re storing loaded functions
 ) (*functionrpc.StreamingMessage, error) {
 
-	// You might store the function info in the registry (stubbed here).
-	if registry != nil {
-		err := registry.RegisterFunction(req.FunctionId, req.Metadata)
-		if err != nil {
-			return nil, fmt.Errorf("failed to register function: %w", err)
-		}
-	}
+	// // You might store the function info in the registry (stubbed here).
+	// if registry != nil {
+	// 	err := registry.RegisterFunction(req.FunctionId, req.Metadata)
+	// 	if err != nil {
+	// 		return nil, fmt.Errorf("failed to register function: %w", err)
+	// 	}
+	// }
 
 	// Prepare a load response indicating success.
 	resp := &functionrpc.StreamingMessage{
