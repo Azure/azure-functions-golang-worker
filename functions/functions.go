@@ -100,7 +100,7 @@ func generateRPCMetadata() *functionrpc.RpcFunctionMetadata {
 		Status:                   &functionrpc.StatusResult{ /* Initialize StatusResult fields */ },
 		Language:                 "golang",
 		RawBindings:              []string{"httpTrigger", "queueOutput"},
-		FunctionId:               "1234-5678-91011",
+		FunctionId:               "b7a5c3f2-8d4e-4a7c-bc91-2f6e9d89e123",
 		ManagedDependencyEnabled: true,
 		RetryOptions:             &functionrpc.RpcRetryOptions{ /* Initialize RpcRetryOptions fields */ },
 		Properties: map[string]string{
@@ -115,7 +115,6 @@ func generateRPCMetadata() *functionrpc.RpcFunctionMetadata {
 // Will be used when host sends us actual request to parse info
 // and cast symbols for cx code
 func getFunctionInfo(f interface{}, metadata *functionrpc.RpcFunctionMetadata) *FunctionInfo {
-	// Convert metadata to function info
 	return &FunctionInfo{
 		Func:            f,
 		Name:            metadata.Name,

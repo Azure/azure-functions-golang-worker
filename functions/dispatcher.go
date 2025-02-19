@@ -65,5 +65,14 @@ func (dispatcher *Dispatcher) StartWorkerServer() error {
 	log.Printf("Host Address=%s, Request ID=%s, Worker ID=%s, grpc-max-message-length=%d\n",
 		address, dispatcher.CmdLineArgs.HostRequestId, dispatcher.CmdLineArgs.WorkerId, dispatcher.CmdLineArgs.FunctionsGrpcMaxMessageLength)
 
+	fr := dispatcher.FunctionRegistry
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+
+	log.Println("Registered Functions:")
+	for id, info := range fr.functions {
+		log.Printf("ID: %s, Name: %s, Directory: %s\n", id, info.Name, info.Directory)
+	}
+
 	return grpcServer.Serve(lis)
 }
