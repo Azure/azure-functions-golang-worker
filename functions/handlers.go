@@ -14,10 +14,6 @@ func handleWorkerInitRequest(
 	requestID string,
 	req *functionrpc.WorkerInitRequest,
 ) (*functionrpc.StreamingMessage, error) {
-
-	// In a real implementation, you might read req.Capabilities, set up environment, etc.
-
-	// Prepare a successful response with a WorkerInitResponse
 	resp := &functionrpc.StreamingMessage{
 		RequestId: requestID,
 		Content: &functionrpc.StreamingMessage_WorkerInitResponse{

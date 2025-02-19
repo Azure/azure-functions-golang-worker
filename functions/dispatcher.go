@@ -10,11 +10,11 @@ import (
 )
 
 type Dispatcher struct {
-	CmdLineArgs      *CmdLineArgs
+	CmdLineArgs      *WorkerStartupConfig
 	FunctionRegistry *FunctionRegistry
 }
 
-func NewDispatcher(cmdLineArgs CmdLineArgs) *Dispatcher {
+func NewDispatcher(cmdLineArgs WorkerStartupConfig) *Dispatcher {
 	return &Dispatcher{
 		CmdLineArgs: &cmdLineArgs,
 		FunctionRegistry: &FunctionRegistry{
