@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"reflect"
 
 	functionrpc "github.com/azure/azure-functions-golang-worker/proto"
 	"google.golang.org/grpc"
@@ -69,10 +70,29 @@ func (dispatcher *Dispatcher) StartWorkerServer() error {
 	fr.mu.Lock()
 	defer fr.mu.Unlock()
 
-	log.Println("Registered Functions:")
+	go func() {
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatalf("failed to serve: %v", err)
+		}
+	}()
+
 	for id, info := range fr.functions {
+		exeFunc := info.Func
+		fType := reflect.TypeOf(exeFunc)
+
+		inputs := make([]reflect.Value, fType.NumIn())
+		for i := 0; i < fType.NumIn(); i++ {
+			argType := fType.In(i)
+
+			inputs[i] = reflect.Zero(argType)
+		}
+
 		log.Printf("ID: %s, Name: %s, Directory: %s\n", id, info.Name, info.Directory)
+		results := reflect.ValueOf(info.Func).Call(inputs)
+		for i, res := range results {
+			fmt.Printf("Return %d: %v (type: %s)\n", i+1, res.Interface(), fType.Out(i))
+		}
 	}
 
-	return grpcServer.Serve(lis)
+	return nil
 }

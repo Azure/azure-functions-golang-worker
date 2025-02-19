@@ -128,10 +128,9 @@ func getFunctionInfo(f interface{}, metadata *functionrpc.RpcFunctionMetadata) *
 	}
 }
 
-// RegisterBlobFunction stores the given metadata under the specified function ID for Blobs only
+// RegisterCosmosFunction stores the given metadata under the specified function ID for Cosmos only
 // To have more control over inputs and outputs, we can have type specific functions that the cx can use
-// Temporarily passing the function and metadata separate - extract for translation
-func (disp Dispatcher) RegisterBlobFunction(f interface{}) error {
+func (disp *Dispatcher) RegisterCosmosFunction(f interface{}) error {
 	metadata := generateRPCMetadata()
 	fi := getFunctionInfo(f, metadata)
 	fr := disp.FunctionRegistry

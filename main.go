@@ -4,16 +4,15 @@ import (
 	"github.com/azure/azure-functions-golang-worker/functions"
 )
 
-type MyStruct struct {
-	string1 string
-	string2 string
+type Document struct {
+	ID    string
+	Items string
+	Rid   string
+	Etag  string
 }
 
-func hello(myStruct MyStruct) (string, MyStruct) {
-	myString := "Hello"
-	myStruct.string1 = myString
-	myStruct.string2 = myString + "2"
-	return myString, myStruct
+func cosmosDBFunction(doc Document) Document {
+	return doc
 }
 
 func main() {
@@ -21,7 +20,7 @@ func main() {
 	app := functions.FunctionApp()
 
 	// Register function(s)
-	app.RegisterBlobFunction(hello)
+	app.RegisterCosmosFunction(cosmosDBFunction)
 
 	// Start the worker
 	app.StartWorkerServer()
