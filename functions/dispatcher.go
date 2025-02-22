@@ -4,20 +4,19 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"reflect"
 
 	functionrpc "github.com/azure/azure-functions-golang-worker/proto"
 	"google.golang.org/grpc"
 )
 
 type Dispatcher struct {
-	CmdLineArgs      *WorkerStartupConfig
-	FunctionRegistry *FunctionRegistry
+	WorkerStartupConfig *WorkerStartupConfig
+	FunctionRegistry    *FunctionRegistry
 }
 
-func NewDispatcher(cmdLineArgs WorkerStartupConfig) *Dispatcher {
+func NewDispatcher(workerStartupConfig WorkerStartupConfig) *Dispatcher {
 	return &Dispatcher{
-		CmdLineArgs: &cmdLineArgs,
+		WorkerStartupConfig: &workerStartupConfig,
 		FunctionRegistry: &FunctionRegistry{
 			functions: make(map[string]*FunctionInfo),
 		},
@@ -56,7 +55,7 @@ func (dispatcher *Dispatcher) StartWorkerServer() error {
 	workerServer := NewWorkerServer(dispatcher)
 	functionrpc.RegisterFunctionRpcServer(grpcServer, workerServer)
 
-	address := dispatcher.CmdLineArgs.HostAddress
+	address := dispatcher.WorkerStartupConfig.FunctionsUri
 	lis, err := net.Listen("tcp", address)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", address, err)
@@ -64,7 +63,8 @@ func (dispatcher *Dispatcher) StartWorkerServer() error {
 
 	log.Printf("Starting Azure Function Go worker.")
 	log.Printf("Host Address=%s, Request ID=%s, Worker ID=%s, grpc-max-message-length=%d\n",
-		address, dispatcher.CmdLineArgs.HostRequestId, dispatcher.CmdLineArgs.WorkerId, dispatcher.CmdLineArgs.FunctionsGrpcMaxMessageLength)
+		address, dispatcher.WorkerStartupConfig.FunctionsRequestId, dispatcher.WorkerStartupConfig.FunctionsWorkerId,
+		dispatcher.WorkerStartupConfig.FunctionsGrpcMaxMessageLength)
 
 	fr := dispatcher.FunctionRegistry
 	fr.mu.Lock()
@@ -75,24 +75,6 @@ func (dispatcher *Dispatcher) StartWorkerServer() error {
 			log.Fatalf("failed to serve: %v", err)
 		}
 	}()
-
-	for id, info := range fr.functions {
-		exeFunc := info.Func
-		fType := reflect.TypeOf(exeFunc)
-
-		inputs := make([]reflect.Value, fType.NumIn())
-		for i := 0; i < fType.NumIn(); i++ {
-			argType := fType.In(i)
-
-			inputs[i] = reflect.Zero(argType)
-		}
-
-		log.Printf("ID: %s, Name: %s, Directory: %s\n", id, info.Name, info.Directory)
-		results := reflect.ValueOf(info.Func).Call(inputs)
-		for i, res := range results {
-			fmt.Printf("Return %d: %v (type: %s)\n", i+1, res.Interface(), fType.Out(i))
-		}
-	}
 
 	return nil
 }

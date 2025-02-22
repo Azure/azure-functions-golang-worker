@@ -1,14 +1,14 @@
 package functions
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"net/url"
 	"reflect"
 	"sync"
 
-	functionrpc "github.com/azure/azure-functions-golang-worker/proto"
+	pb "github.com/azure/azure-functions-golang-worker/proto"
+	"github.com/spf13/pflag"
 )
 
 type ParamTypeInfo struct {
@@ -35,15 +35,14 @@ type FunctionRegistry struct {
 }
 
 type WorkerStartupConfig struct {
-	HostAddress                   string
-	HostRequestId                 string
-	WorkerId                      string
+	FunctionsUri                  string
+	FunctionsWorkerId             string
+	FunctionsRequestId            string
 	FunctionsGrpcMaxMessageLength int
 }
 
 func FunctionApp() *Dispatcher {
-	// TODO: use and enforce these args in dispatcher
-	args, err := getCmdLineArgs()
+	args, err := getWorkerStartupConfig()
 	if err != nil {
 		log.Fatalf("Failed to parse command line arguments: %v", err)
 	}
@@ -51,58 +50,66 @@ func FunctionApp() *Dispatcher {
 	return NewDispatcher(*args)
 }
 
-func getCmdLineArgs() (*WorkerStartupConfig, error) {
-	functionsURI := flag.String("functions-uri", "", "The host's gRPC endpoint URI (e.g. http://127.0.0.1:12345)")
-	requestID := flag.String("functions-request-id", "", "The request ID passed by the host")
-	workerID := flag.String("functions-worker-id", "", "The worker ID passed by the host")
-	grpcMaxMessageLength := flag.Int("functions-grpc-max-message-length", 4*1024*1024, "Max gRPC message length")
+func getWorkerStartupConfig() (*WorkerStartupConfig, error) {
+	args := parseArgs()
+	err := validateArgs(args)
 
-	flag.Parse()
-
-	if *functionsURI == "" {
-		return nil, fmt.Errorf("missing required argument: --functions-uri")
-	}
-
-	parsedURI, err := url.Parse(*functionsURI)
-	if err != nil {
-		return nil, fmt.Errorf("invalid --functions-uri provided (%s): %v", *functionsURI, err)
-	}
-	if *requestID == "" {
-		return nil, fmt.Errorf("missing required argument: --functions-request-id")
-	}
-	if *workerID == "" {
-		return nil, fmt.Errorf("missing required argument: --functions-worker-id")
-	}
-
-	address := parsedURI.Host
-	if address == "" {
-		address = DefaultHostPort
-	}
-
-	return &WorkerStartupConfig{
-		HostAddress:                   *functionsURI,
-		HostRequestId:                 *requestID,
-		WorkerId:                      *workerID,
-		FunctionsGrpcMaxMessageLength: *grpcMaxMessageLength,
-	}, nil
+	return args, err
 }
 
-func generateRPCMetadata() *functionrpc.RpcFunctionMetadata {
-	metadata := functionrpc.RpcFunctionMetadata{
+func parseArgs() *WorkerStartupConfig {
+	// The host will send extra/older args that will be unused
+	// e.g. --host, --port, --worker-id
+	// The normal flag package will error out on these and cannot be changed
+	pflag.CommandLine.ParseErrorsWhitelist.UnknownFlags = true
+
+	functionsURI := pflag.String("functions-uri", "", "URI with IP Address and Port used to connect to the Host via gRPC.")
+	functionsWorkerID := pflag.String("functions-worker-id", "", "Worker ID assigned to this language worker.")
+	functionsRequestID := pflag.String("functions-request-id", "", "Request ID used for gRPC communication with the Host.")
+	functionsGrpcMaxMsgLen := pflag.Int("functions-grpc-max-message-length", DefaultFunctionsGrpcMaxMsgLen, "Max grpc message length for Functions")
+	pflag.Parse()
+
+	return &WorkerStartupConfig{
+		FunctionsUri:                  *functionsURI,
+		FunctionsWorkerId:             *functionsWorkerID,
+		FunctionsRequestId:            *functionsRequestID,
+		FunctionsGrpcMaxMessageLength: *functionsGrpcMaxMsgLen,
+	}
+}
+
+func validateArgs(args *WorkerStartupConfig) error {
+	if args.FunctionsUri == "" {
+		return fmt.Errorf("missing required argument: --functions-uri")
+	}
+	if _, err := url.Parse(args.FunctionsUri); err != nil {
+		return fmt.Errorf("invalid --functions-uri provided (%s): %v", args.FunctionsUri, err)
+	}
+	if args.FunctionsWorkerId == "" {
+		return fmt.Errorf("missing required argument: --functions-worker-id")
+	}
+	if args.FunctionsRequestId == "" {
+		return fmt.Errorf("missing required argument: --functions-request-id")
+	}
+
+	return nil
+}
+
+func generateRPCMetadata() *pb.RpcFunctionMetadata {
+	metadata := pb.RpcFunctionMetadata{
 		Name:       "MyFunction",
 		Directory:  "/home/user/functions/my_function",
 		ScriptFile: "handler.go",
 		EntryPoint: "main",
-		Bindings: map[string]*functionrpc.BindingInfo{
+		Bindings: map[string]*pb.BindingInfo{
 			"httpTrigger": { /* Initialize BindingInfo fields */ },
 		},
 		IsProxy:                  false,
-		Status:                   &functionrpc.StatusResult{ /* Initialize StatusResult fields */ },
+		Status:                   &pb.StatusResult{ /* Initialize StatusResult fields */ },
 		Language:                 "golang",
 		RawBindings:              []string{"httpTrigger", "queueOutput"},
 		FunctionId:               "b7a5c3f2-8d4e-4a7c-bc91-2f6e9d89e123",
 		ManagedDependencyEnabled: true,
-		RetryOptions:             &functionrpc.RpcRetryOptions{ /* Initialize RpcRetryOptions fields */ },
+		RetryOptions:             &pb.RpcRetryOptions{ /* Initialize RpcRetryOptions fields */ },
 		Properties: map[string]string{
 			"timeout": "30s",
 		},
@@ -114,7 +121,7 @@ func generateRPCMetadata() *functionrpc.RpcFunctionMetadata {
 // Convert rpc metadata to function info to store in registry
 // Will be used when host sends us actual request to parse info
 // and cast symbols for cx code
-func getFunctionInfo(f interface{}, metadata *functionrpc.RpcFunctionMetadata) *FunctionInfo {
+func getFunctionInfo(f interface{}, metadata *pb.RpcFunctionMetadata) *FunctionInfo {
 	return &FunctionInfo{
 		Func:            f,
 		Name:            metadata.Name,
@@ -142,6 +149,8 @@ func (disp *Dispatcher) RegisterCosmosFunction(f interface{}) error {
 		return fmt.Errorf("function with ID %q already registered", funcId)
 	}
 	fr.functions[funcId] = fi
+
+	GetFunctionDetails(f)
 
 	return nil
 }
