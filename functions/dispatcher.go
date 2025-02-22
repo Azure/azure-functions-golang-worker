@@ -3,10 +3,8 @@ package functions
 import (
 	"fmt"
 	"log"
-	"net"
 
-	functionrpc "github.com/azure/azure-functions-golang-worker/proto"
-	"google.golang.org/grpc"
+	pb "github.com/azure/azure-functions-golang-worker/proto"
 )
 
 type Dispatcher struct {
@@ -23,25 +21,25 @@ func NewDispatcher(workerStartupConfig WorkerStartupConfig) *Dispatcher {
 	}
 }
 
-func (d *Dispatcher) Dispatch(msg *functionrpc.StreamingMessage) (*functionrpc.StreamingMessage, error) {
+func (d *Dispatcher) Dispatch(msg *pb.StreamingMessage) (*pb.StreamingMessage, error) {
 	if msg == nil {
 		return nil, fmt.Errorf("received nil message")
 	}
 
 	switch content := msg.Content.(type) {
-	case *functionrpc.StreamingMessage_WorkerInitRequest:
+	case *pb.StreamingMessage_WorkerInitRequest:
 		log.Println("Handling WorkerInitRequest")
-		return handleWorkerInitRequest(msg.RequestId, content.WorkerInitRequest)
-	case *functionrpc.StreamingMessage_FunctionLoadRequest:
+		return HandleWorkerInitRequest(content.WorkerInitRequest, msg.RequestId), nil
+	case *pb.StreamingMessage_FunctionLoadRequest:
 		log.Println("Handling FunctionLoadRequest")
 		return handleFunctionLoadRequest(msg.RequestId, content.FunctionLoadRequest, d.FunctionRegistry)
-	case *functionrpc.StreamingMessage_InvocationRequest:
+	case *pb.StreamingMessage_InvocationRequest:
 		log.Println("Handling InvocationRequest")
 		return handleInvocationRequest(msg.RequestId, content.InvocationRequest, d.FunctionRegistry)
-	case *functionrpc.StreamingMessage_WorkerStatusRequest:
+	case *pb.StreamingMessage_WorkerStatusRequest:
 		log.Println("Handling WorkerStatusRequest")
 		return handleWorkerStatusRequest(msg.RequestId, content.WorkerStatusRequest)
-	case *functionrpc.StreamingMessage_WorkerTerminate:
+	case *pb.StreamingMessage_WorkerTerminate:
 		log.Println("Handling WorkerTerminate")
 		return handleWorkerTerminate(msg.RequestId, content.WorkerTerminate)
 	default:
@@ -50,31 +48,13 @@ func (d *Dispatcher) Dispatch(msg *functionrpc.StreamingMessage) (*functionrpc.S
 	}
 }
 
-func (dispatcher *Dispatcher) StartWorkerServer() error {
-	grpcServer := grpc.NewServer()
-	workerServer := NewWorkerServer(dispatcher)
-	functionrpc.RegisterFunctionRpcServer(grpcServer, workerServer)
-
-	address := dispatcher.WorkerStartupConfig.FunctionsUri
-	lis, err := net.Listen("tcp", address)
-	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", address, err)
+func ProcessRequstMessage(reqMsg *pb.StreamingMessage) *pb.StreamingMessage {
+	switch content := reqMsg.GetContent().(type) {
+	case *pb.StreamingMessage_WorkerInitRequest:
+		log.Println("Handling WorkerInitRequest")
+		return HandleWorkerInitRequest(content.WorkerInitRequest, reqMsg.RequestId)
+	default:
+		log.Printf("Received unhandled message type: %T\n", content)
+		return nil
 	}
-
-	log.Printf("Starting Azure Function Go worker.")
-	log.Printf("Host Address=%s, Request ID=%s, Worker ID=%s, grpc-max-message-length=%d\n",
-		address, dispatcher.WorkerStartupConfig.FunctionsRequestId, dispatcher.WorkerStartupConfig.FunctionsWorkerId,
-		dispatcher.WorkerStartupConfig.FunctionsGrpcMaxMessageLength)
-
-	fr := dispatcher.FunctionRegistry
-	fr.mu.Lock()
-	defer fr.mu.Unlock()
-
-	go func() {
-		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatalf("failed to serve: %v", err)
-		}
-	}()
-
-	return nil
 }

@@ -5,4 +5,5 @@ const (
 	GoScriptFileNameDefault       = "main.go"
 	DefaultHostPort               = ":8080"
 	DefaultFunctionsGrpcMaxMsgLen = 4 * 1024 * 1024
+	GoWorkerVersion               = "v0.0.1"
 )

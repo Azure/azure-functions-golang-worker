@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"reflect"
 	"sync"
+	"time"
 
 	pb "github.com/azure/azure-functions-golang-worker/proto"
 	"github.com/spf13/pflag"
@@ -47,13 +48,36 @@ func FunctionApp() *Dispatcher {
 		log.Fatalf("Failed to parse command line arguments: %v", err)
 	}
 
+	conn, err := CreateGrpcClientConnection(args.FunctionsUri, args.FunctionsGrpcMaxMessageLength)
+	if err != nil {
+		log.Fatalf("Failed to create gRPC client: %v", err)
+	}
+	defer conn.Close()
+
+	time.Sleep(5 * time.Second)
+
+	stream, err := ConnectToGrpcStream(conn)
+	if err != nil {
+		log.Fatalf("Failed to connect to gRPC stream: %v", err)
+	}
+
+	time.Sleep(5 * time.Second)
+
+	err = SendStartStreamMessage(stream, args.FunctionsWorkerId)
+	if err != nil {
+		log.Fatalf("Error sending start stream message: %v", err)
+	}
+
+	time.Sleep(10 * time.Second)
+
+	StartBackgroundStreamReader(stream)
+
 	return NewDispatcher(*args)
 }
 
 func getWorkerStartupConfig() (*WorkerStartupConfig, error) {
 	args := parseArgs()
 	err := validateArgs(args)
-
 	return args, err
 }
 
@@ -84,13 +108,15 @@ func validateArgs(args *WorkerStartupConfig) error {
 	if _, err := url.Parse(args.FunctionsUri); err != nil {
 		return fmt.Errorf("invalid --functions-uri provided (%s): %v", args.FunctionsUri, err)
 	}
+
+	args.FunctionsUri = CleanAddressForGrpc(args.FunctionsUri)
+
 	if args.FunctionsWorkerId == "" {
 		return fmt.Errorf("missing required argument: --functions-worker-id")
 	}
 	if args.FunctionsRequestId == "" {
 		return fmt.Errorf("missing required argument: --functions-request-id")
 	}
-
 	return nil
 }
 

@@ -9,25 +9,18 @@ import (
 	functionrpc "github.com/azure/azure-functions-golang-worker/proto"
 )
 
-// handleWorkerInitRequest processes a WorkerInitRequest from the host.
-func handleWorkerInitRequest(
-	requestID string,
-	req *functionrpc.WorkerInitRequest,
-) (*functionrpc.StreamingMessage, error) {
-	resp := &functionrpc.StreamingMessage{
+func HandleWorkerInitRequest(req *functionrpc.WorkerInitRequest, requestID string) *functionrpc.StreamingMessage {
+	return &functionrpc.StreamingMessage{
 		RequestId: requestID,
 		Content: &functionrpc.StreamingMessage_WorkerInitResponse{
 			WorkerInitResponse: &functionrpc.WorkerInitResponse{
 				Result: &functionrpc.StatusResult{
 					Status: functionrpc.StatusResult_Success,
 				},
-				WorkerVersion: "go-worker-v0.0.1",
-				// Optionally fill other fields like capabilities, etc.
+				WorkerVersion: GoWorkerVersion,
 			},
 		},
 	}
-
-	return resp, nil
 }
 
 func handleFunctionMetadataRequest(
