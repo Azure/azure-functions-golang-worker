@@ -4,18 +4,19 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"time"
 
 	// Import the generated protobuf code for Azure Functions
-	functionrpc "github.com/azure/azure-functions-golang-worker/proto"
+	pb "github.com/azure/azure-functions-golang-worker/proto"
 )
 
-func HandleWorkerInitRequest(req *functionrpc.WorkerInitRequest, requestID string) *functionrpc.StreamingMessage {
-	return &functionrpc.StreamingMessage{
-		RequestId: requestID,
-		Content: &functionrpc.StreamingMessage_WorkerInitResponse{
-			WorkerInitResponse: &functionrpc.WorkerInitResponse{
-				Result: &functionrpc.StatusResult{
-					Status: functionrpc.StatusResult_Success,
+func handleWorkerInitRequest(req *pb.WorkerInitRequest, reqID string) *pb.StreamingMessage {
+	return &pb.StreamingMessage{
+		RequestId: reqID,
+		Content: &pb.StreamingMessage_WorkerInitResponse{
+			WorkerInitResponse: &pb.WorkerInitResponse{
+				Result: &pb.StatusResult{
+					Status: pb.StatusResult_Success,
 				},
 				WorkerVersion: GoWorkerVersion,
 			},
@@ -23,80 +24,66 @@ func HandleWorkerInitRequest(req *functionrpc.WorkerInitRequest, requestID strin
 	}
 }
 
-func handleFunctionMetadataRequest(
-	requestID string,
-	req *functionrpc.FunctionsMetadataRequest,
-) (*functionrpc.StreamingMessage, error) {
+func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, reqID string) (*pb.StreamingMessage, error) {
 	functionAppDir := req.GetFunctionAppDirectory()
 	scriptFileName := GetAppSetting(GoScriptFileName, GoScriptFileNameDefault)
 	functionPath := filepath.Join(functionAppDir, scriptFileName)
 
-	// TODO: add request ID from init
 	log.Println("Recevied FunctionMetadataRequest with functionPath:", functionPath)
 
-	// TODO: validate script file name here
-
-	return nil, nil
-}
-
-// handleFunctionLoadRequest processes a FunctionLoadRequest from the host.
-func handleFunctionLoadRequest(
-	requestID string,
-	req *functionrpc.FunctionLoadRequest,
-	registry *FunctionRegistry, // optional: if you’re storing loaded functions
-) (*functionrpc.StreamingMessage, error) {
-
-	// // You might store the function info in the registry (stubbed here).
-	// if registry != nil {
-	// 	err := registry.RegisterFunction(req.FunctionId, req.Metadata)
-	// 	if err != nil {
-	// 		return nil, fmt.Errorf("failed to register function: %w", err)
-	// 	}
-	// }
-
-	// Prepare a load response indicating success.
-	resp := &functionrpc.StreamingMessage{
-		RequestId: requestID,
-		Content: &functionrpc.StreamingMessage_FunctionLoadResponse{
-			FunctionLoadResponse: &functionrpc.FunctionLoadResponse{
-				FunctionId: req.FunctionId,
-				Result: &functionrpc.StatusResult{
-					Status: functionrpc.StatusResult_Success,
-				},
-			},
+	resp := &pb.StreamingMessage{
+		RequestId: reqID,
+		Content: &pb.StreamingMessage_FunctionMetadataResponse{
+			FunctionMetadataResponse: &pb.FunctionMetadataResponse{},
 		},
 	}
 
 	return resp, nil
 }
 
-// handleInvocationRequest processes an InvocationRequest (i.e., a function call) from the host.
-func handleInvocationRequest(
-	requestID string,
-	req *functionrpc.InvocationRequest,
-	registry *FunctionRegistry,
-) (*functionrpc.StreamingMessage, error) {
+func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, reqId string) *pb.StreamingMessage {
+	return &pb.StreamingMessage{
+		RequestId: reqId,
+		Content: &pb.StreamingMessage_FunctionLoadResponse{
+			FunctionLoadResponse: &pb.FunctionLoadResponse{
+				FunctionId: req.FunctionId,
+				Result: &pb.StatusResult{
+					Status: pb.StatusResult_Success,
+				},
+			},
+		},
+	}
+}
 
-	// Example: You might look up the function in your registry.
-	// For a stub, we’ll just pretend we call the function and return a static result.
+func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, reqID string) (*pb.StreamingMessage, error) {
+	invocationTime := time.Now().UTC()
+	invocationId := req.InvocationId
+	functionId := req.FunctionId
 
-	// 1. (Optional) Find function info: registry.GetFunction(req.FunctionId)
+	funcInfo, err := fr.getFunction(functionId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get function info for ID %s: %v", functionId, err)
+	}
+
+	funcInvocationLog := fmt.Sprintf("Function Name: %s, Invocation ID: %s, Function ID: %s, Time: %s",
+		funcInfo.Name, invocationId, functionId, invocationTime)
+	log.Println(funcInvocationLog)
 
 	// 2. “Execute” it, gather outputs (here, we’re just returning a static string).
-	resultData := &functionrpc.TypedData{
-		Data: &functionrpc.TypedData_String_{
+	resultData := &pb.TypedData{
+		Data: &pb.TypedData_String_{
 			String_: fmt.Sprintf("Hello from Go worker! (Function ID: %s)", req.FunctionId),
 		},
 	}
 
 	// 3. Build an InvocationResponse containing the output data
-	resp := &functionrpc.StreamingMessage{
-		RequestId: requestID,
-		Content: &functionrpc.StreamingMessage_InvocationResponse{
-			InvocationResponse: &functionrpc.InvocationResponse{
+	resp := &pb.StreamingMessage{
+		RequestId: reqID,
+		Content: &pb.StreamingMessage_InvocationResponse{
+			InvocationResponse: &pb.InvocationResponse{
 				InvocationId: req.InvocationId,
-				Result: &functionrpc.StatusResult{
-					Status: functionrpc.StatusResult_Success,
+				Result: &pb.StatusResult{
+					Status: pb.StatusResult_Success,
 				},
 				// If this function has output bindings, you’d fill them in here.
 				ReturnValue: resultData,
@@ -110,16 +97,16 @@ func handleInvocationRequest(
 // handleWorkerStatusRequest handles periodic status checks from the host.
 func handleWorkerStatusRequest(
 	requestID string,
-	req *functionrpc.WorkerStatusRequest,
-) (*functionrpc.StreamingMessage, error) {
+	req *pb.WorkerStatusRequest,
+) (*pb.StreamingMessage, error) {
 
 	// Typically, you’d check health metrics or resource usage here.
 	// For now, just return a success status.
 
-	resp := &functionrpc.StreamingMessage{
+	resp := &pb.StreamingMessage{
 		RequestId: requestID,
-		Content: &functionrpc.StreamingMessage_WorkerStatusResponse{
-			WorkerStatusResponse: &functionrpc.WorkerStatusResponse{
+		Content: &pb.StreamingMessage_WorkerStatusResponse{
+			WorkerStatusResponse: &pb.WorkerStatusResponse{
 				// No fields in the WorkerStatusResponse, but we can show success if needed
 			},
 		},
@@ -131,8 +118,8 @@ func handleWorkerStatusRequest(
 // handleWorkerTerminate responds to a WorkerTerminate request from the host.
 func handleWorkerTerminate(
 	requestID string,
-	req *functionrpc.WorkerTerminate,
-) (*functionrpc.StreamingMessage, error) {
+	req *pb.WorkerTerminate,
+) (*pb.StreamingMessage, error) {
 
 	// The host wants us to shut down. We might set a flag or begin graceful shutdown logic.
 	// Typically, the host does not require a response, but we can log or provide minimal feedback.

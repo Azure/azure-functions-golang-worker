@@ -2,31 +2,48 @@ package functions
 
 import (
 	"context"
+	"fmt"
 	"io"
-	"os"
+	"log"
 
 	pb "github.com/azure/azure-functions-golang-worker/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func CreateGrpcClientConnection(address string, maxMsgSize int) (*grpc.ClientConn, error) {
+func connectToHost(hostAddress string, maxMsgSize int, workerId string, disp *Dispatcher) error {
+	client, err := getBidiStreamClient(hostAddress, maxMsgSize)
+	if err != nil {
+		return fmt.Errorf("failed to connect to gRPC stream: %v", err)
+	}
+
+	err = sendStartStreamMessage(client, workerId)
+	if err != nil {
+		return fmt.Errorf("failed to send start stream message: %v", err)
+	}
+
+	go handleBidiStream(client, disp)
+
+	return nil
+}
+
+func getBidiStreamClient(address string, maxMsgSize int) (grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error) {
 	opts := []grpc.DialOption{
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxMsgSize), grpc.MaxCallSendMsgSize(maxMsgSize)),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	}
 	conn, err := grpc.NewClient(address, opts...)
+	if err != nil {
+		return nil, err
+	}
 
-	return conn, err
-}
-
-func ConnectToGrpcStream(conn *grpc.ClientConn) (grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error) {
 	client := pb.NewFunctionRpcClient(conn)
+
 	return client.EventStream(context.Background())
 }
 
 // If successful, host is ready to start sending messages to the worker (starting with InitWorkerRequest)
-func SendStartStreamMessage(stream grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], workerId string) error {
+func sendStartStreamMessage(client grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], workerId string) error {
 	startStreamMsg := &pb.StreamingMessage{
 		RequestId: "abc123",
 		Content: &pb.StreamingMessage_StartStream{
@@ -36,36 +53,31 @@ func SendStartStreamMessage(stream grpc.BidiStreamingClient[pb.StreamingMessage,
 		},
 	}
 
-	return stream.Send(startStreamMsg)
+	return client.Send(startStreamMsg)
 }
 
-func StartBackgroundStreamReader(stream grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage]) {
-	waitc := make(chan *pb.StreamingMessage)
-	go func() {
-		for {
-			msg, err := stream.Recv()
-			if err == io.EOF {
-				// Read done
-				os.Exit(1)
-				close(waitc)
-				return
-			}
-			if err != nil {
-				os.Exit(12)
-				// log.Fatalf("Failed to receive stream: %v", err)
-			}
-			waitc <- msg // Send message to channel
+func handleBidiStream(client grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], disp *Dispatcher) {
+	for {
+		reqMsg, err := client.Recv()
+		if err == io.EOF {
+			fmt.Println("Stream closed by server")
+			return
 		}
-	}()
+		if err != nil {
+			log.Fatalf("Error receiving from stream: %v", err)
+		}
 
-	go func() {
-		for msg := range waitc {
-			if respMsg := ProcessRequstMessage(msg); respMsg != nil {
-				if err := stream.Send(respMsg); err != nil {
-					os.Exit(3)
-					//log.Fatalf("Failed to send response: %v", err)
-				}
-			}
+		respMsg, err := disp.processRequestMessage(reqMsg)
+		if err != nil {
+			log.Fatalf("Error processing request: %v", err)
+		} else if respMsg == nil {
+			fmt.Println("Warning: ProcessRequstMessage returned nil, no response will be sent.")
+			continue
 		}
-	}()
+
+		fmt.Printf("Sending response: %v\n", respMsg)
+		if err := client.Send(respMsg); err != nil {
+			log.Fatalf("Error sending response: %v", err)
+		}
+	}
 }

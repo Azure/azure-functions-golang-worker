@@ -2,14 +2,10 @@ package functions
 
 import (
 	"fmt"
-	"log"
-	"net/url"
 	"reflect"
 	"sync"
-	"time"
 
 	pb "github.com/azure/azure-functions-golang-worker/proto"
-	"github.com/spf13/pflag"
 )
 
 type ParamTypeInfo struct {
@@ -31,93 +27,21 @@ type FunctionInfo struct {
 }
 
 type FunctionRegistry struct {
-	mu        sync.RWMutex
-	functions map[string]*FunctionInfo
+	functions sync.Map
 }
 
-type WorkerStartupConfig struct {
-	FunctionsUri                  string
-	FunctionsWorkerId             string
-	FunctionsRequestId            string
-	FunctionsGrpcMaxMessageLength int
-}
-
-func FunctionApp() *Dispatcher {
-	args, err := getWorkerStartupConfig()
-	if err != nil {
-		log.Fatalf("Failed to parse command line arguments: %v", err)
+func (fr *FunctionRegistry) getFunction(functionId string) (*FunctionInfo, error) {
+	funcInfoVal, found := fr.functions.Load(functionId)
+	if !found {
+		return nil, fmt.Errorf("function with ID %s not found", functionId)
 	}
 
-	conn, err := CreateGrpcClientConnection(args.FunctionsUri, args.FunctionsGrpcMaxMessageLength)
-	if err != nil {
-		log.Fatalf("Failed to create gRPC client: %v", err)
-	}
-	defer conn.Close()
-
-	time.Sleep(5 * time.Second)
-
-	stream, err := ConnectToGrpcStream(conn)
-	if err != nil {
-		log.Fatalf("Failed to connect to gRPC stream: %v", err)
+	funcInfo, ok := funcInfoVal.(*FunctionInfo)
+	if !ok {
+		return nil, fmt.Errorf("failed to cast FunctionInfo for ID %s", functionId)
 	}
 
-	time.Sleep(5 * time.Second)
-
-	err = SendStartStreamMessage(stream, args.FunctionsWorkerId)
-	if err != nil {
-		log.Fatalf("Error sending start stream message: %v", err)
-	}
-
-	time.Sleep(10 * time.Second)
-
-	StartBackgroundStreamReader(stream)
-
-	return NewDispatcher(*args)
-}
-
-func getWorkerStartupConfig() (*WorkerStartupConfig, error) {
-	args := parseArgs()
-	err := validateArgs(args)
-	return args, err
-}
-
-func parseArgs() *WorkerStartupConfig {
-	// The host will send extra/older args that will be unused
-	// e.g. --host, --port, --worker-id
-	// The normal flag package will error out on these and cannot be changed
-	pflag.CommandLine.ParseErrorsWhitelist.UnknownFlags = true
-
-	functionsURI := pflag.String("functions-uri", "", "URI with IP Address and Port used to connect to the Host via gRPC.")
-	functionsWorkerID := pflag.String("functions-worker-id", "", "Worker ID assigned to this language worker.")
-	functionsRequestID := pflag.String("functions-request-id", "", "Request ID used for gRPC communication with the Host.")
-	functionsGrpcMaxMsgLen := pflag.Int("functions-grpc-max-message-length", DefaultFunctionsGrpcMaxMsgLen, "Max grpc message length for Functions")
-	pflag.Parse()
-
-	return &WorkerStartupConfig{
-		FunctionsUri:                  *functionsURI,
-		FunctionsWorkerId:             *functionsWorkerID,
-		FunctionsRequestId:            *functionsRequestID,
-		FunctionsGrpcMaxMessageLength: *functionsGrpcMaxMsgLen,
-	}
-}
-
-func validateArgs(args *WorkerStartupConfig) error {
-	if args.FunctionsUri == "" {
-		return fmt.Errorf("missing required argument: --functions-uri")
-	}
-	if _, err := url.Parse(args.FunctionsUri); err != nil {
-		return fmt.Errorf("invalid --functions-uri provided (%s): %v", args.FunctionsUri, err)
-	}
-
-	args.FunctionsUri = CleanAddressForGrpc(args.FunctionsUri)
-
-	if args.FunctionsWorkerId == "" {
-		return fmt.Errorf("missing required argument: --functions-worker-id")
-	}
-	if args.FunctionsRequestId == "" {
-		return fmt.Errorf("missing required argument: --functions-request-id")
-	}
-	return nil
+	return funcInfo, nil
 }
 
 func generateRPCMetadata() *pb.RpcFunctionMetadata {
@@ -161,20 +85,20 @@ func getFunctionInfo(f interface{}, metadata *pb.RpcFunctionMetadata) *FunctionI
 	}
 }
 
-// RegisterCosmosFunction stores the given metadata under the specified function ID for Cosmos only
-// To have more control over inputs and outputs, we can have type specific functions that the cx can use
+func (disp *Dispatcher) RegsiterHttpFunction(f interface{}) error {
+	return nil
+}
+
 func (disp *Dispatcher) RegisterCosmosFunction(f interface{}) error {
 	metadata := generateRPCMetadata()
 	fi := getFunctionInfo(f, metadata)
 	fr := disp.FunctionRegistry
-	fr.mu.Lock()
-	defer fr.mu.Unlock()
 
 	funcId := metadata.FunctionId
-	if _, exists := fr.functions[funcId]; exists {
+	if _, exists := fr.functions.Load(funcId); exists {
 		return fmt.Errorf("function with ID %q already registered", funcId)
 	}
-	fr.functions[funcId] = fi
+	fr.functions.Store(funcId, fi)
 
 	GetFunctionDetails(f)
 
