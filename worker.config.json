@@ -4,7 +4,7 @@
         "extensions":[".exe"],
         "defaultExecutablePath":"C:\\Users\\evanroman\\source\\repos\\Golang\\azure-functions-golang-worker\\worker.exe",
         "defaultWorkerPath":"worker.exe",
-        "workerIndexing": "true"
+        "workerIndexing": "false"
     },
      "processOptions": {
         "initializationTimeout": "00:02:00",

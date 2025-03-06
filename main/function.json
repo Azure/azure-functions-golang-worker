@@ -1,0 +1,16 @@
+{
+  "scriptFile": "main.go",
+  "bindings": [
+    {
+      "type": "cosmosDBTrigger",
+      "name": "documents",
+      "direction": "in",
+      "leaseContainerName": "leases",
+      "connection": "pythonworker37cdb_DOCUMENTDB",
+      "databaseName": "test",
+      "containerName": "items",
+      "createLeaseContainerIfNotExists": true,
+      "startFromBeginning": false
+    }
+  ]
+}

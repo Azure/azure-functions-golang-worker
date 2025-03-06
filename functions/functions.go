@@ -2,6 +2,7 @@ package functions
 
 import (
 	"fmt"
+	"log"
 	"reflect"
 	"sync"
 
@@ -57,7 +58,7 @@ func generateRPCMetadata() *pb.RpcFunctionMetadata {
 		Status:                   &pb.StatusResult{ /* Initialize StatusResult fields */ },
 		Language:                 "golang",
 		RawBindings:              []string{"httpTrigger", "queueOutput"},
-		FunctionId:               "b7a5c3f2-8d4e-4a7c-bc91-2f6e9d89e123",
+		FunctionId:               "0f7b4505-98b8-4bd2-b71a-3ec427bd4c58",
 		ManagedDependencyEnabled: true,
 		RetryOptions:             &pb.RpcRetryOptions{ /* Initialize RpcRetryOptions fields */ },
 		Properties: map[string]string{
@@ -72,6 +73,14 @@ func generateRPCMetadata() *pb.RpcFunctionMetadata {
 // Will be used when host sends us actual request to parse info
 // and cast symbols for cx code
 func getFunctionInfo(f interface{}, metadata *pb.RpcFunctionMetadata) *FunctionInfo {
+	fType := reflect.TypeOf(f)
+	if fType.Kind() != reflect.Func {
+		return nil
+	}
+
+	funcName := reflect.TypeOf(f).String()
+	log.Printf("Function Name: %s\n", funcName)
+
 	return &FunctionInfo{
 		Func:            f,
 		Name:            metadata.Name,
@@ -100,7 +109,7 @@ func (disp *Dispatcher) RegisterCosmosFunction(f interface{}) error {
 	}
 	fr.functions.Store(funcId, fi)
 
-	GetFunctionDetails(f)
+	//GetFunctionDetails(f)
 
 	return nil
 }

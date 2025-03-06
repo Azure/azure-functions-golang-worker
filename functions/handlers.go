@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"reflect"
 	"time"
 
 	// Import the generated protobuf code for Azure Functions
 	pb "github.com/azure/azure-functions-golang-worker/proto"
+	"github.com/azure/azure-functions-golang-worker/sdk"
 )
 
 func handleWorkerInitRequest(req *pb.WorkerInitRequest, reqID string) *pb.StreamingMessage {
@@ -34,7 +36,11 @@ func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, reqID stri
 	resp := &pb.StreamingMessage{
 		RequestId: reqID,
 		Content: &pb.StreamingMessage_FunctionMetadataResponse{
-			FunctionMetadataResponse: &pb.FunctionMetadataResponse{},
+			FunctionMetadataResponse: &pb.FunctionMetadataResponse{
+				FunctionMetadataResults: []*pb.RpcFunctionMetadata{
+					{},
+				},
+			},
 		},
 	}
 
@@ -59,6 +65,11 @@ func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, re
 	invocationTime := time.Now().UTC()
 	invocationId := req.InvocationId
 	functionId := req.FunctionId
+	inputData := req.InputData[0].GetData()
+	docString := inputData.GetString_()
+	if inputData == nil || docString == "" {
+		return nil, fmt.Errorf("inputData is nil")
+	}
 
 	funcInfo, err := fr.getFunction(functionId)
 	if err != nil {
@@ -69,7 +80,15 @@ func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, re
 		funcInfo.Name, invocationId, functionId, invocationTime)
 	log.Println(funcInvocationLog)
 
-	// 2. “Execute” it, gather outputs (here, we’re just returning a static string).
+	docs := sdk.DeserializeCosmosDocument(docString)
+	fType := reflect.TypeOf(funcInfo.Func)
+
+	inputs := make([]reflect.Value, fType.NumIn())
+	for i := 0; i < fType.NumIn(); i++ {
+		inputs[i] = reflect.ValueOf(docs)
+	}
+	reflect.ValueOf(funcInfo.Func).Call(inputs)
+
 	resultData := &pb.TypedData{
 		Data: &pb.TypedData_String_{
 			String_: fmt.Sprintf("Hello from Go worker! (Function ID: %s)", req.FunctionId),
@@ -85,7 +104,6 @@ func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, re
 				Result: &pb.StatusResult{
 					Status: pb.StatusResult_Success,
 				},
-				// If this function has output bindings, you’d fill them in here.
 				ReturnValue: resultData,
 			},
 		},
