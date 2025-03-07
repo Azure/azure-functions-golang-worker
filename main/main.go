@@ -8,8 +8,8 @@ import (
 	"github.com/azure/azure-functions-golang-worker/sdk"
 )
 
-func CosmosDBTrigger(doc []sdk.CosmosDocument) {
-	firstDoc := doc[0]
+func CosmosDBTrigger(docs []sdk.CosmosDocument) {
+	firstDoc := docs[0]
 	log.Printf("Document ID: %s\n", firstDoc.ID)
 	log.Printf("Document Data: %s\n", firstDoc.Data)
 	log.Printf("Document Timestamp: %d\n", firstDoc.Timestamp)
@@ -20,7 +20,7 @@ func main() {
 	app := functions.FunctionApp()
 
 	// Register a CosmosDB trigger
-	app.RegisterCosmosFunction(CosmosDBTrigger)
+	app.RegisterCosmosFunction(CosmosDBTrigger, "docs", "items", "test", "pythonworker37cdb_DOCUMENTDB")
 
 	time.Sleep(240 * time.Second)
 }

@@ -2,11 +2,10 @@ package functions
 
 import (
 	"fmt"
-	"log"
 	"reflect"
 	"sync"
 
-	pb "github.com/azure/azure-functions-golang-worker/proto"
+	"github.com/azure/azure-functions-golang-worker/sdk"
 )
 
 type ParamTypeInfo struct {
@@ -24,7 +23,7 @@ type FunctionInfo struct {
 	InputTypes      map[string]ParamTypeInfo // Mapping of input types
 	OutputTypes     map[string]ParamTypeInfo // Mapping of output types
 	ReturnType      *ParamTypeInfo           // Optional return type
-	TriggerMetadata map[string]interface{}   // Optional trigger metadata
+	TriggerMetadata map[string]string        // Optional trigger metadata
 }
 
 type FunctionRegistry struct {
@@ -45,65 +44,40 @@ func (fr *FunctionRegistry) getFunction(functionId string) (*FunctionInfo, error
 	return funcInfo, nil
 }
 
-func generateRPCMetadata() *pb.RpcFunctionMetadata {
-	metadata := pb.RpcFunctionMetadata{
-		Name:       "MyFunction",
-		Directory:  "/home/user/functions/my_function",
-		ScriptFile: "handler.go",
-		EntryPoint: "main",
-		Bindings: map[string]*pb.BindingInfo{
-			"httpTrigger": { /* Initialize BindingInfo fields */ },
-		},
-		IsProxy:                  false,
-		Status:                   &pb.StatusResult{ /* Initialize StatusResult fields */ },
-		Language:                 "golang",
-		RawBindings:              []string{"httpTrigger", "queueOutput"},
-		FunctionId:               "0f7b4505-98b8-4bd2-b71a-3ec427bd4c58",
-		ManagedDependencyEnabled: true,
-		RetryOptions:             &pb.RpcRetryOptions{ /* Initialize RpcRetryOptions fields */ },
-		Properties: map[string]string{
-			"timeout": "30s",
-		},
+func getFunctionInfo(f interface{}, argName string, containerName string, databaseName string, connection string) *FunctionInfo {
+	inputTypes := make(map[string]ParamTypeInfo)
+	inputTypes[argName] = ParamTypeInfo{
+		BindingName: "cosmosDBTrigger",
+		ParamType:   reflect.TypeOf([]sdk.CosmosDocument{}),
 	}
 
-	return &metadata
-}
-
-// Convert rpc metadata to function info to store in registry
-// Will be used when host sends us actual request to parse info
-// and cast symbols for cx code
-func getFunctionInfo(f interface{}, metadata *pb.RpcFunctionMetadata) *FunctionInfo {
-	fType := reflect.TypeOf(f)
-	if fType.Kind() != reflect.Func {
-		return nil
-	}
-
-	funcName := reflect.TypeOf(f).String()
-	log.Printf("Function Name: %s\n", funcName)
+	triggerMetadata := make(map[string]string)
+	triggerMetadata["direction"] = "IN"
+	triggerMetadata["type"] = "cosmosDBTrigger"
+	triggerMetadata["name"] = argName
+	triggerMetadata["connection"] = connection
+	triggerMetadata["databaseName"] = databaseName
+	triggerMetadata["containerName"] = containerName
 
 	return &FunctionInfo{
 		Func:            f,
-		Name:            metadata.Name,
-		Directory:       metadata.Directory,
-		FunctionID:      metadata.FunctionId,
+		Name:            "CosmosDBTrigger",
+		Directory:       "Dir",
+		FunctionID:      "0f7b4505-98b8-4bd2-b71a-3ec427bd4c58",
 		HasReturn:       false,
 		IsHTTPFunc:      false,
-		InputTypes:      make(map[string]ParamTypeInfo),
+		InputTypes:      inputTypes,
 		OutputTypes:     make(map[string]ParamTypeInfo),
-		TriggerMetadata: make(map[string]interface{}),
+		TriggerMetadata: triggerMetadata,
 	}
 }
 
-func (disp *Dispatcher) RegsiterHttpFunction(f interface{}) error {
-	return nil
-}
-
-func (disp *Dispatcher) RegisterCosmosFunction(f interface{}) error {
-	metadata := generateRPCMetadata()
-	fi := getFunctionInfo(f, metadata)
+func (disp *Dispatcher) RegisterCosmosFunction(f interface{}, argName string,
+	containerName string, databaseName string, connection string) error {
+	fi := getFunctionInfo(f, argName, containerName, databaseName, connection)
 	fr := disp.FunctionRegistry
 
-	funcId := metadata.FunctionId
+	funcId := fi.FunctionID
 	if _, exists := fr.functions.Load(funcId); exists {
 		return fmt.Errorf("function with ID %q already registered", funcId)
 	}

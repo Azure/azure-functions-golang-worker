@@ -1,9 +1,9 @@
 package functions
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
-	"path/filepath"
 	"reflect"
 	"time"
 
@@ -26,19 +26,51 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, reqID string) *pb.Stream
 	}
 }
 
-func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, reqID string) (*pb.StreamingMessage, error) {
-	functionAppDir := req.GetFunctionAppDirectory()
-	scriptFileName := GetAppSetting(GoScriptFileName, GoScriptFileNameDefault)
-	functionPath := filepath.Join(functionAppDir, scriptFileName)
+func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, fr *FunctionRegistry, reqID string) (*pb.StreamingMessage, error) {
+	// functionAppDir := req.GetFunctionAppDirectory()
+	// scriptFileName := GetAppSetting(GoScriptFileName, GoScriptFileNameDefault)
+	// functionPath := filepath.Join(functionAppDir, scriptFileName)
+	// log.Println("Recevied FunctionMetadataRequest with functionPath:", functionPath)
+	funcId := "0f7b4505-98b8-4bd2-b71a-3ec427bd4c58"
+	fi, err := fr.getFunction(funcId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get function info for ID %s: %v", funcId, err)
+	}
 
-	log.Println("Recevied FunctionMetadataRequest with functionPath:", functionPath)
+	// Directory:  fi.Directory,
+	// ScriptFile: "main.go",
+	// EntryPoint: fi.Name,
+	// Name:       fi.Name,
+	// RawBindings:   fi.,
 
+	jsonBytes, _ := json.Marshal(fi.TriggerMetadata)
 	resp := &pb.StreamingMessage{
 		RequestId: reqID,
 		Content: &pb.StreamingMessage_FunctionMetadataResponse{
 			FunctionMetadataResponse: &pb.FunctionMetadataResponse{
 				FunctionMetadataResults: []*pb.RpcFunctionMetadata{
-					{},
+					{
+						Name:       "CosmosDBTrigger",
+						Directory:  "Dir",
+						ScriptFile: "main.go",
+						EntryPoint: "CosmosDBTrigger",
+						Bindings: map[string]*pb.BindingInfo{
+							fi.TriggerMetadata["name"]: {
+								Type: fi.TriggerMetadata["type"],
+							},
+						},
+						Language: "golang",
+						RawBindings: []string{
+							string(jsonBytes),
+						},
+						FunctionId: "0f7b4505-98b8-4bd2-b71a-3ec427bd4c58",
+						Properties: map[string]string{
+							"worker_indexed": "True",
+						},
+					},
+				},
+				Result: &pb.StatusResult{
+					Status: pb.StatusResult_Success,
 				},
 			},
 		},

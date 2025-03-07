@@ -28,7 +28,7 @@ func (disp *Dispatcher) processRequestMessage(reqMsg *pb.StreamingMessage) (*pb.
 		return handleWorkerInitRequest(content.WorkerInitRequest, reqMsg.RequestId), nil
 	case *pb.StreamingMessage_FunctionsMetadataRequest:
 		log.Println("Handling FunctionsMetadataRequest")
-		return handleFunctionsMetadataRequest(content.FunctionsMetadataRequest, reqMsg.RequestId)
+		return handleFunctionsMetadataRequest(content.FunctionsMetadataRequest, disp.FunctionRegistry, reqMsg.RequestId)
 	case *pb.StreamingMessage_InvocationRequest:
 		log.Println("Handling InvocationRequest")
 		return handleInvocationRequest(content.InvocationRequest, disp.FunctionRegistry, reqMsg.RequestId)
