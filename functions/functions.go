@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
-
-	"github.com/azure/azure-functions-golang-worker/sdk"
 )
 
 type ParamTypeInfo struct {
@@ -44,37 +42,33 @@ func (fr *FunctionRegistry) getFunction(functionId string) (*FunctionInfo, error
 	return funcInfo, nil
 }
 
-func getFunctionInfo(f interface{}, argName string, containerName string, databaseName string, connection string) *FunctionInfo {
-	inputTypes := make(map[string]ParamTypeInfo)
-	inputTypes[argName] = ParamTypeInfo{
-		BindingName: "cosmosDBTrigger",
-		ParamType:   reflect.TypeOf([]sdk.CosmosDocument{}),
-	}
-
-	triggerMetadata := make(map[string]string)
-	triggerMetadata["direction"] = "IN"
-	triggerMetadata["type"] = "cosmosDBTrigger"
-	triggerMetadata["name"] = argName
-	triggerMetadata["connection"] = connection
-	triggerMetadata["databaseName"] = databaseName
-	triggerMetadata["containerName"] = containerName
-
-	return &FunctionInfo{
-		Func:            f,
-		Name:            "CosmosDBTrigger",
-		Directory:       "Dir",
-		FunctionID:      "0f7b4505-98b8-4bd2-b71a-3ec427bd4c58",
-		HasReturn:       false,
-		IsHTTPFunc:      false,
-		InputTypes:      inputTypes,
-		OutputTypes:     make(map[string]ParamTypeInfo),
-		TriggerMetadata: triggerMetadata,
+func resolveTrigger(f interface{}, t Trigger, authLevel AuthorizationLevel) *FunctionInfo {
+	switch tr := t.(type) {
+	case *CosmosDBTrigger:
+		return RegisterCosmosDBFunction(f, tr.ArgName, tr.ContainerName, tr.DatabaseName, tr.Connection)
+	case *HttpTrigger:
+		return RegisterHttpFunction(f, tr.Route, authLevel)
+	default:
+		return nil
 	}
 }
 
-func (disp *Dispatcher) RegisterCosmosFunction(f interface{}, argName string,
-	containerName string, databaseName string, connection string) error {
-	fi := getFunctionInfo(f, argName, containerName, databaseName, connection)
+// func (disp *Dispatcher) RegisterCosmosFunction(f interface{}, argName string,
+// 	containerName string, databaseName string, connection string) error {
+// 	fi := getFunctionInfo(f, argName, containerName, databaseName, connection)
+// 	fr := disp.FunctionRegistry
+
+// 	funcId := fi.FunctionID
+// 	if _, exists := fr.functions.Load(funcId); exists {
+// 		return fmt.Errorf("function with ID %q already registered", funcId)
+// 	}
+// 	fr.functions.Store(funcId, fi)
+
+// 	return nil
+// }
+
+func (disp *Dispatcher) RegisterFunction(f interface{}, t Trigger) error {
+	fi := resolveTrigger(f, t, *disp.AuthLevel)
 	fr := disp.FunctionRegistry
 
 	funcId := fi.FunctionID
@@ -82,8 +76,6 @@ func (disp *Dispatcher) RegisterCosmosFunction(f interface{}, argName string,
 		return fmt.Errorf("function with ID %q already registered", funcId)
 	}
 	fr.functions.Store(funcId, fi)
-
-	//GetFunctionDetails(f)
 
 	return nil
 }

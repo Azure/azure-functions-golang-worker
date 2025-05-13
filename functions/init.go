@@ -15,13 +15,13 @@ type WorkerStartupConfig struct {
 	FunctionsGrpcMaxMessageLength int
 }
 
-func FunctionApp() *Dispatcher {
+func FunctionApp(authLevel AuthorizationLevel) *Dispatcher {
 	args, err := getWorkerStartupConfig()
 	if err != nil {
 		log.Fatalf("failed to parse command line arguments: %v", err)
 	}
 
-	disp := createDispatcher(*args)
+	disp := createDispatcher(*args, authLevel)
 	err = connectToHost(args.FunctionsUri, args.FunctionsGrpcMaxMessageLength, args.FunctionsWorkerId, disp)
 	if err != nil {
 		log.Fatalf("error establishing connection to host's gRPC server: %v", err)
@@ -73,5 +73,6 @@ func validateArgs(args *WorkerStartupConfig) error {
 	if args.FunctionsRequestId == "" {
 		return fmt.Errorf("missing required argument: --functions-request-id")
 	}
+
 	return nil
 }

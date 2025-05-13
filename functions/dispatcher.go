@@ -10,14 +10,16 @@ import (
 type Dispatcher struct {
 	WorkerStartupConfig *WorkerStartupConfig
 	FunctionRegistry    *FunctionRegistry
+	AuthLevel           *AuthorizationLevel
 }
 
-func createDispatcher(workerStartupConfig WorkerStartupConfig) *Dispatcher {
+func createDispatcher(workerStartupConfig WorkerStartupConfig, authLevel AuthorizationLevel) *Dispatcher {
 	return &Dispatcher{
 		WorkerStartupConfig: &workerStartupConfig,
 		FunctionRegistry: &FunctionRegistry{
 			functions: sync.Map{},
 		},
+		AuthLevel: &authLevel,
 	}
 }
 

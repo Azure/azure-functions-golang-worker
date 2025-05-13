@@ -6,4 +6,5 @@ const (
 	DefaultHostPort               = ":8080"
 	DefaultFunctionsGrpcMaxMsgLen = 4 * 1024 * 1024
 	GoWorkerVersion               = "v0.0.1"
+	MsInvocationIdHeaderName      = "x-ms-invocation-id"
 )
