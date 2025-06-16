@@ -1,55 +1,76 @@
 package functions
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"sync"
 )
 
-type HttpResponse struct {
-	Body       string
-	StatusCode int
-	Err        error
+type ContextRef struct {
+	Request       *http.Request
+	Response      http.ResponseWriter
+	RequestReady  chan struct{}
+	ResponseReady chan struct{}
 }
 
-// Coordinator struct maps invocation IDs to channels
 type HttpCoordinator struct {
-	mu            sync.Mutex
-	responseChans map[string]chan HttpResponse
+	mu       sync.Mutex
+	contexts map[string]*ContextRef
 }
 
 func NewHttpCoordinator() *HttpCoordinator {
 	return &HttpCoordinator{
-		responseChans: make(map[string]chan HttpResponse),
+		contexts: make(map[string]*ContextRef),
 	}
 }
 
-func (hc *HttpCoordinator) SetHttpRequest(invocID string) <-chan HttpResponse {
-	hc.mu.Lock()
-	defer hc.mu.Unlock()
+func (c *HttpCoordinator) ensureContext(invocID string) *ContextRef {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	ch := make(chan HttpResponse, 1)
-	hc.responseChans[invocID] = ch
-	return ch
+	if _, exists := c.contexts[invocID]; !exists {
+		c.contexts[invocID] = &ContextRef{
+			RequestReady:  make(chan struct{}),
+			ResponseReady: make(chan struct{}),
+		}
+	}
+	return c.contexts[invocID]
 }
 
-func (hc *HttpCoordinator) SetHttpResponse(invocID string, resp HttpResponse) {
-	hc.mu.Lock()
-	defer hc.mu.Unlock()
+func (c *HttpCoordinator) SetHTTPRequest(invocID string, r *http.Request, w http.ResponseWriter) {
+	ctx := c.ensureContext(invocID)
+	ctx.Request = r
+	ctx.Response = w
+	close(ctx.RequestReady)
+}
 
-	ch, ok := hc.responseChans[invocID]
-	if !ok {
-		log.Printf("No channel found for invocation ID: %s", invocID)
-		return
+func (c *HttpCoordinator) GetHTTPRequest(invocID string) (*http.Request, http.ResponseWriter, error) {
+	ctx := c.ensureContext(invocID)
+
+	// Block until the request is ready
+	<-ctx.RequestReady
+
+	if ctx.Request == nil {
+		return nil, nil, errors.New("no http request")
 	}
 
-	ch <- resp
-	delete(hc.responseChans, invocID)
+	return ctx.Request, ctx.Response, nil
 }
 
-var httpCoordinator = NewHttpCoordinator()
+func (c *HttpCoordinator) NotifyResponseReady(invocID string) {
+	ctx := c.ensureContext(invocID)
+	close(ctx.ResponseReady)
+}
+
+func (c *HttpCoordinator) AwaitResponse(invocID string) {
+	ctx := c.ensureContext(invocID)
+	<-ctx.ResponseReady
+}
+
+var globalCoordinator = NewHttpCoordinator()
 
 // The host will receive an http invocation. The host will start a proxy forwarding service if the function
 // invoked is an httpTrigger. At this point, the worker responds to the forwarded request using the invocation ID
@@ -57,42 +78,29 @@ var httpCoordinator = NewHttpCoordinator()
 // Then the worker does respond after receiving the invocation request from the host, and the host will
 // gets the response back.
 func catchAllHandler(w http.ResponseWriter, r *http.Request) {
-	invocId := r.Header.Get(MsInvocationIdHeaderName)
-	if invocId == "" {
-		http.Error(w, "Missing invocation ID header", http.StatusBadRequest)
+	invocID := r.Header.Get(MsInvocationIdHeaderName)
+	if invocID == "" {
+		http.Error(w, "Missing Invocation ID", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("Received HTTP request for invocation %s", invocId)
+	fmt.Printf("Received HTTP request for invocation %s\n", invocID)
 
-	responseChan := httpCoordinator.SetHttpRequest(invocId)
-	// Simulate some async work (in real code, another goroutine sets the response)
-	go func() {
-		// Simulate work (e.g. wait for event, db result, etc.)
-		// In real use, another part of your app would call SetHttpResponse
-		httpCoordinator.SetHttpResponse(invocId, HttpResponse{
-			Body:       fmt.Sprintf("Hello from %s", invocId),
-			StatusCode: 200,
-		})
-	}()
-
-	resp := <-responseChan
-	if resp.Err != nil {
-		http.Error(w, resp.Err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("Sending HTTP response for invocation %s", invocId)
-	w.WriteHeader(resp.StatusCode)
-	fmt.Fprint(w, resp.Body)
+	globalCoordinator.SetHTTPRequest(invocID, r, w)
+	globalCoordinator.AwaitResponse(invocID)
 }
 
 func StartHttpServer(port int) {
-	fmt.Println("Starting HTTP server...")
-	http.HandleFunc("/", catchAllHandler)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		catchAllHandler(w, r)
+	})
+	server := &http.Server{
+		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
+		Handler: handler,
+	}
 
-	fmt.Printf("Starting server at localhost:%d\n", port)
-	if err := http.ListenAndServe(fmt.Sprintf("localhost:%d", port), nil); err != nil {
+	fmt.Printf("Starting server at http://127.0.0.1:%d\n", port)
+	if err := server.ListenAndServe(); err != nil {
 		fmt.Println("Server failed:", err)
 	}
 }
@@ -107,4 +115,30 @@ func getUnusedTCPPort() (int, error) {
 	// Extract the port number
 	addr := listener.Addr().(*net.TCPAddr)
 	return addr.Port, nil
+}
+
+type routeParamKey struct{}
+
+var RouteParamsKey = routeParamKey{}
+
+func SyncRouteParams(r *http.Request, params map[string]string) *http.Request {
+	if r == nil {
+		panic("http request is nil")
+	}
+	if params == nil {
+		panic("path params are nil")
+	}
+
+	// Replace any existing path params
+	ctx := context.WithValue(r.Context(), RouteParamsKey, params)
+	return r.WithContext(ctx)
+}
+
+func GetRouteParam(r *http.Request, key string) (string, bool) {
+	params, ok := r.Context().Value(RouteParamsKey).(map[string]string)
+	if !ok {
+		return "", false
+	}
+	val, exists := params[key]
+	return val, exists
 }

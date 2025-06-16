@@ -35,6 +35,7 @@ func RegisterHttpFunction(f interface{}, route string, authLevel AuthorizationLe
 	triggerMetadata["type"] = "httpTrigger"
 	triggerMetadata["route"] = route
 	triggerMetadata["authLevel"] = "ANONYMOUS"
+	triggerMetadata["param_name"] = "req"
 
 	return &FunctionInfo{
 		Func:            f,

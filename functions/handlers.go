@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
 	"time"
 
 	// Import the generated protobuf code for Azure Functions
@@ -102,65 +103,14 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, reqId string) *pb.St
 	}
 }
 
-// func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, reqID string) (*pb.StreamingMessage, error) {
-// 	invocationTime := time.Now().UTC()
-// 	invocationId := req.InvocationId
-// 	functionId := req.FunctionId
-// 	inputData := req.InputData[0].GetData()
-// 	docString := inputData.GetString_()
-// 	if inputData == nil || docString == "" {
-// 		return nil, fmt.Errorf("inputData is nil")
-// 	}
-
-// 	funcInfo, err := fr.getFunction(functionId)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to get function info for ID %s: %v", functionId, err)
-// 	}
-
-// 	funcInvocationLog := fmt.Sprintf("Function Name: %s, Invocation ID: %s, Function ID: %s, Time: %s",
-// 		funcInfo.Name, invocationId, functionId, invocationTime)
-// 	log.Println(funcInvocationLog)
-
-// 	docs := DeserializeCosmosDocument(docString)
-// 	fType := reflect.TypeOf(funcInfo.Func)
-
-// 	inputs := make([]reflect.Value, fType.NumIn())
-// 	for i := 0; i < fType.NumIn(); i++ {
-// 		inputs[i] = reflect.ValueOf(docs)
-// 	}
-// 	reflect.ValueOf(funcInfo.Func).Call(inputs)
-
-// 	resultData := &pb.TypedData{
-// 		Data: &pb.TypedData_String_{
-// 			String_: fmt.Sprintf("Executed (Function ID: %s)", req.FunctionId),
-// 		},
-// 	}
-
-// 	// 3. Build an InvocationResponse containing the output data
-// 	resp := &pb.StreamingMessage{
-// 		RequestId: reqID,
-// 		Content: &pb.StreamingMessage_InvocationResponse{
-// 			InvocationResponse: &pb.InvocationResponse{
-// 				InvocationId: req.InvocationId,
-// 				Result: &pb.StatusResult{
-// 					Status: pb.StatusResult_Success,
-// 				},
-// 				ReturnValue: resultData,
-// 			},
-// 		},
-// 	}
-
-// 	return resp, nil
-// }
-
 func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, reqID string) (*pb.StreamingMessage, error) {
 	invocationTime := time.Now().UTC()
 	invocationId := req.InvocationId
 	functionId := req.FunctionId
-	if true {
-		inputData := req.InputData[0].GetData()
-		mystr := inputData.GetString_()
-		return nil, fmt.Errorf("inputData is: %s, GetString() is: %s", inputData, mystr)
+	inputData := req.InputData[0].GetData()
+	docString := inputData.GetString_()
+	if inputData == nil || docString == "" {
+		return nil, fmt.Errorf("inputData is nil")
 	}
 
 	funcInfo, err := fr.getFunction(functionId)
@@ -172,13 +122,14 @@ func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, re
 		funcInfo.Name, invocationId, functionId, invocationTime)
 	log.Println(funcInvocationLog)
 
-	// fType := reflect.TypeOf(funcInfo.Func)
+	docs := DeserializeCosmosDocument(docString)
+	fType := reflect.TypeOf(funcInfo.Func)
 
-	// inputs := make([]reflect.Value, fType.NumIn())
-	// for i := 0; i < fType.NumIn(); i++ {
-	// 	inputs[i] = reflect.ValueOf(docs)
-	// }
-	// reflect.ValueOf(funcInfo.Func).Call(inputs)
+	inputs := make([]reflect.Value, fType.NumIn())
+	for i := 0; i < fType.NumIn(); i++ {
+		inputs[i] = reflect.ValueOf(docs)
+	}
+	reflect.ValueOf(funcInfo.Func).Call(inputs)
 
 	resultData := &pb.TypedData{
 		Data: &pb.TypedData_String_{
@@ -202,6 +153,103 @@ func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, re
 
 	return resp, nil
 }
+
+// func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, reqID string) (*pb.StreamingMessage, error) {
+// 	invocationTime := time.Now().UTC()
+// 	invocId := req.InvocationId
+// 	functionId := req.FunctionId
+
+// 	httpReq, respWriter, err := globalCoordinator.GetHTTPRequest(invocId)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to get HTTP request: %w", err)
+// 	}
+
+// 	funcInfo, err := fr.getFunction(functionId)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to get function info for ID %s: %v", functionId, err)
+// 	}
+
+// 	// routeParam := funcInfo.TriggerMetadata["param_name"]
+// 	// SyncRouteParams(httpReq, routeParams)
+
+// 	funcInvocationLog := fmt.Sprintf("Function Name: %s, Invocation ID: %s, Function ID: %s, Time: %s",
+// 		funcInfo.Name, invocId, functionId, invocationTime)
+// 	log.Println(funcInvocationLog)
+
+// 	fType := reflect.TypeOf(funcInfo.Func)
+// 	inputs := make([]reflect.Value, fType.NumIn())
+// 	inputs[0] = reflect.ValueOf(respWriter)
+// 	inputs[1] = reflect.ValueOf(httpReq)
+// 	log.Println("Calling function...")
+// 	go reflect.ValueOf(funcInfo.Func).Call(inputs)
+// 	log.Println("Called function")
+
+// 	globalCoordinator.NotifyResponseReady(invocId)
+// 	// for i, param := range req.InputData {
+// 	// 	fmt.Printf("Binding %d: Name=%s\n", i, param.Name)
+
+// 	// 	switch data := param.RpcData.(type) {
+// 	// 	case *pb.ParameterBinding_Data:
+// 	// 		fmt.Printf("  Data: %+v\n", data.Data)
+// 	// 	case *pb.ParameterBinding_RpcSharedMemory:
+// 	// 		fmt.Printf("  SharedMemory: %+v\n", data.RpcSharedMemory)
+// 	// 	default:
+// 	// 		fmt.Println("  Unknown RpcData type")
+// 	// 	}
+// 	// }
+// 	// return nil, fmt.Errorf("inputData is: %s, GetString() is: %s", inputData, mystr)
+
+// 	resultData := &pb.TypedData{
+// 		Data: &pb.TypedData_String_{
+// 			String_: fmt.Sprintf("Executed (Function ID: %s)", req.FunctionId),
+// 		},
+// 	}
+
+// 	resp := &pb.StreamingMessage{
+// 		RequestId: reqID,
+// 		Content: &pb.StreamingMessage_InvocationResponse{
+// 			InvocationResponse: &pb.InvocationResponse{
+// 				InvocationId: req.InvocationId,
+// 				Result: &pb.StatusResult{
+// 					Status: pb.StatusResult_Success,
+// 				},
+// 				ReturnValue: resultData,
+// 			},
+// 		},
+// 	}
+
+// 	return resp, nil
+// }
+
+// func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, reqID string) (*pb.StreamingMessage, error) {
+// 	fi, err := fr.getFunction(req.FunctionId)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	return nil, fmt.Errorf("input Data: %s, trigger metadata: %s", req.GetInputData()[0], req.GetTriggerMetadata()["direction"])
+
+// 	// resultData := &pb.TypedData{
+// 	// 	Data: &pb.TypedData_String_{
+// 	// 		String_: fmt.Sprintf("Executed (Function ID: %s)", req.FunctionId),
+// 	// 	},
+// 	// }
+
+// 	// resp := &pb.StreamingMessage{
+// 	// 	RequestId: reqID,
+// 	// 	Content: &pb.StreamingMessage_InvocationResponse{
+// 	// 		InvocationResponse: &pb.InvocationResponse{
+// 	// 			InvocationId: req.InvocationId,
+// 	// 			Result: &pb.StatusResult{
+// 	// 				Status: pb.StatusResult_Success,
+// 	// 			},
+// 	// 			ReturnValue: resultData,
+// 	// 		},
+// 	// 	},
+// 	// }
+
+// 	// return resp, nil
+// }
 
 // handleWorkerStatusRequest handles periodic status checks from the host.
 func handleWorkerStatusRequest(
