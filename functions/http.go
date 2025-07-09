@@ -6,6 +6,11 @@ type HttpTrigger struct {
 	Route string
 }
 
+type HTTPBinding struct {
+	AuthLevel string   `json:"authLevel"`
+	Methods   []string `json:"methods"`
+}
+
 type HttpRequest struct {
 	Headers     map[string]string
 	Method      string
@@ -20,9 +25,9 @@ type HttpRequest struct {
 // 	Headers    map[string]string
 // }
 
-func (c *HttpTrigger) GetTriggerType() TriggerType { return Http }
+func (c *HttpTrigger) GetTriggerType() BindingType { return HttpFunction }
 
-func RegisterHttpFunction(f interface{}, route string, authLevel AuthorizationLevel) *FunctionInfo {
+func RegisterHttpFunction(f interface{}, route string) *FunctionInfo {
 	inputTypes := make(map[string]ParamTypeInfo)
 	inputTypes[route] = ParamTypeInfo{
 		BindingName: "httpTrigger",

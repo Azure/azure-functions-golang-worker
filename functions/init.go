@@ -15,19 +15,25 @@ type WorkerStartupConfig struct {
 	FunctionsGrpcMaxMessageLength int
 }
 
-func FunctionApp(authLevel AuthorizationLevel) *Dispatcher {
+func FunctionApp() *Dispatcher {
 	args, err := getWorkerStartupConfig()
 	if err != nil {
 		log.Fatalf("failed to parse command line arguments: %v", err)
 	}
 
-	disp := createDispatcher(*args, authLevel)
-	err = connectToHost(args.FunctionsUri, args.FunctionsGrpcMaxMessageLength, args.FunctionsWorkerId, disp)
+	disp := createDispatcher(*args)
+
+	return disp
+}
+
+func (disp *Dispatcher) Start() {
+	client, err := connectToHost(disp.WorkerStartupConfig.FunctionsUri, disp.WorkerStartupConfig.FunctionsGrpcMaxMessageLength,
+		disp.WorkerStartupConfig.FunctionsWorkerId)
 	if err != nil {
 		log.Fatalf("error establishing connection to host's gRPC server: %v", err)
 	}
 
-	return disp
+	handleBidiStream(client, disp)
 }
 
 func getWorkerStartupConfig() (*WorkerStartupConfig, error) {

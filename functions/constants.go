@@ -1,10 +1,9 @@
 package functions
 
 const (
-	GoScriptFileName              = "GO_SCRIPT_FILE_NAME"
-	GoScriptFileNameDefault       = "main.go"
-	DefaultHostPort               = ":8080"
 	DefaultFunctionsGrpcMaxMsgLen = 4 * 1024 * 1024
+	GoScriptFileNameDefault       = "main.go"
+	GoWorkerLanguage              = "golang"
 	GoWorkerVersion               = "v0.0.1"
 	MsInvocationIdHeaderName      = "x-ms-invocation-id"
 )

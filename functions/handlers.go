@@ -1,13 +1,12 @@
 package functions
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"reflect"
+	"sync"
 	"time"
 
-	// Import the generated protobuf code for Azure Functions
 	pb "github.com/azure/azure-functions-golang-worker/proto"
 )
 
@@ -36,65 +35,97 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, reqID string) *pb.Stream
 	}
 }
 
-func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, fr *FunctionRegistry, reqID string) (*pb.StreamingMessage, error) {
-	// functionAppDir := req.GetFunctionAppDirectory()
-	// scriptFileName := GetAppSetting(GoScriptFileName, GoScriptFileNameDefault)
-	// functionPath := filepath.Join(functionAppDir, scriptFileName)
-	// log.Println("Recevied FunctionMetadataRequest with functionPath:", functionPath)
-	funcId := "0f7b4505-98b8-4bd2-b71a-3ec427bd4c58"
-	fi, err := fr.getFunction(funcId)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get function info for ID %s: %v", funcId, err)
-	}
+func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, registeredFuncs *sync.Map) *pb.StreamingMessage {
+	var metadataResults []*pb.RpcFunctionMetadata
+	registeredFuncs.Range(func(_, val interface{}) bool {
+		rf := val.(RegisteredFunction)
+		rpcFuncMetadata := &pb.RpcFunctionMetadata{
+			Name:         rf.FuncName,
+			FunctionId:   rf.FuncId,
+			Language:     GoWorkerLanguage,
+			ScriptFile:   GoScriptFileNameDefault, // Not used, but Host requires it
+			RetryOptions: BuildRpcRetry(rf.Retry),
+			RawBindings:  BuildRpcRawBindings(rf.RawBindings),
+			Bindings:     GetBindingInfoList(rf.RawBindings),
+		}
+		metadataResults = append(metadataResults, rpcFuncMetadata)
+		return true
+	})
 
-	// Directory:  fi.Directory,
-	// ScriptFile: "main.go",
-	// EntryPoint: fi.Name,
-	// Name:       fi.Name,
-	// RawBindings:   fi.,
-
-	jsonBytes, _ := json.Marshal(fi.TriggerMetadata)
 	resp := &pb.StreamingMessage{
-		RequestId: reqID,
 		Content: &pb.StreamingMessage_FunctionMetadataResponse{
 			FunctionMetadataResponse: &pb.FunctionMetadataResponse{
-				FunctionMetadataResults: []*pb.RpcFunctionMetadata{
-					{
-						Name:       "HttpTrigger",
-						Directory:  "Dir",
-						ScriptFile: "main.go",
-						EntryPoint: "HttpTrigger",
-						Bindings: map[string]*pb.BindingInfo{
-							fi.TriggerMetadata["name"]: {
-								Type: fi.TriggerMetadata["type"],
-							},
-						},
-						Language: "golang",
-						RawBindings: []string{
-							string(jsonBytes),
-						},
-						FunctionId: "0f7b4505-98b8-4bd2-b71a-3ec427bd4c58",
-						Properties: map[string]string{
-							"worker_indexed": "True",
-						},
-					},
-				},
+				FunctionMetadataResults: metadataResults,
 				Result: &pb.StatusResult{
 					Status: pb.StatusResult_Success,
 				},
 			},
 		},
 	}
-
-	return resp, nil
+	return resp
 }
 
-func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, reqId string) *pb.StreamingMessage {
+func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, reqId string) *pb.StreamingMessage {
+	funcId := req.GetFunctionId()
+	metadata := req.GetMetadata()
+	funcName := metadata.GetName()
+	bindings := metadata.GetBindings()
+
+	if _, exists := disp.LoadedFunctions.Load(funcId); exists {
+		panic(fmt.Sprintf("Function with ID %s is already loaded", funcId))
+	}
+
+	inputBindings := make(map[string]GrpcBindingMetadata)
+	outputBindings := make(map[string]GrpcBindingMetadata)
+	for name, bind := range bindings {
+		if bind.GetDirection() == pb.BindingInfo_in {
+			inputBindings[name] = GrpcBindingMetadata{
+				Name:      name,
+				Type:      bind.GetType(),
+				Direction: In,
+			}
+		} else {
+			outputBindings[name] = GrpcBindingMetadata{
+				Name:      name,
+				Type:      bind.GetType(),
+				Direction: Out,
+			}
+		}
+	}
+
+	funcDef, _ := disp.getFunction(funcId)
+	funcInspect := reflect.TypeOf(funcDef)
+	if funcInspect.Kind() != reflect.Func {
+		panic(fmt.Sprintf("Function with ID %s is not a valid function", funcId))
+	}
+
+	var params = make([]Parameter, funcInspect.NumIn())
+	for i := range funcInspect.NumIn() {
+		paramType := funcInspect.In(i)
+		if paramType == reflect.TypeOf(Context{}) {
+		}
+		// Check for functions type
+		params[i] = Parameter{
+			Name:     fmt.Sprintf("param%d", i),
+			DataType: paramType,
+		}
+	}
+
+	disp.LoadedFunctions.Store(funcId, FunctionDefinition{
+		FuncId:         funcId,
+		FuncName:       funcName,
+		InputBindings:  inputBindings,
+		OutputBindings: outputBindings,
+	})
+
+	fmt.Printf("Input Bindings: %+v\n", inputBindings)
+	fmt.Printf("Output Bindings: %+v\n", outputBindings)
+
 	return &pb.StreamingMessage{
 		RequestId: reqId,
 		Content: &pb.StreamingMessage_FunctionLoadResponse{
 			FunctionLoadResponse: &pb.FunctionLoadResponse{
-				FunctionId: req.FunctionId,
+				FunctionId: funcId,
 				Result: &pb.StatusResult{
 					Status: pb.StatusResult_Success,
 				},
@@ -103,33 +134,41 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, reqId string) *pb.St
 	}
 }
 
-func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, reqID string) (*pb.StreamingMessage, error) {
-	invocationTime := time.Now().UTC()
-	invocationId := req.InvocationId
-	functionId := req.FunctionId
-	inputData := req.InputData[0].GetData()
-	docString := inputData.GetString_()
-	if inputData == nil || docString == "" {
-		return nil, fmt.Errorf("inputData is nil")
+func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reqID string) (*pb.StreamingMessage, error) {
+	invocTime := time.Now().UTC()
+	invocId := req.GetInvocationId()
+	funcId := req.GetFunctionId()
+	// rf, err := disp.getFunction(funcId)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to get function with ID %s: %v", funcId, err)
+	// }
+
+	funcVal, found := disp.LoadedFunctions.Load(funcId)
+	if !found {
+		return nil, fmt.Errorf("function with ID %s not found", funcId)
 	}
 
-	funcInfo, err := fr.getFunction(functionId)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get function info for ID %s: %v", functionId, err)
+	res, casted := funcVal.(*FunctionDefinition)
+	if !casted {
+		return nil, fmt.Errorf("failed to cast RegisteredFunction for ID %s", funcId)
 	}
 
-	funcInvocationLog := fmt.Sprintf("Function Name: %s, Invocation ID: %s, Function ID: %s, Time: %s",
-		funcInfo.Name, invocationId, functionId, invocationTime)
+	funcInvocationLog := fmt.Sprintf("Invocation request received. Function Name: %s, Invocation ID: %s, Function ID: %s, Time: %s",
+		res.FuncName, invocId, funcId, invocTime)
 	log.Println(funcInvocationLog)
 
-	docs := DeserializeCosmosDocument(docString)
-	fType := reflect.TypeOf(funcInfo.Func)
+	// Consider caching input here
 
-	inputs := make([]reflect.Value, fType.NumIn())
-	for i := 0; i < fType.NumIn(); i++ {
-		inputs[i] = reflect.ValueOf(docs)
-	}
-	reflect.ValueOf(funcInfo.Func).Call(inputs)
+	// Get bindings
+
+	// docs := DeserializeCosmosDocument("{}") // Replace with actual deserialization logic
+	// fType := reflect.TypeOf(rf.Func)
+
+	// inputs := make([]reflect.Value, fType.NumIn())
+	// for i := 0; i < fType.NumIn(); i++ {
+	// 	inputs[i] = reflect.ValueOf(docs)
+	// }
+	// reflect.ValueOf(rf.Func).Call(inputs)
 
 	resultData := &pb.TypedData{
 		Data: &pb.TypedData_String_{
@@ -137,7 +176,6 @@ func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, re
 		},
 	}
 
-	// 3. Build an InvocationResponse containing the output data
 	resp := &pb.StreamingMessage{
 		RequestId: reqID,
 		Content: &pb.StreamingMessage_InvocationResponse{
@@ -219,36 +257,6 @@ func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, re
 // 	}
 
 // 	return resp, nil
-// }
-
-// func handleInvocationRequest(req *pb.InvocationRequest, fr *FunctionRegistry, reqID string) (*pb.StreamingMessage, error) {
-// 	fi, err := fr.getFunction(req.FunctionId)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	return nil, fmt.Errorf("input Data: %s, trigger metadata: %s", req.GetInputData()[0], req.GetTriggerMetadata()["direction"])
-
-// 	// resultData := &pb.TypedData{
-// 	// 	Data: &pb.TypedData_String_{
-// 	// 		String_: fmt.Sprintf("Executed (Function ID: %s)", req.FunctionId),
-// 	// 	},
-// 	// }
-
-// 	// resp := &pb.StreamingMessage{
-// 	// 	RequestId: reqID,
-// 	// 	Content: &pb.StreamingMessage_InvocationResponse{
-// 	// 		InvocationResponse: &pb.InvocationResponse{
-// 	// 			InvocationId: req.InvocationId,
-// 	// 			Result: &pb.StatusResult{
-// 	// 				Status: pb.StatusResult_Success,
-// 	// 			},
-// 	// 			ReturnValue: resultData,
-// 	// 		},
-// 	// 	},
-// 	// }
-
-// 	// return resp, nil
 // }
 
 // handleWorkerStatusRequest handles periodic status checks from the host.

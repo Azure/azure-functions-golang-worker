@@ -11,20 +11,19 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func connectToHost(hostAddress string, maxMsgSize int, workerId string, disp *Dispatcher) error {
+func connectToHost(hostAddress string, maxMsgSize int, workerId string) (
+	grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error) {
 	client, err := getBidiStreamClient(hostAddress, maxMsgSize)
 	if err != nil {
-		return fmt.Errorf("failed to connect to gRPC stream: %v", err)
+		return nil, fmt.Errorf("failed to connect to gRPC stream: %v", err)
 	}
 
 	err = sendStartStreamMessage(client, workerId)
 	if err != nil {
-		return fmt.Errorf("failed to send start stream message: %v", err)
+		return nil, fmt.Errorf("failed to send start stream message: %v", err)
 	}
 
-	go handleBidiStream(client, disp)
-
-	return nil
+	return client, nil
 }
 
 func getBidiStreamClient(address string, maxMsgSize int) (grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error) {
@@ -45,7 +44,6 @@ func getBidiStreamClient(address string, maxMsgSize int) (grpc.BidiStreamingClie
 // If successful, host is ready to start sending messages to the worker (starting with InitWorkerRequest)
 func sendStartStreamMessage(client grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], workerId string) error {
 	startStreamMsg := &pb.StreamingMessage{
-		RequestId: "abc123",
 		Content: &pb.StreamingMessage_StartStream{
 			StartStream: &pb.StartStream{
 				WorkerId: workerId,

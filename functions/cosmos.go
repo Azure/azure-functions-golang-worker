@@ -2,7 +2,6 @@ package functions
 
 import (
 	"encoding/json"
-	"reflect"
 )
 
 type CosmosDocument struct {
@@ -16,40 +15,31 @@ type CosmosDocument struct {
 	Lsn         int    `json:"_lsn"`
 }
 
-type CosmosDBTrigger struct {
+type CosmosDB struct {
 	ArgName       string
-	ContainerName string
 	DatabaseName  string
+	ContainerName string
 	Connection    string
 }
 
-func (c *CosmosDBTrigger) GetTriggerType() TriggerType { return CosmosDB }
+type CosmosDBBinding struct {
+	DatabaseName  string `json:"databaseName"`
+	ContainerName string `json:"containerName"`
+	Connection    string `json:"connection"`
+}
 
-func RegisterCosmosDBFunction(f interface{}, argName string, containerName string, databaseName string, connection string) *FunctionInfo {
-	inputTypes := make(map[string]ParamTypeInfo)
-	inputTypes[argName] = ParamTypeInfo{
-		BindingName: "cosmosDBTrigger",
-		ParamType:   reflect.TypeOf([]CosmosDocument{}),
-	}
+func (c *CosmosDB) GetBindingType() BindingType { return CosmosDBFunction }
 
-	triggerMetadata := make(map[string]string)
-	triggerMetadata["direction"] = "IN"
-	triggerMetadata["type"] = "cosmosDBTrigger"
-	triggerMetadata["name"] = argName
-	triggerMetadata["connection"] = connection
-	triggerMetadata["databaseName"] = databaseName
-	triggerMetadata["containerName"] = containerName
-
-	return &FunctionInfo{
-		Func:            f,
-		Name:            "CosmosDBTrigger",
-		Directory:       "Dir",
-		FunctionID:      "0f7b4505-98b8-4bd2-b71a-3ec427bd4c58",
-		HasReturn:       false,
-		IsHTTPFunc:      false,
-		InputTypes:      inputTypes,
-		OutputTypes:     make(map[string]ParamTypeInfo),
-		TriggerMetadata: triggerMetadata,
+func (c *CosmosDB) ToBinding() Binding {
+	return Binding{
+		Name:      c.ArgName,
+		Type:      string(c.GetBindingType()),
+		Direction: "in",
+		CosmosDBBinding: &CosmosDBBinding{
+			DatabaseName:  c.DatabaseName,
+			ContainerName: c.ContainerName,
+			Connection:    c.Connection,
+		},
 	}
 }
 

@@ -7,7 +7,16 @@ import (
 	"github.com/azure/azure-functions-golang-worker/functions"
 )
 
+var retryCounter int32 = 0
+
+const failUntil = 2
+
 func CosmosDBTrigger(docs []functions.CosmosDocument) {
+	if retryCounter < failUntil {
+		retryCounter++
+		log.Printf("Retrying CosmosDBTrigger, attempt %d/%d\n", retryCounter, failUntil)
+		panic("Simulated failure for CosmosDBTrigger")
+	}
 	firstDoc := docs[0]
 	log.Printf("Document ID: %s\n", firstDoc.ID)
 	log.Printf("Document Data: %s\n", firstDoc.Data)
@@ -41,11 +50,18 @@ func CosmosDBTrigger(docs []functions.CosmosDocument) {
 // 	}
 // }
 
-var cosmos = &functions.CosmosDBTrigger{
+var cosmos = &functions.CosmosDB{
 	ArgName:       "docs",
-	ContainerName: "items",
 	DatabaseName:  "test",
+	ContainerName: "items",
 	Connection:    "pythonworker37cdb_DOCUMENTDB",
+}
+
+var delayInterval = 3 * time.Second
+var retry = &functions.RetryOptions{
+	MaxRetryCount: 5,
+	DelayInterval: &delayInterval,
+	Strategy:      functions.FixedDelay,
 }
 
 // var httpStruct = &functions.HttpTrigger{
@@ -54,14 +70,17 @@ var cosmos = &functions.CosmosDBTrigger{
 
 func main() {
 	// Create the app/handler
-	app := functions.FunctionApp(functions.Anonymous)
+	app := functions.FunctionApp()
+
+	// Register the functions that should be used
+	app.
+		RegisterFunction(CosmosDBTrigger, cosmos).
+		WithRetry(retry)
+
+	// Start the gRPC server
+	app.Start()
 
 	// Register Functions - customers will do this
 	// app.RegisterFunction(HttpTrigger, httpStruct)
-	app.RegisterFunction(CosmosDBTrigger, cosmos)
-
-	// Start gRPC server
-	for {
-		time.Sleep((time.Second * 5))
-	}
+	// app.RegisterFunction(CosmosDBTrigger, cosmos)
 }

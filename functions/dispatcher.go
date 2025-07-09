@@ -9,17 +9,15 @@ import (
 
 type Dispatcher struct {
 	WorkerStartupConfig *WorkerStartupConfig
-	FunctionRegistry    *FunctionRegistry
-	AuthLevel           *AuthorizationLevel
+	RegisteredFunctions *sync.Map
+	LoadedFunctions     *sync.Map
 }
 
-func createDispatcher(workerStartupConfig WorkerStartupConfig, authLevel AuthorizationLevel) *Dispatcher {
+func createDispatcher(workerStartupConfig WorkerStartupConfig) *Dispatcher {
 	return &Dispatcher{
 		WorkerStartupConfig: &workerStartupConfig,
-		FunctionRegistry: &FunctionRegistry{
-			functions: sync.Map{},
-		},
-		AuthLevel: &authLevel,
+		RegisteredFunctions: &sync.Map{},
+		LoadedFunctions:     &sync.Map{},
 	}
 }
 
@@ -30,13 +28,13 @@ func (disp *Dispatcher) processRequestMessage(reqMsg *pb.StreamingMessage) (*pb.
 		return handleWorkerInitRequest(content.WorkerInitRequest, reqMsg.RequestId), nil
 	case *pb.StreamingMessage_FunctionsMetadataRequest:
 		log.Println("Handling FunctionsMetadataRequest")
-		return handleFunctionsMetadataRequest(content.FunctionsMetadataRequest, disp.FunctionRegistry, reqMsg.RequestId)
+		return handleFunctionsMetadataRequest(content.FunctionsMetadataRequest, disp.RegisteredFunctions), nil
 	case *pb.StreamingMessage_InvocationRequest:
 		log.Println("Handling InvocationRequest")
-		return handleInvocationRequest(content.InvocationRequest, disp.FunctionRegistry, reqMsg.RequestId)
+		return handleInvocationRequest(content.InvocationRequest, disp, reqMsg.RequestId)
 	case *pb.StreamingMessage_FunctionLoadRequest:
 		log.Println("Handling FunctionLoadRequest")
-		return handleFunctionLoadRequest(content.FunctionLoadRequest, reqMsg.RequestId), nil
+		return handleFunctionLoadRequest(content.FunctionLoadRequest, disp, reqMsg.RequestId), nil
 	case *pb.StreamingMessage_WorkerStatusRequest:
 		log.Println("Handling WorkerStatusRequest")
 		return handleWorkerStatusRequest(reqMsg.RequestId, content.WorkerStatusRequest)
