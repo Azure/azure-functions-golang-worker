@@ -1,17 +1,19 @@
 package sdk
 
-type RetryContext struct {
-	RetryCount    int
-	MaxRetryCount int
-	RpcException  error
+import "time"
+
+// RetryOptions defines the retry policy for a function.
+type RetryOptions struct {
+	MaxRetryCount   int
+	DelayInterval   *time.Duration
+	MinimumInterval *time.Duration
+	MaximumInterval *time.Duration
+	Strategy        RetryStrategy
 }
 
-type RetryPolicy string
+type RetryStrategy int
 
 const (
-	MaxRetryCount   RetryPolicy = "max_retry_count"
-	Strategy        RetryPolicy = "strategy"
-	DelayInterval   RetryPolicy = "delay_interval"
-	MinimumInterval RetryPolicy = "minimum_interval"
-	MaximumInterval RetryPolicy = "maximum_interval"
+	ExponentialBackoff RetryStrategy = iota
+	FixedDelay
 )

@@ -1,10 +1,10 @@
 {
-    "description":{
-        "language":"golang",
-        "defaultExecutablePath":"C:\\Users\\evanroman\\source\\repos\\Golang\\azure-functions-golang-worker\\worker.exe",
+    "description": {
+        "language": "golang",
+        "defaultExecutablePath": "worker.exe",
         "workerIndexing": "true"
     },
-     "processOptions": {
+    "processOptions": {
         "initializationTimeout": "00:02:00",
         "environmentReloadTimeout": "00:02:00"
     }

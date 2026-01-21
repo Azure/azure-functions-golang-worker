@@ -1,43 +1,31 @@
 package sdk
 
+import (
+	"context"
+	"net/http"
+)
+
+// Context is the runtime context for the function execution.
 type Context struct {
-	funcName     string
-	funcDir      string
-	invocationID string
-	traceContext TraceContext
-	retryContext RetryContext
+	context.Context
+	FunctionID   string
+	InvocationID string
+	Log          Logger
 }
 
-func NewContext(
-	funcName, funcDir, invocationID string,
-	traceContext TraceContext,
-	retryContext RetryContext,
-) *Context {
-	return &Context{
-		funcName:     funcName,
-		funcDir:      funcDir,
-		invocationID: invocationID,
-		traceContext: traceContext,
-		retryContext: retryContext,
-	}
+type Logger interface {
+	Log(p []byte) (n int, err error)
 }
 
-func (c *Context) InvocationID() string {
-	return c.invocationID
+// HttpRequest mirrors the standard http.Request but for Azure Functions context.
+// In a full implementation, this might wrap the standard request or be the standard request.
+type HttpRequest struct {
+	*http.Request
 }
 
-func (c *Context) FunctionName() string {
-	return c.funcName
-}
-
-func (c *Context) FunctionDirectory() string {
-	return c.funcDir
-}
-
-func (c *Context) TraceContext() TraceContext {
-	return c.traceContext
-}
-
-func (c *Context) RetryContext() RetryContext {
-	return c.retryContext
+// HttpResponse is a placeholder for return values.
+type HttpResponse struct {
+	Body       []byte
+	StatusCode int
+	Header     http.Header
 }
