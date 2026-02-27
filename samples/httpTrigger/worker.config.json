@@ -3,7 +3,7 @@
         "language": "golang",
         "supportedOperatingSystems":["LINUX", "OSX", "WINDOWS"],
         "supportedArchitectures":["X64", "X86", "Arm64"],
-        "defaultExecutablePath": "G:\\Repos\\go\\app.exe",
+        "defaultExecutablePath": "/home/site/wwwroot/app",
         "workerIndexing": "true"
 
     },

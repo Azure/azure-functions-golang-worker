@@ -191,6 +191,11 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, re
 			continue
 		}
 
+		// Serialize binding to JSON to pass as configuration
+		rawBindingBytes, _ := json.Marshal(b)
+		var config map[string]interface{}
+		_ = json.Unmarshal(rawBindingBytes, &config)
+
 		// Try to match with an argument
 		if argIndex < ft.NumIn() {
 			// Check if this binding CAN be this argument
@@ -236,6 +241,7 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, re
 				Position:   argIndex,
 				Direction:  b.Direction,
 				IsArgument: true,
+				Config:     config,
 			}
 			argIndex++
 		} else {
@@ -247,6 +253,7 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, re
 					Direction:  b.Direction,
 					IsArgument: false, // It's a return value
 					Position:   retIndex,
+					Config:     config,
 				}
 				retIndex++
 			}

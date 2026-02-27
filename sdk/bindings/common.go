@@ -29,6 +29,7 @@ type Binding struct {
 	*CosmosDBBinding
 	*HTTPBinding
 	*BlobBinding
+	*EventGridBinding
 }
 
 func (b Binding) MarshalJSON() ([]byte, error) {
@@ -44,6 +45,8 @@ func (b Binding) MarshalJSON() ([]byte, error) {
 		sub = b.HTTPBinding
 	} else if b.BlobBinding != nil {
 		sub = b.BlobBinding
+	} else if b.EventGridBinding != nil {
+		sub = b.EventGridBinding
 	}
 
 	if sub != nil {

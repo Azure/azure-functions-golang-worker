@@ -401,3 +401,10 @@ FodyWeavers.xsd
 
 # Executables
 *.exe
+
+# Binaries
+bin
+
+
+.idea
+.claude

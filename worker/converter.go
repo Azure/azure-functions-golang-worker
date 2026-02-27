@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -8,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/azure/azure-functions-golang-worker/sdk"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 )
 
@@ -17,9 +19,10 @@ type funcField struct {
 	Name       string
 	Type       reflect.Type
 	Position   int
-	Direction  string // "in" or "out"
-	IsArgument bool   // true if mapped to function argument, false if return value
-	IsWriter   bool   // true if this argument is an http.ResponseWriter
+	Direction  string                 // "in" or "out"
+	IsArgument bool                   // true if mapped to function argument, false if return value
+	IsWriter   bool                   // true if this argument is an http.ResponseWriter
+	Config     map[string]interface{} // The raw JSON configuration for this binding (e.g. path, connection)
 }
 
 // FromProto converts protobuf parameters to golang values
@@ -29,7 +32,7 @@ func FromProto(req *pb.InvocationRequest, fields map[string]*funcField, args []r
 		param, ok := fields[input.Name]
 		if ok && param.Direction == "in" && param.IsArgument {
 			if param.Position < len(args) {
-				r, err := convertToTypeValue(param.Type, input.GetData(), req.GetTriggerMetadata())
+				r, err := convertToTypeValue(param.Type, input.GetData(), req.GetTriggerMetadata(), param.Config)
 				if err != nil {
 					return err
 				}
@@ -154,7 +157,12 @@ func ToProto(args []reflect.Value, results []reflect.Value, fields map[string]*f
 }
 
 // convertToTypeValue returns a native value from protobuf
-func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.TypedData) (reflect.Value, error) {
+func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.TypedData, config map[string]interface{}) (reflect.Value, error) {
+	// Check for Custom Converter via SDK Registry
+	if fn, found := sdk.GetConverter(pt); found {
+		return fn(context.Background(), config, data, tm)
+	}
+
 	var t reflect.Type
 	if pt.Kind() == reflect.Ptr {
 		t = pt.Elem()
@@ -165,8 +173,23 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 	pv := reflect.New(t)
 	v := pv.Elem()
 
-	// If struct, try loading from TriggerMetadata or Data
+	// If struct, try JSON decoding first, then fall back to TriggerMetadata field matching
 	if t.Kind() == reflect.Struct {
+		// Try direct JSON unmarshal from input data first
+		if jsonStr := data.GetJson(); jsonStr != "" {
+			target := reflect.New(t).Interface()
+			if err := json.Unmarshal([]byte(jsonStr), target); err == nil {
+				val := reflect.ValueOf(target).Elem()
+				if pt.Kind() == reflect.Ptr {
+					ptr := reflect.New(t)
+					ptr.Elem().Set(val)
+					return ptr, nil
+				}
+				return val, nil
+			}
+		}
+
+		// Fall back to field-by-field matching from TriggerMetadata
 		fieldsDecoded := 0
 		for i := 0; i < v.NumField(); i++ {
 			field := t.Field(i)
@@ -279,6 +302,13 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 		}
 		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
 			return reflect.ValueOf([]byte(val)), nil
+		}
+		// Try JSON unmarshal for structs when data arrives as string
+		if t.Kind() == reflect.Struct {
+			v := reflect.New(t).Interface()
+			if err := json.Unmarshal([]byte(val), v); err == nil {
+				return reflect.ValueOf(v).Elem(), nil
+			}
 		}
 	}
 

@@ -202,6 +202,37 @@ func (b *CosmosFunctionBuilder) updateBinding() {
 	}
 }
 
+// EventGridFunctionBuilder is a builder for creating EventGrid triggered functions.
+type EventGridFunctionBuilder struct {
+	trigger *bindings.EventGridTrigger
+	rf      *RegisteredFunction
+}
+
+// EventGrid creates a new EventGrid triggered function.
+func (app *App) EventGrid(name string, f interface{}) *EventGridFunctionBuilder {
+	trigger := &bindings.EventGridTrigger{
+		Name: "event",
+	}
+
+	rf := app.RegisterFunction(f, trigger)
+
+	return &EventGridFunctionBuilder{
+		trigger: trigger,
+		rf:      rf,
+	}
+}
+
+// EventGridOutput adds an EventGrid output binding.
+func (b *EventGridFunctionBuilder) EventGridOutput(name, topicEndpointUri, topicKeySetting string) *EventGridFunctionBuilder {
+	output := &bindings.EventGridOutput{
+		Name:             name,
+		TopicEndpointUri: topicEndpointUri,
+		TopicKeySetting:  topicKeySetting,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
 // RegisteredFunction holds metadata about a registered function.
 type RegisteredFunction struct {
 	Func        interface{}
