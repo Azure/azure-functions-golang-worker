@@ -5,7 +5,10 @@ An Azure Function that streams a server-sent events (SSE) response over HTTP.
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)
-- [Azure Functions Core Tools](https://github.com/Azure/azure-functions-core-tools) with Go worker support
+- Custom [Azure Functions Core Tools](https://www.npmjs.com/package/@gaaguiar/azure-functions-core-tools) with Go worker support:
+  ```bash
+  npm i -g @gaaguiar/azure-functions-core-tools
+  ```
 
 ## Setup
 

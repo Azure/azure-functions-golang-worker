@@ -5,7 +5,10 @@ An Azure Function with an HTTP trigger that responds to GET and POST requests.
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)
-- [Azure Functions Core Tools](https://github.com/Azure/azure-functions-core-tools) with Go worker support
+- Custom [Azure Functions Core Tools](https://www.npmjs.com/package/@gaaguiar/azure-functions-core-tools) with Go worker support:
+  ```bash
+  npm i -g @gaaguiar/azure-functions-core-tools
+  ```
 
 ## Setup
 
