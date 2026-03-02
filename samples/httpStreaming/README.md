@@ -15,8 +15,7 @@ An Azure Function that streams a server-sent events (SSE) response over HTTP.
 ```bash
 cd samples/httpStreaming
 go mod init myapp
-go mod edit -require github.com/azure/azure-functions-golang-worker@v0.0.0
-go mod edit -replace github.com/azure/azure-functions-golang-worker=../..
+go get github.com/azure/azure-functions-golang-worker
 go mod tidy
 ```
 

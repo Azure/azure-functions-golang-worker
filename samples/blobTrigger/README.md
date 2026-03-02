@@ -16,8 +16,7 @@ An Azure Function that triggers when a blob is created or updated in Azure Stora
 ```bash
 cd samples/blobTrigger
 go mod init myapp
-go mod edit -require github.com/azure/azure-functions-golang-worker@v0.0.0
-go mod edit -replace github.com/azure/azure-functions-golang-worker=../..
+go get github.com/azure/azure-functions-golang-worker
 go mod tidy
 ```
 

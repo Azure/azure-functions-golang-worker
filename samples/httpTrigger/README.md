@@ -15,8 +15,7 @@ An Azure Function with an HTTP trigger that responds to GET and POST requests.
 ```bash
 cd samples/httpTrigger
 go mod init myapp
-go mod edit -require github.com/azure/azure-functions-golang-worker@v0.0.0
-go mod edit -replace github.com/azure/azure-functions-golang-worker=../..
+go get github.com/azure/azure-functions-golang-worker
 go mod tidy
 ```
 
