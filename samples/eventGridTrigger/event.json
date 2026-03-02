@@ -1,0 +1,23 @@
+[{
+  "id": "test-id-1",
+  "topic": "/subscriptions/xxx/resourceGroups/xxx/providers/Microsoft.Storage/storageAccounts/xxx",
+  "subject": "/blobServices/default/containers/test/blobs/myfile.txt",
+  "eventType": "Microsoft.Storage.BlobCreated",
+  "eventTime": "2026-02-18T12:00:00.0000000Z",
+  "dataVersion": "1",
+  "metadataVersion": "1",
+  "data": {
+    "api": "PutBlob",
+    "clientRequestId": "test-client-id",
+    "requestId": "test-request-id",
+    "eTag": "0x8D8C05A65CC0180",
+    "contentType": "text/plain",
+    "contentLength": 512,
+    "blobType": "BlockBlob",
+    "url": "http://127.0.0.1:10000/devstoreaccount1/test/myfile.txt",
+    "sequencer": "00000000000004420000000000028963",
+    "storageDiagnostics": {
+      "batchId": "test-batch-id"
+    }
+  }
+}]
