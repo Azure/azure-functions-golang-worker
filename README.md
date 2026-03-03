@@ -74,6 +74,7 @@ Run the application locally using the Core Tools:
 ```bash
 func start
 ```
+*Note: `func start` will automatically compile and build your Go application before starting the local Azure Functions host.*
 
 ### Examples & Samples
 
