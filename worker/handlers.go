@@ -33,8 +33,8 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string) *pb.St
 	}
 }
 
-func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.App) *pb.StreamingMessage {
-	log.Printf("Received FunctionsMetadataRequest")
+func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.App, requestId string) *pb.StreamingMessage {
+	log.Printf("Received FunctionsMetadataRequest: RequestId=%s", requestId)
 	var functions []*pb.RpcFunctionMetadata
 	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
 		rf := value.(*sdk.RegisteredFunction)
@@ -108,7 +108,7 @@ func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.A
 	})
 
 	return &pb.StreamingMessage{
-		RequestId: "",
+		RequestId: requestId,
 		Content: &pb.StreamingMessage_FunctionMetadataResponse{
 			FunctionMetadataResponse: &pb.FunctionMetadataResponse{
 				FunctionMetadataResults: functions,

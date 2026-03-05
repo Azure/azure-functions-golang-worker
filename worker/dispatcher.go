@@ -23,28 +23,31 @@ func NewDispatcher(workerStartupConfig *WorkerStartupConfig, app *sdk.App) *Disp
 }
 
 func (disp *Dispatcher) processRequestMessage(reqMsg *pb.StreamingMessage) (*pb.StreamingMessage, error) {
+	requestId := disp.WorkerStartupConfig.FunctionsRequestId
+
 	switch content := reqMsg.GetContent().(type) {
 	case *pb.StreamingMessage_WorkerInitRequest:
 		log.Println("Handling WorkerInitRequest")
-		return handleWorkerInitRequest(content.WorkerInitRequest, reqMsg.RequestId), nil
+		return handleWorkerInitRequest(content.WorkerInitRequest, requestId), nil
 	case *pb.StreamingMessage_FunctionsMetadataRequest:
 		log.Println("Handling FunctionsMetadataRequest")
-		return handleFunctionsMetadataRequest(content.FunctionsMetadataRequest, disp.App), nil
+		return handleFunctionsMetadataRequest(content.FunctionsMetadataRequest, disp.App, requestId), nil
 	case *pb.StreamingMessage_InvocationRequest:
 		log.Println("Handling InvocationRequest")
-		return handleInvocationRequest(content.InvocationRequest, disp, reqMsg.RequestId)
+		// For invocations, the Host *does* provide a specific RequestId that we MUST echo back exactly.
+		return handleInvocationRequest(content.InvocationRequest, disp, reqMsg.GetRequestId())
 	case *pb.StreamingMessage_FunctionLoadRequest:
 		log.Println("Handling FunctionLoadRequest")
-		return handleFunctionLoadRequest(content.FunctionLoadRequest, disp, reqMsg.RequestId), nil
+		return handleFunctionLoadRequest(content.FunctionLoadRequest, disp, requestId), nil
 	case *pb.StreamingMessage_WorkerStatusRequest:
 		log.Println("Handling WorkerStatusRequest")
-		return handleWorkerStatusRequest(reqMsg.RequestId, content.WorkerStatusRequest)
+		return handleWorkerStatusRequest(requestId, content.WorkerStatusRequest)
 	case *pb.StreamingMessage_WorkerTerminate:
 		log.Println("Handling WorkerTerminate")
-		return handleWorkerTerminate(reqMsg.RequestId, content.WorkerTerminate)
+		return handleWorkerTerminate(requestId, content.WorkerTerminate)
 	case *pb.StreamingMessage_FunctionEnvironmentReloadRequest:
 		log.Println("Handling FunctionEnvironmentReloadRequest")
-		return handleFunctionEnvironmentReloadRequest(reqMsg.RequestId, content.FunctionEnvironmentReloadRequest)
+		return handleFunctionEnvironmentReloadRequest(requestId, content.FunctionEnvironmentReloadRequest)
 	default:
 		log.Printf("Received unhandled message type: %T\n", content)
 		return nil, nil

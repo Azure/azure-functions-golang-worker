@@ -35,6 +35,7 @@ mkdir my-go-func
 cd my-go-func
 go mod init myapp
 go get github.com/azure/azure-functions-golang-worker
+go mod tidy
 ```
 
 Create a `main.go` file:
