@@ -1,0 +1,28 @@
+# ---------------------------------------------------------------
+# Job Template: Build
+# Compiles the Go worker and runs go vet for static analysis.
+# ---------------------------------------------------------------
+
+jobs:
+  - job: Build
+    displayName: 'Build Go Worker'
+
+    steps:
+    - task: GoTool@0
+      displayName: 'Install Go 1.24'
+      inputs:
+        version: '1.24'
+
+    - script: go version
+      displayName: 'Print Go version'
+
+    - script: go mod download
+      displayName: 'Download dependencies'
+
+    - script: go vet ./...
+      displayName: 'Run go vet'
+
+    - script: |
+        go build -o bin/worker ./worker/...
+        go build -o bin/proxy ./proxy/...
+      displayName: 'Build worker and proxy'

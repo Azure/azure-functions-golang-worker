@@ -1,0 +1,34 @@
+# ---------------------------------------------------------------
+# Job Template: Unit Tests
+# Runs Go unit tests and publishes results.
+# ---------------------------------------------------------------
+
+jobs:
+  - job: UnitTests
+    displayName: 'Run Unit Tests'
+
+    steps:
+    - task: GoTool@0
+      displayName: 'Install Go 1.24'
+      inputs:
+        version: '1.24'
+
+    - script: go mod download
+      displayName: 'Download dependencies'
+
+    - script: |
+        go install gotest.tools/gotestsum@latest
+      displayName: 'Install gotestsum'
+
+    - script: |
+        gotestsum --junitfile $(Build.SourcesDirectory)/test-results.xml -- ./worker/... ./sdk/...
+      displayName: 'Run unit tests'
+
+    - task: PublishTestResults@2
+      displayName: 'Publish test results'
+      condition: always()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '$(Build.SourcesDirectory)/test-results.xml'
+        testRunTitle: 'Go Unit Tests'
+        mergeTestResults: true
