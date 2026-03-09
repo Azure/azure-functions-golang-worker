@@ -1,0 +1,23 @@
+# ---------------------------------------------------------------
+# Azure DevOps Pipeline: Code Mirror
+# Mirrors the GitHub repository to the Azure DevOps internal repo.
+# ---------------------------------------------------------------
+
+trigger:
+  branches:
+    include:
+    - main
+    - release/*
+
+resources:
+  repositories:
+  - repository: eng
+    type: git
+    name: engineering
+    ref: refs/tags/release
+
+variables:
+  - template: ci/variables/cfs.yml@eng
+
+extends:
+  template: ci/code-mirror.yml@eng
