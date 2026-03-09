@@ -27,8 +27,8 @@ extends:
   parameters:
     pool:
       name: 1es-pool-azfunc-public
-      image: 1es-ubuntu-22.04
-      os: linux
+      image: 1es-windows-2022
+      os: windows
 
     sdl:
       codeql:
@@ -41,7 +41,7 @@ extends:
 
     stages:
       - stage: Build
-        displayName: 'Build & Vet'
+        displayName: 'Build & Test'
         jobs:
           - template: /eng/ci/templates/jobs/build.yml@self
 
@@ -50,3 +50,5 @@ extends:
         dependsOn: []
         jobs:
           - template: /eng/ci/templates/jobs/unit-tests.yml@self
+            parameters:
+              PoolName: 1es-pool-azfunc-public
