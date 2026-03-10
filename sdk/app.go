@@ -271,6 +271,74 @@ func (b *TimerFunctionBuilder) updateBinding() {
 	}
 }
 
+// EventHubFunctionBuilder is a builder for creating EventHub triggered functions.
+type EventHubFunctionBuilder struct {
+	trigger *bindings.EventHubTrigger
+	rf      *RegisteredFunction
+}
+
+// EventHub creates a new EventHub triggered function.
+func (app *App) EventHub(name string, f interface{}) *EventHubFunctionBuilder {
+	trigger := &bindings.EventHubTrigger{
+		Name:          "message",
+		ConsumerGroup: "$Default",
+		Cardinality:   "one",
+	}
+
+	rf := app.RegisterFunction(f, trigger)
+
+	return &EventHubFunctionBuilder{
+		trigger: trigger,
+		rf:      rf,
+	}
+}
+
+// EventHubName sets the EventHub name.
+func (b *EventHubFunctionBuilder) EventHubName(name string) *EventHubFunctionBuilder {
+	b.trigger.EventHubName = name
+	b.updateBinding()
+	return b
+}
+
+// Connection sets the EventHub connection string setting name.
+func (b *EventHubFunctionBuilder) Connection(connection string) *EventHubFunctionBuilder {
+	b.trigger.Connection = connection
+	b.updateBinding()
+	return b
+}
+
+// ConsumerGroup sets the EventHub consumer group.
+func (b *EventHubFunctionBuilder) ConsumerGroup(group string) *EventHubFunctionBuilder {
+	b.trigger.ConsumerGroup = group
+	b.updateBinding()
+	return b
+}
+
+// Cardinality sets the EventHub trigger cardinality ("one" or "many").
+func (b *EventHubFunctionBuilder) Cardinality(cardinality string) *EventHubFunctionBuilder {
+	b.trigger.Cardinality = cardinality
+	b.updateBinding()
+	return b
+}
+
+// EventHubOutput adds an EventHub output binding.
+func (b *EventHubFunctionBuilder) EventHubOutput(name, eventHubName, connection string) *EventHubFunctionBuilder {
+	output := &bindings.EventHubOutput{
+		Name:         name,
+		EventHubName: eventHubName,
+		Connection:   connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+func (b *EventHubFunctionBuilder) updateBinding() {
+	if len(b.rf.RawBindings) > 0 {
+		newBinding := b.trigger.ToBinding()
+		b.rf.RawBindings[0] = newBinding
+	}
+}
+
 // RegisteredFunction holds metadata about a registered function.
 type RegisteredFunction struct {
 	Func        interface{}
