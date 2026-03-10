@@ -102,6 +102,17 @@ func (b *HttpFunctionBuilder) BlobOutput(name, path, connection string) *HttpFun
 	return b
 }
 
+// EventHubOutput adds an EventHub output binding.
+func (b *HttpFunctionBuilder) EventHubOutput(name, eventHubName, connection string) *HttpFunctionBuilder {
+	output := &bindings.EventHubOutput{
+		Name:         name,
+		EventHubName: eventHubName,
+		Connection:   connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
 // CosmosFunctionBuilder is a builder for creating CosmosDB triggered functions.
 type CosmosFunctionBuilder struct {
 	trigger *bindings.CosmosDB
@@ -181,6 +192,17 @@ func (b *BlobFunctionBuilder) BlobOutput(name, path, connection string) *BlobFun
 	return b
 }
 
+// EventHubOutput adds an EventHub output binding.
+func (b *BlobFunctionBuilder) EventHubOutput(name, eventHubName, connection string) *BlobFunctionBuilder {
+	output := &bindings.EventHubOutput{
+		Name:         name,
+		EventHubName: eventHubName,
+		Connection:   connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
 func (b *BlobFunctionBuilder) updateBinding() {
 	if len(b.rf.RawBindings) > 0 {
 		newBinding := b.trigger.ToBinding()
@@ -200,6 +222,17 @@ func (b *CosmosFunctionBuilder) updateBinding() {
 		newBinding := b.trigger.ToBinding()
 		b.rf.RawBindings[0] = newBinding
 	}
+}
+
+// EventHubOutput adds an EventHub output binding.
+func (b *CosmosFunctionBuilder) EventHubOutput(name, eventHubName, connection string) *CosmosFunctionBuilder {
+	output := &bindings.EventHubOutput{
+		Name:         name,
+		EventHubName: eventHubName,
+		Connection:   connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
 }
 
 // EventGridFunctionBuilder is a builder for creating EventGrid triggered functions.
@@ -228,6 +261,17 @@ func (b *EventGridFunctionBuilder) EventGridOutput(name, topicEndpointUri, topic
 		Name:             name,
 		TopicEndpointUri: topicEndpointUri,
 		TopicKeySetting:  topicKeySetting,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// EventHubOutput adds an EventHub output binding.
+func (b *EventGridFunctionBuilder) EventHubOutput(name, eventHubName, connection string) *EventGridFunctionBuilder {
+	output := &bindings.EventHubOutput{
+		Name:         name,
+		EventHubName: eventHubName,
+		Connection:   connection,
 	}
 	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
 	return b

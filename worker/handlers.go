@@ -323,6 +323,23 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 		return nil, err
 	}
 
+	// 3b. Create SDK clients for output bindings (deferred bindings)
+	// Output bindings like EventHub have Direction "out" so FromProto skips them,
+	// but the user's function expects an SDK client (e.g. *ProducerClient) as an argument.
+	for _, field := range loadedFunc.Fields {
+		if field.Direction == "out" && field.IsArgument && !field.IsWriter {
+			if fn, found := sdk.GetConverter(field.Type); found {
+				val, err := fn(context.Background(), field.Config, nil, req.GetTriggerMetadata())
+				if err != nil {
+					return nil, fmt.Errorf("failed to create SDK client for output binding '%s': %v", field.Name, err)
+				}
+				if field.Position < len(args) {
+					args[field.Position] = val
+				}
+			}
+		}
+	}
+
 	// 4. Invoke
 	fv := reflect.ValueOf(loadedFunc.Function.Func)
 	results := fv.Call(args)
