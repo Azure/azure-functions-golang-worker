@@ -1,7 +1,7 @@
 package worker
 
 import (
-	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"reflect"
@@ -447,7 +447,7 @@ func TestToProto_SimpleReturnValue(t *testing.T) {
 func TestToProto_ErrorReturnValue(t *testing.T) {
 	results := []reflect.Value{
 		reflect.ValueOf(""),
-		reflect.ValueOf(json.Unmarshal([]byte("invalid"), nil)), // produces an error
+		reflect.ValueOf(fmt.Errorf("test error")), // produces an error
 	}
 	fields := map[string]*funcField{}
 
