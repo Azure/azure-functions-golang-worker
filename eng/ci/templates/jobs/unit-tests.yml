@@ -26,6 +26,7 @@ jobs:
       displayName: 'Install gotestsum'
 
     - script: |
+        export PATH=$PATH:$(go env GOPATH)/bin
         gotestsum --junitfile $(Build.SourcesDirectory)/test-results.xml -- ./worker/... ./sdk/...
       displayName: 'Run unit tests'
 
