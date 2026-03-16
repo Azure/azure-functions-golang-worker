@@ -233,6 +233,44 @@ func (b *EventGridFunctionBuilder) EventGridOutput(name, topicEndpointUri, topic
 	return b
 }
 
+// TimerFunctionBuilder provides a fluent API for configuring timer-triggered functions.
+type TimerFunctionBuilder struct {
+	trigger *bindings.TimerTrigger
+	rf      *RegisteredFunction
+}
+
+// Timer creates a new timer-triggered function with the given name.
+// Use the returned builder to configure the CRON schedule:
+//
+//	app.Timer("scheduledTask", handler).Schedule("0 */5 * * * *")
+func (app *App) Timer(name string, f interface{}) *TimerFunctionBuilder {
+	trigger := &bindings.TimerTrigger{
+		Name: "timer",
+	}
+
+	rf := app.RegisterFunction(f, trigger)
+
+	return &TimerFunctionBuilder{
+		trigger: trigger,
+		rf:      rf,
+	}
+}
+
+// Schedule sets the NCrontab CRON expression for the timer trigger.
+// Azure Functions uses 6-field expressions: {second} {minute} {hour} {day} {month} {day-of-week}.
+func (b *TimerFunctionBuilder) Schedule(schedule string) *TimerFunctionBuilder {
+	b.trigger.Schedule = schedule
+	b.updateBinding()
+	return b
+}
+
+func (b *TimerFunctionBuilder) updateBinding() {
+	if len(b.rf.RawBindings) > 0 {
+		newBinding := b.trigger.ToBinding()
+		b.rf.RawBindings[0] = newBinding
+	}
+}
+
 // RegisteredFunction holds metadata about a registered function.
 type RegisteredFunction struct {
 	Func        interface{}
