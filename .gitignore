@@ -407,4 +407,7 @@ bin
 
 
 .idea
-.claude
+
+# Go module files for samples
+samples/*/go.mod
+samples/*/go.sum
