@@ -1,0 +1,183 @@
+# ---------------------------------------------------------------
+# Azure DevOps Pipeline: Worker Release
+# Manually triggered to publish the NuGet package to the internal
+# feed and create a PR to azure-functions-host.
+# ---------------------------------------------------------------
+
+pr: none
+trigger: none
+
+parameters:
+  - name: WorkerRelease
+    displayName: 'Publish NuGet & PR to Host'
+    type: boolean
+    default: false
+
+resources:
+  repositories:
+    - repository: 1es
+      type: git
+      name: 1ESPipelineTemplates/1ESPipelineTemplates
+      ref: refs/tags/release
+    - repository: eng
+      type: git
+      name: engineering
+      ref: refs/tags/release
+
+extends:
+  template: v1/1ES.Official.PipelineTemplate.yml@1es
+  parameters:
+    pool:
+      name: 1es-pool-azfunc
+      image: 1es-windows-2022
+      os: windows
+
+    stages:
+      - stage: ReleaseGolangWorker
+        displayName: 'Release Golang Worker'
+        condition: eq(${{ parameters.WorkerRelease }}, True)
+        jobs:
+          - job: SetVersion
+            displayName: 'Determine Release Version'
+            pool:
+              name: 1es-pool-azfunc
+              image: 1es-ubuntu-22.04
+              os: linux
+            steps:
+            - bash: |
+                # Get version from the latest v* tag
+                TAG=$(git describe --tags --match "v*" --abbrev=0 2>/dev/null || echo "")
+                if [ -z "$TAG" ]; then
+                  echo "##vso[task.logissue type=error]No v* tag found."
+                  exit 1
+                fi
+                VERSION="${TAG#v}"
+                echo "Releasing version: $VERSION (tag: $TAG)"
+                echo "##vso[task.setvariable variable=NewWorkerVersion;isOutput=true]$VERSION"
+                echo "##vso[task.setvariable variable=ReleaseTag;isOutput=true]$TAG"
+              name: version
+              displayName: 'Get version from git tag'
+
+          - job: PublishNuget
+            displayName: 'Publish NuGet Package'
+            dependsOn: SetVersion
+            variables:
+              NewWorkerVersion: $[ dependencies.SetVersion.outputs['version.NewWorkerVersion'] ]
+            templateContext:
+              outputs:
+                - output: nuget
+                  packagesToPush: '$(Pipeline.Workspace)/NuGetPackage/**/*.nupkg;!$(Pipeline.Workspace)/NuGetPackage/**/*.symbols.nupkg'
+                  publishVstsFeed: 'e6a70c92-4128-439f-8012-382fe78d6396/eb652719-f36a-4e78-8541-e13a3cd655f9'
+                  allowPackageConflicts: true
+                  packageParentPath: '$(Pipeline.Workspace)'
+            steps:
+            - task: DownloadPipelineArtifact@2
+              displayName: 'Download NuGet Artifact from Official Build'
+              inputs:
+                buildType: specific
+                project: '3f99e810-c336-441f-8892-84983093ad7f'
+                definition: $(OfficialBuildDefinitionId)
+                specificBuildWithTriggering: true
+                buildVersionToDownload: latestFromBranch
+                branchName: 'refs/tags/v$(NewWorkerVersion)'
+                allowPartiallySucceededBuilds: true
+                targetPath: '$(Pipeline.Workspace)/NuGetPackage'
+                artifactName: NuGetPackage
+
+          - job: CheckNugetPackage
+            displayName: '(Manual) Verify NuGet Package'
+            dependsOn: PublishNuget
+            pool: server
+            steps:
+            - task: ManualValidation@1
+              displayName: 'Verify NuGet package contents'
+              inputs:
+                notifyUsers: ''
+                instructions: |
+                  Verify the published NuGet package at the internal feed.
+                  Ensure it contains workers/golang/proxy and workers/golang/worker.config.json.
+
+          - job: HostRepoPR
+            displayName: 'Create Host Repo PR'
+            dependsOn:
+              - CheckNugetPackage
+              - SetVersion
+            variables:
+              NewWorkerVersion: $[ dependencies.SetVersion.outputs['version.NewWorkerVersion'] ]
+            pool:
+              name: 1es-pool-azfunc
+              image: 1es-ubuntu-22.04
+              os: linux
+            steps:
+            - bash: |
+                GITHUB_TOKEN="$(GithubPat)"
+                VERSION="$(NewWorkerVersion)"
+                BRANCH="golang/$VERSION"
+
+                git config --global user.name "AzureFunctionsGolang"
+                git config --global user.email "azfunc@microsoft.com"
+
+                # Clone host repo
+                git clone "https://$GITHUB_TOKEN@github.com/Azure/azure-functions-host"
+                cd azure-functions-host
+                git checkout -b "$BRANCH" origin/dev
+
+                # Create or update Workers.Golang.props
+                cat > eng/build/Workers.Golang.props << EOF
+                <Project>
+
+                  <ItemGroup>
+                    <PackageReference Include="Microsoft.Azure.Functions.GolangWorker" VersionOverride="$VERSION" />
+                  </ItemGroup>
+
+                </Project>
+                EOF
+
+                # Update release notes
+                sed -i "s|-->|-->\n- Add Golang Worker Version [$VERSION](https://github.com/Azure/azure-functions-golang-worker/releases/tag/v$VERSION)|" release_notes.md
+
+                # Commit and push
+                git add eng/build/Workers.Golang.props release_notes.md
+                git commit -m "Add/Update Golang Worker Version to $VERSION"
+                git push origin "$BRANCH"
+
+                # Create PR
+                PR_BODY=$(cat <<'PRBODY'
+                ### Update Golang Worker
+
+                Add/Update Golang Worker to version $VERSION
+
+                Release: https://github.com/Azure/azure-functions-golang-worker/releases/tag/v$VERSION
+
+                ### Pull request checklist
+                * [x] My changes **do not** require documentation changes
+                * [x] I have added all required tests
+                PRBODY
+                )
+
+                curl -s -X POST \
+                  -H "Authorization: token $GITHUB_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "https://api.github.com/repos/Azure/azure-functions-host/pulls" \
+                  -d "$(jq -n \
+                    --arg head "$BRANCH" \
+                    --arg base "dev" \
+                    --arg title "Add/Update Golang Worker Version to $VERSION" \
+                    --arg body "$PR_BODY" \
+                    '{head: $head, base: $base, title: $title, body: $body, draft: true}')"
+
+                echo "PR created for golang/$VERSION"
+              displayName: 'Create PR to azure-functions-host'
+
+          - job: CheckHostPR
+            displayName: '(Manual) Verify Host PR'
+            dependsOn: HostRepoPR
+            pool: server
+            steps:
+            - task: ManualValidation@1
+              displayName: 'Finish Host PR'
+              inputs:
+                notifyUsers: ''
+                instructions: |
+                  Go to https://github.com/Azure/azure-functions-host/pulls and review/merge the Golang Worker PR.
