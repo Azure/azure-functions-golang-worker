@@ -194,6 +194,10 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 		for i := 0; i < v.NumField(); i++ {
 			field := t.Field(i)
 			tag := field.Tag.Get("json")
+			// Strip omitempty or other options from the json tag
+			if idx := strings.Index(tag, ","); idx != -1 {
+				tag = tag[:idx]
+			}
 
 			var td *pb.TypedData
 			if strings.EqualFold(tag, "azfuncdata") {
@@ -203,7 +207,19 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 				td = val
 				fieldsDecoded++
 			} else {
-				continue
+				// Case-insensitive fallback: TriggerMetadata keys from the host
+				// are PascalCase (e.g. "MessageId") while struct json tags are
+				// typically camelCase (e.g. "messageId").
+				for k, val := range tm {
+					if strings.EqualFold(k, tag) {
+						td = val
+						fieldsDecoded++
+						break
+					}
+				}
+				if td == nil {
+					continue
+				}
 			}
 
 			if td == nil {
