@@ -331,6 +331,169 @@ func TestEventGrid_WithOutput(t *testing.T) {
 	})
 }
 
+// --- ServiceBus Queue builder tests ---
+
+func TestServiceBusQueue_BasicRegistration(t *testing.T) {
+	app := FunctionApp()
+	handler := func(msg string) {}
+
+	builder := app.ServiceBusQueue("sbQueueFunc", handler)
+	if builder == nil {
+		t.Fatal("expected non-nil builder")
+	}
+
+	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+		rf := value.(*RegisteredFunction)
+		if rf.RawBindings[0].Type != "serviceBusTrigger" {
+			t.Errorf("expected type %q, got %q", "serviceBusTrigger", rf.RawBindings[0].Type)
+		}
+		return true
+	})
+}
+
+func TestServiceBusQueue_Chaining(t *testing.T) {
+	app := FunctionApp()
+	handler := func(msg string) {}
+
+	app.ServiceBusQueue("sbQueueFull", handler).
+		QueueName("myqueue").
+		Connection("ServiceBusConnection").
+		Cardinality("one")
+
+	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.ServiceBusBinding == nil {
+			t.Fatal("expected ServiceBusBinding")
+		}
+		if binding.ServiceBusBinding.QueueName != "myqueue" {
+			t.Errorf("expected queueName %q, got %q", "myqueue", binding.ServiceBusBinding.QueueName)
+		}
+		if binding.ServiceBusBinding.Connection != "ServiceBusConnection" {
+			t.Errorf("expected connection %q, got %q", "ServiceBusConnection", binding.ServiceBusBinding.Connection)
+		}
+		if binding.ServiceBusBinding.Cardinality != "one" {
+			t.Errorf("expected cardinality %q, got %q", "one", binding.ServiceBusBinding.Cardinality)
+		}
+		return true
+	})
+}
+
+func TestServiceBusQueue_WithOutput(t *testing.T) {
+	app := FunctionApp()
+	handler := func(msg string) {}
+
+	app.ServiceBusQueue("sbQueueWithOutput", handler).
+		QueueName("inputqueue").
+		Connection("ServiceBusConnection").
+		ServiceBusQueueOutput("outputMsg", "outputqueue", "ServiceBusConnection")
+
+	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+		rf := value.(*RegisteredFunction)
+		if len(rf.RawBindings) != 2 {
+			t.Errorf("expected 2 bindings, got %d", len(rf.RawBindings))
+		}
+		outBinding := rf.RawBindings[1]
+		if outBinding.Name != "outputMsg" {
+			t.Errorf("expected output binding name %q, got %q", "outputMsg", outBinding.Name)
+		}
+		if outBinding.Type != "serviceBus" {
+			t.Errorf("expected type %q, got %q", "serviceBus", outBinding.Type)
+		}
+		if outBinding.Direction != "out" {
+			t.Errorf("expected direction %q, got %q", "out", outBinding.Direction)
+		}
+		return true
+	})
+}
+
+// --- ServiceBus Topic builder tests ---
+
+func TestServiceBusTopic_BasicRegistration(t *testing.T) {
+	app := FunctionApp()
+	handler := func(msg string) {}
+
+	builder := app.ServiceBusTopic("sbTopicFunc", handler)
+	if builder == nil {
+		t.Fatal("expected non-nil builder")
+	}
+
+	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+		rf := value.(*RegisteredFunction)
+		if rf.RawBindings[0].Type != "serviceBusTrigger" {
+			t.Errorf("expected type %q, got %q", "serviceBusTrigger", rf.RawBindings[0].Type)
+		}
+		return true
+	})
+}
+
+func TestServiceBusTopic_Chaining(t *testing.T) {
+	app := FunctionApp()
+	handler := func(msg string) {}
+
+	app.ServiceBusTopic("sbTopicFull", handler).
+		TopicName("mytopic").
+		SubscriptionName("mysub").
+		Connection("ServiceBusConnection").
+		Cardinality("one")
+
+	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.ServiceBusBinding == nil {
+			t.Fatal("expected ServiceBusBinding")
+		}
+		if binding.ServiceBusBinding.TopicName != "mytopic" {
+			t.Errorf("expected topicName %q, got %q", "mytopic", binding.ServiceBusBinding.TopicName)
+		}
+		if binding.ServiceBusBinding.SubscriptionName != "mysub" {
+			t.Errorf("expected subscriptionName %q, got %q", "mysub", binding.ServiceBusBinding.SubscriptionName)
+		}
+		if binding.ServiceBusBinding.Connection != "ServiceBusConnection" {
+			t.Errorf("expected connection %q, got %q", "ServiceBusConnection", binding.ServiceBusBinding.Connection)
+		}
+		if binding.ServiceBusBinding.Cardinality != "one" {
+			t.Errorf("expected cardinality %q, got %q", "one", binding.ServiceBusBinding.Cardinality)
+		}
+		return true
+	})
+}
+
+func TestServiceBusTopic_WithOutput(t *testing.T) {
+	app := FunctionApp()
+	handler := func(msg string) {}
+
+	app.ServiceBusTopic("sbTopicWithOutput", handler).
+		TopicName("inputtopic").
+		SubscriptionName("mysub").
+		Connection("ServiceBusConnection").
+		ServiceBusTopicOutput("outputMsg", "outputtopic", "ServiceBusConnection")
+
+	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+		rf := value.(*RegisteredFunction)
+		if len(rf.RawBindings) != 2 {
+			t.Errorf("expected 2 bindings, got %d", len(rf.RawBindings))
+		}
+		outBinding := rf.RawBindings[1]
+		if outBinding.Name != "outputMsg" {
+			t.Errorf("expected output binding name %q, got %q", "outputMsg", outBinding.Name)
+		}
+		if outBinding.Type != "serviceBus" {
+			t.Errorf("expected type %q, got %q", "serviceBus", outBinding.Type)
+		}
+		if outBinding.Direction != "out" {
+			t.Errorf("expected direction %q, got %q", "out", outBinding.Direction)
+		}
+		if outBinding.ServiceBusBinding == nil {
+			t.Fatal("expected ServiceBusBinding")
+		}
+		if outBinding.ServiceBusBinding.TopicName != "outputtopic" {
+			t.Errorf("expected topicName %q, got %q", "outputtopic", outBinding.ServiceBusBinding.TopicName)
+		}
+		return true
+	})
+}
+
 // --- RegisterFunction tests ---
 
 func TestRegisterFunction_HTTP(t *testing.T) {
@@ -474,6 +637,7 @@ func TestMixedTriggerTypes(t *testing.T) {
 	app.CosmosDB("cosmosFunc", func(docs string) {}).Database("db").Container("container")
 	app.Blob("blobFunc", func(data []byte) {}).Path("container/{name}")
 	app.EventGrid("eventFunc", func(event string) {})
+	app.ServiceBusQueue("sbFunc", func(msg string) {}).QueueName("myqueue").Connection("SBConn")
 
 	count := 0
 	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
@@ -481,8 +645,8 @@ func TestMixedTriggerTypes(t *testing.T) {
 		return true
 	})
 
-	if count != 4 {
-		t.Errorf("expected 4 registered functions, got %d", count)
+	if count != 5 {
+		t.Errorf("expected 5 registered functions, got %d", count)
 	}
 }
 
