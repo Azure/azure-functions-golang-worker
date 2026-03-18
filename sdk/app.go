@@ -113,6 +113,28 @@ func (b *HttpFunctionBuilder) EventHubOutput(name, eventHubName, connection stri
 	return b
 }
 
+// ServiceBusQueueOutput adds a Service Bus queue output binding.
+func (b *HttpFunctionBuilder) ServiceBusQueueOutput(name, queueName, connection string) *HttpFunctionBuilder {
+	output := &bindings.ServiceBusQueueOutput{
+		Name:       name,
+		QueueName:  queueName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// ServiceBusTopicOutput adds a Service Bus topic output binding.
+func (b *HttpFunctionBuilder) ServiceBusTopicOutput(name, topicName, connection string) *HttpFunctionBuilder {
+	output := &bindings.ServiceBusTopicOutput{
+		Name:      name,
+		TopicName: topicName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
 // CosmosFunctionBuilder is a builder for creating CosmosDB triggered functions.
 type CosmosFunctionBuilder struct {
 	trigger *bindings.CosmosDB
@@ -203,6 +225,28 @@ func (b *BlobFunctionBuilder) EventHubOutput(name, eventHubName, connection stri
 	return b
 }
 
+// ServiceBusQueueOutput adds a Service Bus queue output binding.
+func (b *BlobFunctionBuilder) ServiceBusQueueOutput(name, queueName, connection string) *BlobFunctionBuilder {
+	output := &bindings.ServiceBusQueueOutput{
+		Name:       name,
+		QueueName:  queueName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// ServiceBusTopicOutput adds a Service Bus topic output binding.
+func (b *BlobFunctionBuilder) ServiceBusTopicOutput(name, topicName, connection string) *BlobFunctionBuilder {
+	output := &bindings.ServiceBusTopicOutput{
+		Name:      name,
+		TopicName: topicName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
 func (b *BlobFunctionBuilder) updateBinding() {
 	if len(b.rf.RawBindings) > 0 {
 		newBinding := b.trigger.ToBinding()
@@ -230,6 +274,28 @@ func (b *CosmosFunctionBuilder) EventHubOutput(name, eventHubName, connection st
 		Name:         name,
 		EventHubName: eventHubName,
 		Connection:   connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// ServiceBusQueueOutput adds a Service Bus queue output binding.
+func (b *CosmosFunctionBuilder) ServiceBusQueueOutput(name, queueName, connection string) *CosmosFunctionBuilder {
+	output := &bindings.ServiceBusQueueOutput{
+		Name:       name,
+		QueueName:  queueName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// ServiceBusTopicOutput adds a Service Bus topic output binding.
+func (b *CosmosFunctionBuilder) ServiceBusTopicOutput(name, topicName, connection string) *CosmosFunctionBuilder {
+	output := &bindings.ServiceBusTopicOutput{
+		Name:      name,
+		TopicName: topicName,
+		Connection: connection,
 	}
 	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
 	return b
@@ -277,6 +343,28 @@ func (b *EventGridFunctionBuilder) EventHubOutput(name, eventHubName, connection
 	return b
 }
 
+// ServiceBusQueueOutput adds a Service Bus queue output binding.
+func (b *EventGridFunctionBuilder) ServiceBusQueueOutput(name, queueName, connection string) *EventGridFunctionBuilder {
+	output := &bindings.ServiceBusQueueOutput{
+		Name:       name,
+		QueueName:  queueName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// ServiceBusTopicOutput adds a Service Bus topic output binding.
+func (b *EventGridFunctionBuilder) ServiceBusTopicOutput(name, topicName, connection string) *EventGridFunctionBuilder {
+	output := &bindings.ServiceBusTopicOutput{
+		Name:      name,
+		TopicName: topicName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
 // TimerFunctionBuilder provides a fluent API for configuring timer-triggered functions.
 type TimerFunctionBuilder struct {
 	trigger *bindings.TimerTrigger
@@ -313,6 +401,28 @@ func (b *TimerFunctionBuilder) updateBinding() {
 		newBinding := b.trigger.ToBinding()
 		b.rf.RawBindings[0] = newBinding
 	}
+}
+
+// ServiceBusQueueOutput adds a Service Bus queue output binding.
+func (b *TimerFunctionBuilder) ServiceBusQueueOutput(name, queueName, connection string) *TimerFunctionBuilder {
+	output := &bindings.ServiceBusQueueOutput{
+		Name:       name,
+		QueueName:  queueName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// ServiceBusTopicOutput adds a Service Bus topic output binding.
+func (b *TimerFunctionBuilder) ServiceBusTopicOutput(name, topicName, connection string) *TimerFunctionBuilder {
+	output := &bindings.ServiceBusTopicOutput{
+		Name:      name,
+		TopicName: topicName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
 }
 
 // EventHubFunctionBuilder is a builder for creating EventHub triggered functions.
@@ -376,7 +486,214 @@ func (b *EventHubFunctionBuilder) EventHubOutput(name, eventHubName, connection 
 	return b
 }
 
+// ServiceBusQueueOutput adds a Service Bus queue output binding.
+func (b *EventHubFunctionBuilder) ServiceBusQueueOutput(name, queueName, connection string) *EventHubFunctionBuilder {
+	output := &bindings.ServiceBusQueueOutput{
+		Name:       name,
+		QueueName:  queueName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// ServiceBusTopicOutput adds a Service Bus topic output binding.
+func (b *EventHubFunctionBuilder) ServiceBusTopicOutput(name, topicName, connection string) *EventHubFunctionBuilder {
+	output := &bindings.ServiceBusTopicOutput{
+		Name:      name,
+		TopicName: topicName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
 func (b *EventHubFunctionBuilder) updateBinding() {
+	if len(b.rf.RawBindings) > 0 {
+		newBinding := b.trigger.ToBinding()
+		b.rf.RawBindings[0] = newBinding
+	}
+}
+
+// ServiceBusQueueFunctionBuilder is a builder for creating Service Bus queue triggered functions.
+type ServiceBusQueueFunctionBuilder struct {
+	trigger *bindings.ServiceBusQueueTrigger
+	rf      *RegisteredFunction
+}
+
+// ServiceBusQueue creates a new Service Bus queue triggered function.
+func (app *App) ServiceBusQueue(name string, f interface{}) *ServiceBusQueueFunctionBuilder {
+	trigger := &bindings.ServiceBusQueueTrigger{
+		Name:        "message",
+		Cardinality: "one",
+	}
+
+	rf := app.RegisterFunction(f, trigger)
+
+	return &ServiceBusQueueFunctionBuilder{
+		trigger: trigger,
+		rf:      rf,
+	}
+}
+
+// QueueName sets the Service Bus queue name.
+func (b *ServiceBusQueueFunctionBuilder) QueueName(queueName string) *ServiceBusQueueFunctionBuilder {
+	b.trigger.QueueName = queueName
+	b.updateBinding()
+	return b
+}
+
+// Connection sets the Service Bus connection string setting name.
+func (b *ServiceBusQueueFunctionBuilder) Connection(connection string) *ServiceBusQueueFunctionBuilder {
+	b.trigger.Connection = connection
+	b.updateBinding()
+	return b
+}
+
+// IsSessionsEnabled sets whether sessions are enabled on the queue.
+func (b *ServiceBusQueueFunctionBuilder) IsSessionsEnabled(enabled bool) *ServiceBusQueueFunctionBuilder {
+	b.trigger.IsSessionsEnabled = enabled
+	b.updateBinding()
+	return b
+}
+
+// Cardinality sets the Service Bus trigger cardinality ("one" or "many").
+func (b *ServiceBusQueueFunctionBuilder) Cardinality(cardinality string) *ServiceBusQueueFunctionBuilder {
+	b.trigger.Cardinality = cardinality
+	b.updateBinding()
+	return b
+}
+
+// ServiceBusQueueOutput adds a Service Bus queue output binding.
+func (b *ServiceBusQueueFunctionBuilder) ServiceBusQueueOutput(name, queueName, connection string) *ServiceBusQueueFunctionBuilder {
+	output := &bindings.ServiceBusQueueOutput{
+		Name:       name,
+		QueueName:  queueName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// ServiceBusTopicOutput adds a Service Bus topic output binding.
+func (b *ServiceBusQueueFunctionBuilder) ServiceBusTopicOutput(name, topicName, connection string) *ServiceBusQueueFunctionBuilder {
+	output := &bindings.ServiceBusTopicOutput{
+		Name:      name,
+		TopicName: topicName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// EventHubOutput adds an EventHub output binding.
+func (b *ServiceBusQueueFunctionBuilder) EventHubOutput(name, eventHubName, connection string) *ServiceBusQueueFunctionBuilder {
+	output := &bindings.EventHubOutput{
+		Name:         name,
+		EventHubName: eventHubName,
+		Connection:   connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+func (b *ServiceBusQueueFunctionBuilder) updateBinding() {
+	if len(b.rf.RawBindings) > 0 {
+		newBinding := b.trigger.ToBinding()
+		b.rf.RawBindings[0] = newBinding
+	}
+}
+
+// ServiceBusTopicFunctionBuilder is a builder for creating Service Bus topic triggered functions.
+type ServiceBusTopicFunctionBuilder struct {
+	trigger *bindings.ServiceBusTopicTrigger
+	rf      *RegisteredFunction
+}
+
+// ServiceBusTopic creates a new Service Bus topic triggered function.
+func (app *App) ServiceBusTopic(name string, f interface{}) *ServiceBusTopicFunctionBuilder {
+	trigger := &bindings.ServiceBusTopicTrigger{
+		Name:        "message",
+		Cardinality: "one",
+	}
+
+	rf := app.RegisterFunction(f, trigger)
+
+	return &ServiceBusTopicFunctionBuilder{
+		trigger: trigger,
+		rf:      rf,
+	}
+}
+
+// TopicName sets the Service Bus topic name.
+func (b *ServiceBusTopicFunctionBuilder) TopicName(topicName string) *ServiceBusTopicFunctionBuilder {
+	b.trigger.TopicName = topicName
+	b.updateBinding()
+	return b
+}
+
+// SubscriptionName sets the Service Bus subscription name.
+func (b *ServiceBusTopicFunctionBuilder) SubscriptionName(subscriptionName string) *ServiceBusTopicFunctionBuilder {
+	b.trigger.SubscriptionName = subscriptionName
+	b.updateBinding()
+	return b
+}
+
+// Connection sets the Service Bus connection string setting name.
+func (b *ServiceBusTopicFunctionBuilder) Connection(connection string) *ServiceBusTopicFunctionBuilder {
+	b.trigger.Connection = connection
+	b.updateBinding()
+	return b
+}
+
+// IsSessionsEnabled sets whether sessions are enabled on the subscription.
+func (b *ServiceBusTopicFunctionBuilder) IsSessionsEnabled(enabled bool) *ServiceBusTopicFunctionBuilder {
+	b.trigger.IsSessionsEnabled = enabled
+	b.updateBinding()
+	return b
+}
+
+// Cardinality sets the Service Bus trigger cardinality ("one" or "many").
+func (b *ServiceBusTopicFunctionBuilder) Cardinality(cardinality string) *ServiceBusTopicFunctionBuilder {
+	b.trigger.Cardinality = cardinality
+	b.updateBinding()
+	return b
+}
+
+// ServiceBusQueueOutput adds a Service Bus queue output binding.
+func (b *ServiceBusTopicFunctionBuilder) ServiceBusQueueOutput(name, queueName, connection string) *ServiceBusTopicFunctionBuilder {
+	output := &bindings.ServiceBusQueueOutput{
+		Name:       name,
+		QueueName:  queueName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// ServiceBusTopicOutput adds a Service Bus topic output binding.
+func (b *ServiceBusTopicFunctionBuilder) ServiceBusTopicOutput(name, topicName, connection string) *ServiceBusTopicFunctionBuilder {
+	output := &bindings.ServiceBusTopicOutput{
+		Name:      name,
+		TopicName: topicName,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// EventHubOutput adds an EventHub output binding.
+func (b *ServiceBusTopicFunctionBuilder) EventHubOutput(name, eventHubName, connection string) *ServiceBusTopicFunctionBuilder {
+	output := &bindings.EventHubOutput{
+		Name:         name,
+		EventHubName: eventHubName,
+		Connection:   connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+func (b *ServiceBusTopicFunctionBuilder) updateBinding() {
 	if len(b.rf.RawBindings) > 0 {
 		newBinding := b.trigger.ToBinding()
 		b.rf.RawBindings[0] = newBinding

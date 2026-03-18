@@ -32,6 +32,7 @@ type Binding struct {
 	*EventGridBinding
 	*TimerBinding
 	*EventHubBinding
+	*ServiceBusBinding
 }
 
 func (b Binding) MarshalJSON() ([]byte, error) {
@@ -53,6 +54,8 @@ func (b Binding) MarshalJSON() ([]byte, error) {
 		sub = b.TimerBinding
 	} else if b.EventHubBinding != nil {
 		sub = b.EventHubBinding
+	} else if b.ServiceBusBinding != nil {
+		sub = b.ServiceBusBinding
 	}
 
 	if sub != nil {
