@@ -135,6 +135,17 @@ func (b *HttpFunctionBuilder) ServiceBusTopicOutput(name, topicName, connection 
 	return b
 }
 
+// EventGridOutput adds an EventGrid output binding.
+func (b *HttpFunctionBuilder) EventGridOutput(name, topicEndpointUri, topicKeySetting string) *HttpFunctionBuilder {
+	output := &bindings.EventGridOutput{
+		Name:             name,
+		TopicEndpointUri: topicEndpointUri,
+		TopicKeySetting:  topicKeySetting,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
 // CosmosFunctionBuilder is a builder for creating CosmosDB triggered functions.
 type CosmosFunctionBuilder struct {
 	trigger *bindings.CosmosDB
@@ -247,6 +258,28 @@ func (b *BlobFunctionBuilder) ServiceBusTopicOutput(name, topicName, connection 
 	return b
 }
 
+// BlobInput adds a blob input binding.
+func (b *BlobFunctionBuilder) BlobInput(name, path, connection string) *BlobFunctionBuilder {
+	blobInput := &bindings.BlobInput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobInput.ToBinding())
+	return b
+}
+
+// EventGridOutput adds an EventGrid output binding.
+func (b *BlobFunctionBuilder) EventGridOutput(name, topicEndpointUri, topicKeySetting string) *BlobFunctionBuilder {
+	output := &bindings.EventGridOutput{
+		Name:             name,
+		TopicEndpointUri: topicEndpointUri,
+		TopicKeySetting:  topicKeySetting,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
 func (b *BlobFunctionBuilder) updateBinding() {
 	if len(b.rf.RawBindings) > 0 {
 		newBinding := b.trigger.ToBinding()
@@ -296,6 +329,39 @@ func (b *CosmosFunctionBuilder) ServiceBusTopicOutput(name, topicName, connectio
 		Name:      name,
 		TopicName: topicName,
 		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// BlobInput adds a blob input binding.
+func (b *CosmosFunctionBuilder) BlobInput(name, path, connection string) *CosmosFunctionBuilder {
+	blobInput := &bindings.BlobInput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobInput.ToBinding())
+	return b
+}
+
+// BlobOutput adds a blob output binding.
+func (b *CosmosFunctionBuilder) BlobOutput(name, path, connection string) *CosmosFunctionBuilder {
+	blobOutput := &bindings.BlobOutput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobOutput.ToBinding())
+	return b
+}
+
+// EventGridOutput adds an EventGrid output binding.
+func (b *CosmosFunctionBuilder) EventGridOutput(name, topicEndpointUri, topicKeySetting string) *CosmosFunctionBuilder {
+	output := &bindings.EventGridOutput{
+		Name:             name,
+		TopicEndpointUri: topicEndpointUri,
+		TopicKeySetting:  topicKeySetting,
 	}
 	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
 	return b
@@ -365,6 +431,28 @@ func (b *EventGridFunctionBuilder) ServiceBusTopicOutput(name, topicName, connec
 	return b
 }
 
+// BlobInput adds a blob input binding.
+func (b *EventGridFunctionBuilder) BlobInput(name, path, connection string) *EventGridFunctionBuilder {
+	blobInput := &bindings.BlobInput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobInput.ToBinding())
+	return b
+}
+
+// BlobOutput adds a blob output binding.
+func (b *EventGridFunctionBuilder) BlobOutput(name, path, connection string) *EventGridFunctionBuilder {
+	blobOutput := &bindings.BlobOutput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobOutput.ToBinding())
+	return b
+}
+
 // TimerFunctionBuilder provides a fluent API for configuring timer-triggered functions.
 type TimerFunctionBuilder struct {
 	trigger *bindings.TimerTrigger
@@ -420,6 +508,50 @@ func (b *TimerFunctionBuilder) ServiceBusTopicOutput(name, topicName, connection
 		Name:      name,
 		TopicName: topicName,
 		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// BlobInput adds a blob input binding.
+func (b *TimerFunctionBuilder) BlobInput(name, path, connection string) *TimerFunctionBuilder {
+	blobInput := &bindings.BlobInput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobInput.ToBinding())
+	return b
+}
+
+// BlobOutput adds a blob output binding.
+func (b *TimerFunctionBuilder) BlobOutput(name, path, connection string) *TimerFunctionBuilder {
+	blobOutput := &bindings.BlobOutput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobOutput.ToBinding())
+	return b
+}
+
+// EventHubOutput adds an EventHub output binding.
+func (b *TimerFunctionBuilder) EventHubOutput(name, eventHubName, connection string) *TimerFunctionBuilder {
+	output := &bindings.EventHubOutput{
+		Name:         name,
+		EventHubName: eventHubName,
+		Connection:   connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// EventGridOutput adds an EventGrid output binding.
+func (b *TimerFunctionBuilder) EventGridOutput(name, topicEndpointUri, topicKeySetting string) *TimerFunctionBuilder {
+	output := &bindings.EventGridOutput{
+		Name:             name,
+		TopicEndpointUri: topicEndpointUri,
+		TopicKeySetting:  topicKeySetting,
 	}
 	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
 	return b
@@ -503,6 +635,39 @@ func (b *EventHubFunctionBuilder) ServiceBusTopicOutput(name, topicName, connect
 		Name:      name,
 		TopicName: topicName,
 		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// BlobInput adds a blob input binding.
+func (b *EventHubFunctionBuilder) BlobInput(name, path, connection string) *EventHubFunctionBuilder {
+	blobInput := &bindings.BlobInput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobInput.ToBinding())
+	return b
+}
+
+// BlobOutput adds a blob output binding.
+func (b *EventHubFunctionBuilder) BlobOutput(name, path, connection string) *EventHubFunctionBuilder {
+	blobOutput := &bindings.BlobOutput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobOutput.ToBinding())
+	return b
+}
+
+// EventGridOutput adds an EventGrid output binding.
+func (b *EventHubFunctionBuilder) EventGridOutput(name, topicEndpointUri, topicKeySetting string) *EventHubFunctionBuilder {
+	output := &bindings.EventGridOutput{
+		Name:             name,
+		TopicEndpointUri: topicEndpointUri,
+		TopicKeySetting:  topicKeySetting,
 	}
 	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
 	return b
@@ -592,6 +757,39 @@ func (b *ServiceBusQueueFunctionBuilder) EventHubOutput(name, eventHubName, conn
 		Name:         name,
 		EventHubName: eventHubName,
 		Connection:   connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// BlobInput adds a blob input binding.
+func (b *ServiceBusQueueFunctionBuilder) BlobInput(name, path, connection string) *ServiceBusQueueFunctionBuilder {
+	blobInput := &bindings.BlobInput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobInput.ToBinding())
+	return b
+}
+
+// BlobOutput adds a blob output binding.
+func (b *ServiceBusQueueFunctionBuilder) BlobOutput(name, path, connection string) *ServiceBusQueueFunctionBuilder {
+	blobOutput := &bindings.BlobOutput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobOutput.ToBinding())
+	return b
+}
+
+// EventGridOutput adds an EventGrid output binding.
+func (b *ServiceBusQueueFunctionBuilder) EventGridOutput(name, topicEndpointUri, topicKeySetting string) *ServiceBusQueueFunctionBuilder {
+	output := &bindings.EventGridOutput{
+		Name:             name,
+		TopicEndpointUri: topicEndpointUri,
+		TopicKeySetting:  topicKeySetting,
 	}
 	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
 	return b
@@ -688,6 +886,39 @@ func (b *ServiceBusTopicFunctionBuilder) EventHubOutput(name, eventHubName, conn
 		Name:         name,
 		EventHubName: eventHubName,
 		Connection:   connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
+	return b
+}
+
+// BlobInput adds a blob input binding.
+func (b *ServiceBusTopicFunctionBuilder) BlobInput(name, path, connection string) *ServiceBusTopicFunctionBuilder {
+	blobInput := &bindings.BlobInput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobInput.ToBinding())
+	return b
+}
+
+// BlobOutput adds a blob output binding.
+func (b *ServiceBusTopicFunctionBuilder) BlobOutput(name, path, connection string) *ServiceBusTopicFunctionBuilder {
+	blobOutput := &bindings.BlobOutput{
+		Name:       name,
+		Path:       path,
+		Connection: connection,
+	}
+	b.rf.RawBindings = append(b.rf.RawBindings, blobOutput.ToBinding())
+	return b
+}
+
+// EventGridOutput adds an EventGrid output binding.
+func (b *ServiceBusTopicFunctionBuilder) EventGridOutput(name, topicEndpointUri, topicKeySetting string) *ServiceBusTopicFunctionBuilder {
+	output := &bindings.EventGridOutput{
+		Name:             name,
+		TopicEndpointUri: topicEndpointUri,
+		TopicKeySetting:  topicKeySetting,
 	}
 	b.rf.RawBindings = append(b.rf.RawBindings, output.ToBinding())
 	return b

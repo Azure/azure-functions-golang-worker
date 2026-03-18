@@ -333,6 +333,155 @@ func TestEventGrid_WithOutput(t *testing.T) {
 
 // --- ServiceBus Queue builder tests ---
 
+func TestTimer_BasicRegistration(t *testing.T) {
+	app := FunctionApp()
+	handler := func() {}
+
+	builder := app.Timer("timerFunc", handler)
+	if builder == nil {
+		t.Fatal("expected non-nil builder")
+	}
+
+	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+		rf := value.(*RegisteredFunction)
+		if rf.RawBindings[0].Type != "timerTrigger" {
+			t.Errorf("expected type %q, got %q", "timerTrigger", rf.RawBindings[0].Type)
+		}
+		return true
+	})
+}
+
+func TestTimer_Chaining(t *testing.T) {
+	app := FunctionApp()
+	handler := func() {}
+
+	app.Timer("timerFull", handler).
+		Schedule("0 */5 * * * *")
+
+	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.TimerBinding == nil {
+			t.Fatal("expected TimerBinding")
+		}
+		if binding.TimerBinding.Schedule != "0 */5 * * * *" {
+			t.Errorf("expected schedule %q, got %q", "0 */5 * * * *", binding.TimerBinding.Schedule)
+		}
+		return true
+	})
+}
+
+// --- EventHub builder tests ---
+
+func TestEventHub_BasicRegistration(t *testing.T) {
+	app := FunctionApp()
+	handler := func(msg string) {}
+
+	builder := app.EventHub("ehFunc", handler)
+	if builder == nil {
+		t.Fatal("expected non-nil builder")
+	}
+
+	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+		rf := value.(*RegisteredFunction)
+		if rf.RawBindings[0].Type != "eventHubTrigger" {
+			t.Errorf("expected type %q, got %q", "eventHubTrigger", rf.RawBindings[0].Type)
+		}
+		return true
+	})
+}
+
+func TestEventHub_Chaining(t *testing.T) {
+	app := FunctionApp()
+	handler := func(msg string) {}
+
+	app.EventHub("ehFull", handler).
+		EventHubName("myeventhub").
+		Connection("EventHubConnection").
+		ConsumerGroup("myGroup").
+		Cardinality("many")
+
+	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.EventHubBinding == nil {
+			t.Fatal("expected EventHubBinding")
+		}
+		if binding.EventHubBinding.EventHubName != "myeventhub" {
+			t.Errorf("expected eventHubName %q, got %q", "myeventhub", binding.EventHubBinding.EventHubName)
+		}
+		if binding.EventHubBinding.Connection != "EventHubConnection" {
+			t.Errorf("expected connection %q, got %q", "EventHubConnection", binding.EventHubBinding.Connection)
+		}
+		if binding.EventHubBinding.ConsumerGroup != "myGroup" {
+			t.Errorf("expected consumerGroup %q, got %q", "myGroup", binding.EventHubBinding.ConsumerGroup)
+		}
+		if binding.EventHubBinding.Cardinality != "many" {
+			t.Errorf("expected cardinality %q, got %q", "many", binding.EventHubBinding.Cardinality)
+		}
+		return true
+	})
+}
+
+func TestEventHub_WithOutput(t *testing.T) {
+	app := FunctionApp()
+	handler := func(msg string) {}
+
+	app.EventHub("ehWithOutput", handler).
+		EventHubName("inputhub").
+		Connection("EventHubConnection").
+		EventHubOutput("outputMsg", "outputhub", "EventHubConnection")
+
+	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+		rf := value.(*RegisteredFunction)
+		if len(rf.RawBindings) != 2 {
+			t.Errorf("expected 2 bindings, got %d", len(rf.RawBindings))
+		}
+		outBinding := rf.RawBindings[1]
+		if outBinding.Name != "outputMsg" {
+			t.Errorf("expected output binding name %q, got %q", "outputMsg", outBinding.Name)
+		}
+		if outBinding.Type != "eventHub" {
+			t.Errorf("expected type %q, got %q", "eventHub", outBinding.Type)
+		}
+		if outBinding.Direction != "out" {
+			t.Errorf("expected direction %q, got %q", "out", outBinding.Direction)
+		}
+		return true
+	})
+}
+
+func TestCosmosDB_WithOutput(t *testing.T) {
+	app := FunctionApp()
+	handler := func(docs string) {}
+
+	app.CosmosDB("cosmosWithOutput", handler).
+		Database("mydb").
+		Container("mycontainer").
+		Connection("CosmosDBConnection").
+		EventHubOutput("outputMsg", "myeventhub", "EventHubConnection")
+
+	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+		rf := value.(*RegisteredFunction)
+		if len(rf.RawBindings) != 2 {
+			t.Errorf("expected 2 bindings, got %d", len(rf.RawBindings))
+		}
+		outBinding := rf.RawBindings[1]
+		if outBinding.Name != "outputMsg" {
+			t.Errorf("expected output binding name %q, got %q", "outputMsg", outBinding.Name)
+		}
+		if outBinding.Type != "eventHub" {
+			t.Errorf("expected type %q, got %q", "eventHub", outBinding.Type)
+		}
+		if outBinding.Direction != "out" {
+			t.Errorf("expected direction %q, got %q", "out", outBinding.Direction)
+		}
+		return true
+	})
+}
+
+// --- ServiceBus Queue builder tests ---
+
 func TestServiceBusQueue_BasicRegistration(t *testing.T) {
 	app := FunctionApp()
 	handler := func(msg string) {}
@@ -638,6 +787,8 @@ func TestMixedTriggerTypes(t *testing.T) {
 	app.Blob("blobFunc", func(data []byte) {}).Path("container/{name}")
 	app.EventGrid("eventFunc", func(event string) {})
 	app.ServiceBusQueue("sbFunc", func(msg string) {}).QueueName("myqueue").Connection("SBConn")
+	app.Timer("timerFunc", func() {}).Schedule("0 */5 * * * *")
+	app.EventHub("ehFunc", func(msg string) {}).EventHubName("myhub").Connection("EHConn")
 
 	count := 0
 	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
@@ -645,8 +796,8 @@ func TestMixedTriggerTypes(t *testing.T) {
 		return true
 	})
 
-	if count != 5 {
-		t.Errorf("expected 5 registered functions, got %d", count)
+	if count != 7 {
+		t.Errorf("expected 7 registered functions, got %d", count)
 	}
 }
 
