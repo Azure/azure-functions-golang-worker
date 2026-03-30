@@ -23,12 +23,19 @@ jobs:
 
     - script: |
         go install gotest.tools/gotestsum@latest
-      displayName: 'Install gotestsum'
+        go install github.com/boumenot/gocover-cobertura@latest
+      displayName: 'Install test tools'
 
     - script: |
         export PATH=$PATH:$(go env GOPATH)/bin
-        gotestsum --junitfile $(Build.SourcesDirectory)/test-results.xml -- ./worker/... ./sdk/...
+        gotestsum --junitfile $(Build.SourcesDirectory)/test-results.xml -- -coverprofile=$(Build.SourcesDirectory)/coverage.out -covermode=atomic -coverpkg=./worker/...,./sdk/... ./worker/... ./sdk/...
       displayName: 'Run unit tests'
+
+    - script: |
+        export PATH=$PATH:$(go env GOPATH)/bin
+        gocover-cobertura -ignore-gen-files < $(Build.SourcesDirectory)/coverage.out > $(Build.SourcesDirectory)/coverage.xml
+      displayName: 'Convert coverage to Cobertura'
+      condition: always()
 
     - task: PublishTestResults@2
       displayName: 'Publish test results'
@@ -38,3 +45,10 @@ jobs:
         testResultsFiles: '$(Build.SourcesDirectory)/test-results.xml'
         testRunTitle: 'Go Unit Tests'
         mergeTestResults: true
+
+    - task: PublishCodeCoverageResults@2
+      displayName: 'Publish coverage report'
+      condition: always()
+      inputs:
+        summaryFileLocation: '$(Build.SourcesDirectory)/coverage.xml'
+        additionalCodeCoverageFiles: '$(Build.SourcesDirectory)/coverage.out'
