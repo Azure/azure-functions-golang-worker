@@ -5,9 +5,6 @@ import "encoding/json"
 // ServiceBusTriggerBindingType is the binding type constant for Service Bus triggers.
 const ServiceBusTriggerBindingType BindingType = "serviceBusTrigger"
 
-// ServiceBusOutputType is the binding type constant for Service Bus output bindings.
-const ServiceBusOutputType BindingType = "serviceBus"
-
 // ServiceBusBinding is the JSON representation for Service Bus bindings.
 type ServiceBusBinding struct {
 	QueueName          string `json:"queueName,omitempty"`
@@ -106,48 +103,4 @@ func (s *ServiceBusTopicTrigger) ToBinding() Binding {
 	}
 }
 
-// ServiceBusQueueOutput is the user-facing configuration for a Service Bus queue output binding.
-type ServiceBusQueueOutput struct {
-	Name       string
-	QueueName  string
-	Connection string
-}
 
-// GetBindingType returns the Service Bus output binding type.
-func (s *ServiceBusQueueOutput) GetBindingType() BindingType { return ServiceBusOutputType }
-
-// ToBinding converts the ServiceBusQueueOutput to a Binding.
-func (s *ServiceBusQueueOutput) ToBinding() Binding {
-	return Binding{
-		Name:      s.Name,
-		Type:      string(s.GetBindingType()),
-		Direction: "out",
-		ServiceBusBinding: &ServiceBusBinding{
-			QueueName:  s.QueueName,
-			Connection: s.Connection,
-		},
-	}
-}
-
-// ServiceBusTopicOutput is the user-facing configuration for a Service Bus topic output binding.
-type ServiceBusTopicOutput struct {
-	Name       string
-	TopicName  string
-	Connection string
-}
-
-// GetBindingType returns the Service Bus output binding type.
-func (s *ServiceBusTopicOutput) GetBindingType() BindingType { return ServiceBusOutputType }
-
-// ToBinding converts the ServiceBusTopicOutput to a Binding.
-func (s *ServiceBusTopicOutput) ToBinding() Binding {
-	return Binding{
-		Name:      s.Name,
-		Type:      string(s.GetBindingType()),
-		Direction: "out",
-		ServiceBusBinding: &ServiceBusBinding{
-			TopicName:  s.TopicName,
-			Connection: s.Connection,
-		},
-	}
-}

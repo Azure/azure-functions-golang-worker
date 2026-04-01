@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
@@ -9,7 +10,7 @@ import (
 )
 
 // ServiceBusQueueHandler handles messages from a Service Bus queue
-func ServiceBusQueueHandler(msg bindings.ServiceBusMessage) {
+func ServiceBusQueueHandler(ctx context.Context, msg bindings.ServiceBusMessage) error {
 	log.Printf("Service Bus Queue Trigger Executed")
 	log.Printf("Message ID: %s", msg.MessageId)
 	log.Printf("Body: %s", string(msg.Body))
@@ -22,6 +23,7 @@ func ServiceBusQueueHandler(msg bindings.ServiceBusMessage) {
 	if msg.SessionId != "" {
 		log.Printf("Session ID: %s", msg.SessionId)
 	}
+	return nil
 }
 
 func main() {

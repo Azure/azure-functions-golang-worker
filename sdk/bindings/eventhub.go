@@ -3,9 +3,6 @@ package bindings
 // EventHubTriggerBindingType is the binding type constant for EventHub triggers.
 const EventHubTriggerBindingType BindingType = "eventHubTrigger"
 
-// EventHubOutputType is the binding type constant for EventHub output bindings.
-const EventHubOutputType BindingType = "eventHub"
-
 // EventHubBinding is the JSON representation for EventHub bindings.
 type EventHubBinding struct {
 	EventHubName  string `json:"eventHubName"`
@@ -52,25 +49,4 @@ func (e *EventHubTrigger) ToBinding() Binding {
 	}
 }
 
-// EventHubOutput is the user-facing configuration for an EventHub output binding.
-type EventHubOutput struct {
-	Name         string
-	EventHubName string
-	Connection   string
-}
 
-// GetBindingType returns the EventHub output binding type.
-func (e *EventHubOutput) GetBindingType() BindingType { return EventHubOutputType }
-
-// ToBinding converts the EventHubOutput to a Binding.
-func (e *EventHubOutput) ToBinding() Binding {
-	return Binding{
-		Name:      e.Name,
-		Type:      string(e.GetBindingType()),
-		Direction: "out",
-		EventHubBinding: &EventHubBinding{
-			EventHubName: e.EventHubName,
-			Connection:   e.Connection,
-		},
-	}
-}

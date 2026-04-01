@@ -8,7 +8,6 @@ type FunctionDefinition struct {
 	FuncId         string
 	FuncName       string
 	InputBindings  map[string]GrpcBindingMetadata
-	OutputBindings map[string]GrpcBindingMetadata
 	RegisteredFunc RegisteredFunction
 }
 

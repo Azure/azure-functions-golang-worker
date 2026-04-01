@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 )
 
 // CosmosDBTriggerHandler handles updates from CosmosDB
-func CosmosDBTriggerHandler(docs []bindings.CosmosDocument) {
+func CosmosDBTriggerHandler(ctx context.Context, docs []bindings.CosmosDocument) error {
 	if len(docs) > 0 {
 		for _, doc := range docs {
 			log.Printf("Document ID: %s, Data: %s\n", doc.ID, doc.Data)
@@ -18,6 +19,7 @@ func CosmosDBTriggerHandler(docs []bindings.CosmosDocument) {
 	} else {
 		log.Println("No documents received")
 	}
+	return nil
 }
 
 var retry = &sdk.RetryOptions{

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
@@ -9,7 +10,7 @@ import (
 )
 
 // ServiceBusTopicHandler handles messages from a Service Bus topic subscription
-func ServiceBusTopicHandler(msg bindings.ServiceBusMessage) {
+func ServiceBusTopicHandler(ctx context.Context, msg bindings.ServiceBusMessage) error {
 	log.Printf("Service Bus Topic Trigger Executed")
 	log.Printf("Message ID: %s", msg.MessageId)
 	log.Printf("Body: %s", string(msg.Body))
@@ -22,6 +23,7 @@ func ServiceBusTopicHandler(msg bindings.ServiceBusMessage) {
 	if msg.ContentType != "" {
 		log.Printf("Content Type: %s", msg.ContentType)
 	}
+	return nil
 }
 
 func main() {

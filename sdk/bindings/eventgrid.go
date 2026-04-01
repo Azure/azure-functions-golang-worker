@@ -3,8 +3,6 @@ package bindings
 import "encoding/json"
 
 const EventGridTriggerBindingType BindingType = "eventGridTrigger"
-const EventGridOutputType BindingType = "eventGrid"
-
 // EventGridBinding is the JSON representation for EventGrid bindings.
 type EventGridBinding struct {
 	TopicEndpointUri string `json:"topicEndpointUri,omitempty"`
@@ -39,23 +37,4 @@ func (e *EventGridTrigger) ToBinding() Binding {
 	}
 }
 
-// EventGridOutput is the user-facing configuration for an EventGrid output binding.
-type EventGridOutput struct {
-	Name             string
-	TopicEndpointUri string
-	TopicKeySetting  string
-}
 
-func (e *EventGridOutput) GetBindingType() BindingType { return EventGridOutputType }
-
-func (e *EventGridOutput) ToBinding() Binding {
-	return Binding{
-		Name:      e.Name,
-		Type:      string(e.GetBindingType()),
-		Direction: "out",
-		EventGridBinding: &EventGridBinding{
-			TopicEndpointUri: e.TopicEndpointUri,
-			TopicKeySetting:  e.TopicKeySetting,
-		},
-	}
-}

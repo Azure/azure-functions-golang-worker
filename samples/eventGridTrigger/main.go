@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 
@@ -10,7 +11,7 @@ import (
 )
 
 // EventGridHandler handles Event Grid trigger events.
-func EventGridHandler(event bindings.EventGridEvent) {
+func EventGridHandler(ctx context.Context, event bindings.EventGridEvent) error {
 	log.Printf("Event Grid trigger executed")
 	log.Printf("Event ID: %s", event.Id)
 	log.Printf("Event Type: %s", event.EventType)
@@ -21,9 +22,10 @@ func EventGridHandler(event bindings.EventGridEvent) {
 	var data map[string]interface{}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
 		log.Printf("Error unmarshaling event data: %v", err)
-		return
+		return err
 	}
 	log.Printf("Event Data: %v", data)
+	return nil
 }
 
 func main() {
