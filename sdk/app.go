@@ -156,50 +156,6 @@ func (b *CosmosFunctionBuilder) updateBinding() {
 	}
 }
 
-// --- Blob Trigger (raw bytes) ---
-
-// BlobFunctionBuilder is a builder for creating blob triggered functions
-// that receive the blob content as raw bytes.
-// For large blobs or SDK-type blob client access, use the triggers/blob module.
-type BlobFunctionBuilder struct {
-	trigger *bindings.Blob
-	rf      *RegisteredFunction
-}
-
-// Blob creates a new blob-triggered function that receives blob content as bytes.
-func (app *App) Blob(name string, f BlobHandler) *BlobFunctionBuilder {
-	trigger := &bindings.Blob{
-		Name: "blob",
-	}
-
-	rf := app.registerFunction(f, trigger)
-
-	return &BlobFunctionBuilder{
-		trigger: trigger,
-		rf:      rf,
-	}
-}
-
-// Path sets the blob path pattern (e.g., "container/{name}").
-func (b *BlobFunctionBuilder) Path(path string) *BlobFunctionBuilder {
-	b.trigger.Path = path
-	b.updateBinding()
-	return b
-}
-
-// Connection sets the blob connection string setting name.
-func (b *BlobFunctionBuilder) Connection(connection string) *BlobFunctionBuilder {
-	b.trigger.Connection = connection
-	b.updateBinding()
-	return b
-}
-
-func (b *BlobFunctionBuilder) updateBinding() {
-	if len(b.rf.RawBindings) > 0 {
-		b.rf.RawBindings[0] = b.trigger.ToBinding()
-	}
-}
-
 // --- EventGrid Trigger ---
 
 // EventGridFunctionBuilder is a builder for creating EventGrid triggered functions.
@@ -403,15 +359,21 @@ func (b *ServiceBusTopicFunctionBuilder) updateBinding() {
 
 // --- Registration ---
 
+// ClientFactory is a function that creates a trigger-specific client argument
+// from the invocation metadata. Used by trigger modules like triggers/blob
+// to create SDK clients (e.g., *blob.Client) during invocation.
+type ClientFactory func(config map[string]any, triggerMetadata map[string]string) (any, error)
+
 // RegisteredFunction holds metadata about a registered function.
 type RegisteredFunction struct {
-	Func        any
-	FuncName    string
-	FuncId      string
-	RawBindings []bindings.Binding
-	Retry       *RetryOptions
-	ScriptFile  string
-	TriggerType string
+	Func           any
+	FuncName       string
+	FuncId         string
+	RawBindings    []bindings.Binding
+	Retry          *RetryOptions
+	ScriptFile     string
+	TriggerType    string
+	ClientFactory  ClientFactory // Optional: creates trigger-specific client args
 }
 
 // RegisterFunction registers a function with a trigger binding.

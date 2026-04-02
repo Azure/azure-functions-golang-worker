@@ -1,4 +1,4 @@
-package blob
+package blobtrigger
 
 import (
 	"context"

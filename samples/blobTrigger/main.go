@@ -2,26 +2,36 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
 
-	"github.com/azure/azure-functions-golang-worker/sdk"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
+	blobtrigger "github.com/azure/azure-functions-golang-worker/triggers/blob"
 	"github.com/azure/azure-functions-golang-worker/worker"
+
+	"github.com/azure/azure-functions-golang-worker/sdk"
 )
 
-// BlobHandler handles blob trigger events.
-// It receives the blob content as raw bytes — suitable for small to medium blobs.
-// For large blobs, use the triggers/blob module which provides a *blob.Client
-// for streaming access without loading the entire blob into memory.
-func BlobHandler(ctx context.Context, data []byte) error {
-	log.Printf("Blob Trigger Executed")
-	log.Printf("Blob content length: %d bytes", len(data))
+// BlobHandler handles blob trigger events using a *blob.Client.
+// The client is scoped to the specific blob that triggered the function,
+// supporting streaming access for blobs of any size.
+func BlobHandler(ctx context.Context, client *blob.Client) error {
+	log.Printf("Blob Trigger Executed for: %s", client.URL())
 
-	if len(data) == 0 {
-		log.Println("Blob is empty")
-		return nil
+	// Download the blob content
+	get, err := client.DownloadStream(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error downloading blob: %w", err)
 	}
 
-	// Log content for small blobs (< 1KB)
+	data, err := io.ReadAll(get.Body)
+	if err != nil {
+		return fmt.Errorf("error reading blob body: %w", err)
+	}
+	get.Body.Close()
+
+	log.Printf("Blob content length: %d bytes", len(data))
 	if len(data) <= 1024 {
 		log.Printf("Blob content: %s", string(data))
 	} else {
@@ -34,7 +44,7 @@ func BlobHandler(ctx context.Context, data []byte) error {
 func main() {
 	app := sdk.FunctionApp()
 
-	app.Blob("blobTrigger", BlobHandler).
+	blobtrigger.Register(app, "blobTrigger", BlobHandler).
 		Path("test-container/{name}").
 		Connection("AzureWebJobsStorage")
 

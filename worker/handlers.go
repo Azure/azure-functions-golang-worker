@@ -228,6 +228,40 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 		return nil, err
 	}
 
+	// 2b. If the function has a ClientFactory, use it to create the trigger client
+	if loadedFunc.Function.ClientFactory != nil {
+		// Extract trigger binding config
+		config := make(map[string]any)
+		if len(loadedFunc.Function.RawBindings) > 0 {
+			import_json, _ := json.Marshal(loadedFunc.Function.RawBindings[0])
+			json.Unmarshal(import_json, &config)
+		}
+
+		// Extract trigger metadata as strings
+		triggerMeta := make(map[string]string)
+		for k, v := range req.GetTriggerMetadata() {
+			if s := v.GetString_(); s != "" {
+				triggerMeta[k] = s
+			}
+		}
+
+		clientVal, err := loadedFunc.Function.ClientFactory(config, triggerMeta)
+		if err != nil {
+			return nil, fmt.Errorf("client factory error: %v", err)
+		}
+
+		// Find the argument position for the client (skip context, writer, and already-populated args)
+		for i := 0; i < ft.NumIn(); i++ {
+			t := ft.In(i)
+			if t.Implements(contextType) || t == reflect.TypeOf((*http.ResponseWriter)(nil)).Elem() {
+				continue
+			}
+			// This is the trigger argument — replace it with the client
+			args[i] = reflect.ValueOf(clientVal)
+			break
+		}
+	}
+
 	// 3. Invoke handler
 	fv := reflect.ValueOf(loadedFunc.Function.Func)
 	results := fv.Call(args)

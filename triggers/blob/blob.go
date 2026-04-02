@@ -1,7 +1,7 @@
-// Package blob provides a blob trigger for Azure Functions Go Worker.
+// Package blobtrigger provides a blob trigger for Azure Functions Go Worker.
 // It creates a *blob.Client pointed at the specific blob that triggered
 // the function, supporting both connection string and managed identity auth.
-package blob
+package blobtrigger
 
 import (
 	"context"
@@ -35,10 +35,33 @@ func Register(app *sdk.App, name string, f BlobHandler) *BlobFunctionBuilder {
 
 	rf := app.RegisterFunction(f, trigger)
 
-	return &BlobFunctionBuilder{
+	builder := &BlobFunctionBuilder{
 		trigger: trigger,
 		rf:      rf,
 	}
+
+	// Set the client factory — the dispatcher will call this during invocation
+	// to create a *blob.Client scoped to the specific blob that triggered.
+	rf.ClientFactory = func(config map[string]any, triggerMeta map[string]string) (any, error) {
+		connection := builder.trigger.Connection
+		if connection == "" {
+			connection = "AzureWebJobsStorage"
+		}
+
+		// Resolve blob path from trigger metadata
+		path := builder.trigger.Path
+		for k, v := range triggerMeta {
+			path = strings.ReplaceAll(path, "{"+k+"}", v)
+		}
+		// Fallback: use BlobTrigger metadata for the actual path
+		if bt, ok := triggerMeta["BlobTrigger"]; ok && bt != "" {
+			path = bt
+		}
+
+		return CreateBlobClient(connection, path)
+	}
+
+	return builder
 }
 
 // Path sets the blob path pattern (e.g., "container/{name}").
