@@ -42,4 +42,4 @@ def test_blob_trigger_fires(func_host):
     # Note: The actual DownloadStream call may fail against old Azurite versions
     # due to API version mismatches, but the trigger + client factory is verified.
     proc.assert_log_contains("Blob Trigger Executed for:", timeout=90)
-    proc.assert_log_contains("Executing 'Functions.BlobHandler'", timeout=5)
+    proc.assert_log_contains("Executing 'Functions.blobTrigger'", timeout=5)

@@ -38,5 +38,5 @@ def test_cosmosdb_trigger_fires(func_host):
     container.create_item({"id": doc_id, "data": "Hello from Cosmos integration test!"})
 
     # Cosmos change feed can take 10-30s to detect changes
-    proc.assert_log_contains("Executing 'Functions.CosmosDBTriggerHandler'", timeout=45)
+    proc.assert_log_contains("Executing 'Functions.docs'", timeout=45)
     proc.assert_log_contains("Succeeded", timeout=10)
