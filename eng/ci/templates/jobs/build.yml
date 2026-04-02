@@ -24,7 +24,7 @@ jobs:
     - script: go mod download
       displayName: 'Download dependencies'
 
-    - script: go vet ./...
+    - script: go vet $(go list ./...)
       displayName: 'Run go vet'
 
     - script: |
