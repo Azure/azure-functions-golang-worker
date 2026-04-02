@@ -1,9 +1,10 @@
 package bindings
 
+// HttpBindingType is the binding type constant for HTTP triggers.
 const HttpBindingType BindingType = "httpTrigger"
 
-// HTTPBinding is the JSON representation for HTTP.
-type HTTPBinding struct {
+// HttpBinding is the JSON representation for HTTP.
+type HttpBinding struct {
 	AuthLevel string   `json:"authLevel"`
 	Methods   []string `json:"methods"`
 	Route     string   `json:"route,omitempty"`
@@ -24,7 +25,7 @@ func (c *HttpTrigger) ToBinding() Binding {
 		Name:      c.Name,
 		Type:      string(c.GetBindingType()),
 		Direction: "in",
-		HTTPBinding: &HTTPBinding{
+		HttpBinding: &HttpBinding{
 			AuthLevel: c.AuthLevel,
 			Methods:   c.Methods,
 			Route:     c.Route,

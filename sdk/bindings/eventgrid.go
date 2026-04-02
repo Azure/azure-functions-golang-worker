@@ -3,11 +3,8 @@ package bindings
 import "encoding/json"
 
 const EventGridTriggerBindingType BindingType = "eventGridTrigger"
-// EventGridBinding is the JSON representation for EventGrid bindings.
-type EventGridBinding struct {
-	TopicEndpointUri string `json:"topicEndpointUri,omitempty"`
-	TopicKeySetting  string `json:"topicKeySetting,omitempty"`
-}
+// EventGridBinding is the JSON representation for EventGrid trigger bindings.
+type EventGridBinding struct{}
 
 // EventGridEvent represents an Azure Event Grid event.
 type EventGridEvent struct {

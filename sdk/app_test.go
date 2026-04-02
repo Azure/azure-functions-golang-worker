@@ -73,11 +73,11 @@ func TestHTTP_Methods(t *testing.T) {
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*RegisteredFunction)
 		binding := rf.RawBindings[0]
-		if binding.HTTPBinding == nil {
-			t.Fatal("expected HTTPBinding")
+		if binding.HttpBinding == nil {
+			t.Fatal("expected HttpBinding")
 		}
-		if len(binding.HTTPBinding.Methods) != 1 || binding.HTTPBinding.Methods[0] != "GET" {
-			t.Errorf("expected methods [GET], got %v", binding.HTTPBinding.Methods)
+		if len(binding.HttpBinding.Methods) != 1 || binding.HttpBinding.Methods[0] != "GET" {
+			t.Errorf("expected methods [GET], got %v", binding.HttpBinding.Methods)
 		}
 		return true
 	})
@@ -92,8 +92,8 @@ func TestHTTP_Auth(t *testing.T) {
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*RegisteredFunction)
 		binding := rf.RawBindings[0]
-		if binding.HTTPBinding.AuthLevel != "function" {
-			t.Errorf("expected auth level %q, got %q", "function", binding.HTTPBinding.AuthLevel)
+		if binding.HttpBinding.AuthLevel != "function" {
+			t.Errorf("expected auth level %q, got %q", "function", binding.HttpBinding.AuthLevel)
 		}
 		return true
 	})
@@ -110,11 +110,11 @@ func TestHTTP_Chaining(t *testing.T) {
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*RegisteredFunction)
 		binding := rf.RawBindings[0]
-		if len(binding.HTTPBinding.Methods) != 2 {
-			t.Errorf("expected 2 methods, got %d", len(binding.HTTPBinding.Methods))
+		if len(binding.HttpBinding.Methods) != 2 {
+			t.Errorf("expected 2 methods, got %d", len(binding.HttpBinding.Methods))
 		}
-		if binding.HTTPBinding.AuthLevel != "admin" {
-			t.Errorf("expected auth level %q, got %q", "admin", binding.HTTPBinding.AuthLevel)
+		if binding.HttpBinding.AuthLevel != "admin" {
+			t.Errorf("expected auth level %q, got %q", "admin", binding.HttpBinding.AuthLevel)
 		}
 		return true
 	})

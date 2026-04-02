@@ -46,7 +46,7 @@ func (app *App) HTTP(name string, f HTTPHandler) *HttpFunctionBuilder {
 		Methods:   []string{"GET", "POST"},
 	}
 
-	rf := app.registerFunction(f, trigger)
+	rf := app.registerFunction(name, f, trigger)
 
 	return &HttpFunctionBuilder{
 		trigger: trigger,
@@ -88,7 +88,7 @@ func (app *App) Timer(name string, f TimerHandler) *TimerFunctionBuilder {
 		Name: "timer",
 	}
 
-	rf := app.registerFunction(f, trigger)
+	rf := app.registerFunction(name, f, trigger)
 
 	return &TimerFunctionBuilder{
 		trigger: trigger,
@@ -111,48 +111,48 @@ func (b *TimerFunctionBuilder) updateBinding() {
 
 // --- CosmosDB Trigger ---
 
-// CosmosFunctionBuilder is a builder for creating CosmosDB triggered functions.
-type CosmosFunctionBuilder struct {
-	trigger *bindings.CosmosDB
+// CosmosDBFunctionBuilder is a builder for creating CosmosDB triggered functions.
+type CosmosDBFunctionBuilder struct {
+	trigger *bindings.CosmosDBTrigger
 	rf      *RegisteredFunction
 }
 
 // CosmosDB creates a new CosmosDB triggered function.
-func (app *App) CosmosDB(name string, f CosmosDBHandler) *CosmosFunctionBuilder {
-	trigger := &bindings.CosmosDB{
-		ArgName: "docs",
+func (app *App) CosmosDB(name string, f CosmosDBHandler) *CosmosDBFunctionBuilder {
+	trigger := &bindings.CosmosDBTrigger{
+		Name: "docs",
 	}
 
-	rf := app.registerFunction(f, trigger)
+	rf := app.registerFunction(name, f, trigger)
 
-	return &CosmosFunctionBuilder{
+	return &CosmosDBFunctionBuilder{
 		trigger: trigger,
 		rf:      rf,
 	}
 }
 
 // Database sets the CosmosDB database name.
-func (b *CosmosFunctionBuilder) Database(dbName string) *CosmosFunctionBuilder {
+func (b *CosmosDBFunctionBuilder) Database(dbName string) *CosmosDBFunctionBuilder {
 	b.trigger.DatabaseName = dbName
 	b.updateBinding()
 	return b
 }
 
 // Container sets the CosmosDB container name.
-func (b *CosmosFunctionBuilder) Container(containerName string) *CosmosFunctionBuilder {
+func (b *CosmosDBFunctionBuilder) Container(containerName string) *CosmosDBFunctionBuilder {
 	b.trigger.ContainerName = containerName
 	b.updateBinding()
 	return b
 }
 
 // Connection sets the CosmosDB connection string setting.
-func (b *CosmosFunctionBuilder) Connection(connection string) *CosmosFunctionBuilder {
+func (b *CosmosDBFunctionBuilder) Connection(connection string) *CosmosDBFunctionBuilder {
 	b.trigger.Connection = connection
 	b.updateBinding()
 	return b
 }
 
-func (b *CosmosFunctionBuilder) updateBinding() {
+func (b *CosmosDBFunctionBuilder) updateBinding() {
 	if len(b.rf.RawBindings) > 0 {
 		b.rf.RawBindings[0] = b.trigger.ToBinding()
 	}
@@ -172,7 +172,7 @@ func (app *App) EventGrid(name string, f EventGridHandler) *EventGridFunctionBui
 		Name: "event",
 	}
 
-	rf := app.registerFunction(f, trigger)
+	rf := app.registerFunction(name, f, trigger)
 
 	return &EventGridFunctionBuilder{
 		trigger: trigger,
@@ -196,7 +196,7 @@ func (app *App) EventHub(name string, f EventHubHandler) *EventHubFunctionBuilde
 		Cardinality:   "one",
 	}
 
-	rf := app.registerFunction(f, trigger)
+	rf := app.registerFunction(name, f, trigger)
 
 	return &EventHubFunctionBuilder{
 		trigger: trigger,
@@ -253,7 +253,7 @@ func (app *App) ServiceBusQueue(name string, f ServiceBusHandler) *ServiceBusQue
 		Cardinality: "one",
 	}
 
-	rf := app.registerFunction(f, trigger)
+	rf := app.registerFunction(name, f, trigger)
 
 	return &ServiceBusQueueFunctionBuilder{
 		trigger: trigger,
@@ -310,7 +310,7 @@ func (app *App) ServiceBusTopic(name string, f ServiceBusHandler) *ServiceBusTop
 		Cardinality: "one",
 	}
 
-	rf := app.registerFunction(f, trigger)
+	rf := app.registerFunction(name, f, trigger)
 
 	return &ServiceBusTopicFunctionBuilder{
 		trigger: trigger,
@@ -367,7 +367,7 @@ func (b *ServiceBusTopicFunctionBuilder) updateBinding() {
 //
 //	import _ "github.com/azure/azure-functions-golang-worker/triggers/blob"
 type BlobFunctionBuilder struct {
-	trigger *bindings.Blob
+	trigger *bindings.BlobTrigger
 	rf      *RegisteredFunction
 }
 
@@ -377,11 +377,11 @@ type BlobFunctionBuilder struct {
 //
 //	import _ "github.com/azure/azure-functions-golang-worker/triggers/blob"
 func (app *App) Blob(name string, f any) *BlobFunctionBuilder {
-	trigger := &bindings.Blob{
+	trigger := &bindings.BlobTrigger{
 		Name: "blob",
 	}
 
-	rf := app.registerFunction(f, trigger)
+	rf := app.registerFunction(name, f, trigger)
 
 	// Look up the globally registered factory for blob triggers
 	if factory, ok := GetClientFactory(string(bindings.BlobBindingType)); ok {
@@ -431,10 +431,15 @@ type RegisteredFunction struct {
 // RegisterFunction registers a function with a trigger binding.
 // This is exported for use by external trigger modules (e.g., triggers/blob).
 func (app *App) RegisterFunction(f any, b bindings.Bind) *RegisteredFunction {
-	return app.registerFunction(f, b)
+	return app.registerFunction("", f, b)
 }
 
-func (app *App) registerFunction(f any, b bindings.Bind) *RegisteredFunction {
+// RegisterFunctionWithName registers a function with a trigger binding and explicit name.
+func (app *App) RegisterFunctionWithName(name string, f any, b bindings.Bind) *RegisteredFunction {
+	return app.registerFunction(name, f, b)
+}
+
+func (app *App) registerFunction(name string, f any, b bindings.Bind) *RegisteredFunction {
 	triggerBinding := b.ToBinding()
 	rawBindings := []bindings.Binding{triggerBinding}
 
@@ -451,9 +456,15 @@ func (app *App) registerFunction(f any, b bindings.Bind) *RegisteredFunction {
 	fun := runtime.FuncForPC(ptr)
 	file, _ := fun.FileLine(ptr)
 
+	// Use the explicit name if provided, otherwise derive from function
+	funcName := name
+	if funcName == "" {
+		funcName = GetFunctionName(f)
+	}
+
 	rf := &RegisteredFunction{
 		Func:        f,
-		FuncName:    GetFunctionName(f),
+		FuncName:    funcName,
 		ScriptFile:  file,
 		RawBindings: rawBindings,
 		TriggerType: string(b.GetBindingType()),
@@ -482,10 +493,13 @@ func GetFunctionName(f any) string {
 	return parts[len(parts)-1]
 }
 
-// HashFunctionID generates a unique ID for the function.
+// HashFunctionID generates a unique ID for the function based on its name
+// and trigger type to avoid collisions between functions with the same name.
 func HashFunctionID(rf RegisteredFunction) (string, error) {
 	var sb strings.Builder
 	sb.WriteString(rf.FuncName)
+	sb.WriteString(":")
+	sb.WriteString(rf.TriggerType)
 
 	hash := sha256.New()
 	if _, err := hash.Write([]byte(sb.String())); err != nil {

@@ -7,16 +7,16 @@ type BlobBinding struct {
 	Connection string `json:"connection"`
 }
 
-// Blob is the user-facing configuration for a Blob trigger.
-type Blob struct {
+// BlobTrigger is the user-facing configuration for a Blob trigger.
+type BlobTrigger struct {
 	Name       string
 	Path       string
 	Connection string
 }
 
-func (b *Blob) GetBindingType() BindingType { return BlobBindingType }
+func (b *BlobTrigger) GetBindingType() BindingType { return BlobBindingType }
 
-func (b *Blob) ToBinding() Binding {
+func (b *BlobTrigger) ToBinding() Binding {
 	return Binding{
 		Name:      b.Name,
 		Type:      string(b.GetBindingType()),

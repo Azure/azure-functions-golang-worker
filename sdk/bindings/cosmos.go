@@ -21,19 +21,19 @@ type CosmosDocument struct {
 	Lsn         int    `json:"_lsn"`
 }
 
-// CosmosDB is the user-facing configuration for a CosmosDB trigger.
-type CosmosDB struct {
-	ArgName       string
+// CosmosDBTrigger is the user-facing configuration for a CosmosDB trigger.
+type CosmosDBTrigger struct {
+	Name          string
 	DatabaseName  string
 	ContainerName string
 	Connection    string
 }
 
-func (c *CosmosDB) GetBindingType() BindingType { return CosmosDBBindingType }
+func (c *CosmosDBTrigger) GetBindingType() BindingType { return CosmosDBBindingType }
 
-func (c *CosmosDB) ToBinding() Binding {
+func (c *CosmosDBTrigger) ToBinding() Binding {
 	return Binding{
-		Name:      c.ArgName,
+		Name:      c.Name,
 		Type:      string(c.GetBindingType()),
 		Direction: "in",
 		CosmosDBBinding: &CosmosDBBinding{
