@@ -13,13 +13,13 @@ type EventHubBinding struct {
 
 // EventHubMessage represents a message received from an Azure Event Hub.
 type EventHubMessage struct {
-	Body             string            `json:"body"`
-	EnqueuedTimeUtc  string            `json:"enqueuedTimeUtc"`
-	SequenceNumber   int64             `json:"sequenceNumber"`
-	Offset           string            `json:"offset"`
-	PartitionKey     string            `json:"partitionKey"`
-	Properties       map[string]string `json:"properties"`
-	SystemProperties map[string]string `json:"systemProperties"`
+	Body             string         `json:"body"`
+	EnqueuedTimeUtc  string         `json:"enqueuedTimeUtc"`
+	SequenceNumber   int64          `json:"sequenceNumber"`
+	Offset           string         `json:"offset"`
+	PartitionKey     string         `json:"partitionKey"`
+	Properties       map[string]any `json:"properties"`
+	SystemProperties map[string]any `json:"systemProperties"`
 }
 
 // EventHubTrigger is the user-facing configuration for an EventHub trigger.

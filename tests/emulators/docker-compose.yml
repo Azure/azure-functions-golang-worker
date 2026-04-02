@@ -1,5 +1,5 @@
-# Docker Compose for Watchtower integration test dependencies.
-# Start with: docker compose -f tests/docker-compose.yml up -d
+# Docker Compose for integration test emulators.
+# Start with: docker compose -f tests/emulators/docker-compose.yml up -d
 #
 # Services:
 #   - azurite:             Azure Storage Emulator (blob, queue, table)
@@ -14,7 +14,7 @@ services:
       - "10000:10000"   # Blob
       - "10001:10001"   # Queue
       - "10002:10002"   # Table
-    command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --silent"
+    command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --skipApiVersionCheck --silent"
 
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
