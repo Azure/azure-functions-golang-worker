@@ -21,7 +21,7 @@ func TestFunctionApp(t *testing.T) {
 	}
 }
 
-// --- HTTP builder tests ---
+// --- HTTP tests ---
 
 func TestHTTP_BasicRegistration(t *testing.T) {
 	app := FunctionApp()
@@ -29,9 +29,9 @@ func TestHTTP_BasicRegistration(t *testing.T) {
 		w.Write([]byte("hello"))
 	})
 
-	builder := app.HTTP("hello", handler)
-	if builder == nil {
-		t.Fatal("expected non-nil builder")
+	rf := app.HTTP("hello", handler)
+	if rf == nil {
+		t.Fatal("expected non-nil RegisteredFunction")
 	}
 
 	count := 0
@@ -68,7 +68,7 @@ func TestHTTP_Methods(t *testing.T) {
 	app := FunctionApp()
 	handler := HTTPHandler(func(w http.ResponseWriter, r *http.Request) {})
 
-	app.HTTP("getonly", handler).Methods("GET")
+	app.HTTP("getonly", handler, WithMethods("GET"))
 
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*RegisteredFunction)
@@ -87,7 +87,7 @@ func TestHTTP_Auth(t *testing.T) {
 	app := FunctionApp()
 	handler := HTTPHandler(func(w http.ResponseWriter, r *http.Request) {})
 
-	app.HTTP("secure", handler).Auth("function")
+	app.HTTP("secure", handler, WithAuth("function"))
 
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*RegisteredFunction)
@@ -99,13 +99,14 @@ func TestHTTP_Auth(t *testing.T) {
 	})
 }
 
-func TestHTTP_Chaining(t *testing.T) {
+func TestHTTP_MultipleOptions(t *testing.T) {
 	app := FunctionApp()
 	handler := HTTPHandler(func(w http.ResponseWriter, r *http.Request) {})
 
-	app.HTTP("chained", handler).
-		Methods("POST", "PUT").
-		Auth("admin")
+	app.HTTP("chained", handler,
+		WithMethods("POST", "PUT"),
+		WithAuth("admin"),
+	)
 
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*RegisteredFunction)
@@ -120,7 +121,7 @@ func TestHTTP_Chaining(t *testing.T) {
 	})
 }
 
-// --- Timer builder tests ---
+// --- Timer tests ---
 
 func TestTimer_BasicRegistration(t *testing.T) {
 	app := FunctionApp()
@@ -128,7 +129,7 @@ func TestTimer_BasicRegistration(t *testing.T) {
 		return nil
 	})
 
-	app.Timer("tick", handler).Schedule("0 */5 * * * *")
+	app.Timer("tick", handler, WithSchedule("0 */5 * * * *"))
 
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*RegisteredFunction)
@@ -138,7 +139,6 @@ func TestTimer_BasicRegistration(t *testing.T) {
 		if rf.TriggerType != "timerTrigger" {
 			t.Errorf("expected TriggerType %q, got %q", "timerTrigger", rf.TriggerType)
 		}
-		// Timer should have exactly 1 binding (trigger only, no $return)
 		if len(rf.RawBindings) != 1 {
 			t.Errorf("expected 1 binding, got %d", len(rf.RawBindings))
 		}
@@ -146,18 +146,19 @@ func TestTimer_BasicRegistration(t *testing.T) {
 	})
 }
 
-// --- CosmosDB builder tests ---
+// --- CosmosDB tests ---
 
-func TestCosmosDB_Chaining(t *testing.T) {
+func TestCosmosDB_Options(t *testing.T) {
 	app := FunctionApp()
 	handler := CosmosDBHandler(func(ctx context.Context, docs []bindings.CosmosDocument) error {
 		return nil
 	})
 
-	app.CosmosDB("cosmosFull", handler).
-		Database("mydb").
-		Container("mycontainer").
-		Connection("CosmosDBConnection")
+	app.CosmosDB("cosmosFull", handler,
+		WithDatabase("mydb"),
+		WithContainer("mycontainer"),
+		WithConnection("CosmosDBConnection"),
+	)
 
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*RegisteredFunction)
@@ -178,7 +179,7 @@ func TestCosmosDB_Chaining(t *testing.T) {
 	})
 }
 
-// --- EventGrid builder tests ---
+// --- EventGrid tests ---
 
 func TestEventGrid_BasicRegistration(t *testing.T) {
 	app := FunctionApp()
@@ -197,19 +198,20 @@ func TestEventGrid_BasicRegistration(t *testing.T) {
 	})
 }
 
-// --- EventHub builder tests ---
+// --- EventHub tests ---
 
-func TestEventHub_Chaining(t *testing.T) {
+func TestEventHub_Options(t *testing.T) {
 	app := FunctionApp()
 	handler := EventHubHandler(func(ctx context.Context, event bindings.EventHubMessage) error {
 		return nil
 	})
 
-	app.EventHub("ehFunc", handler).
-		EventHubName("myeventhub").
-		Connection("EventHubConnection").
-		ConsumerGroup("$Default").
-		Cardinality("one")
+	app.EventHub("ehFunc", handler,
+		WithEventHubName("myeventhub"),
+		WithConnection("EventHubConnection"),
+		WithConsumerGroup("$Default"),
+		WithCardinality("one"),
+	)
 
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*RegisteredFunction)
@@ -227,18 +229,19 @@ func TestEventHub_Chaining(t *testing.T) {
 	})
 }
 
-// --- ServiceBus Queue builder tests ---
+// --- ServiceBus Queue tests ---
 
-func TestServiceBusQueue_Chaining(t *testing.T) {
+func TestServiceBusQueue_Options(t *testing.T) {
 	app := FunctionApp()
 	handler := ServiceBusHandler(func(ctx context.Context, msg bindings.ServiceBusMessage) error {
 		return nil
 	})
 
-	app.ServiceBusQueue("sbQueueFull", handler).
-		QueueName("myqueue").
-		Connection("ServiceBusConnection").
-		Cardinality("one")
+	app.ServiceBusQueue("sbQueueFull", handler,
+		WithQueueName("myqueue"),
+		WithConnection("ServiceBusConnection"),
+		WithCardinality("one"),
+	)
 
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*RegisteredFunction)
@@ -256,18 +259,19 @@ func TestServiceBusQueue_Chaining(t *testing.T) {
 	})
 }
 
-// --- ServiceBus Topic builder tests ---
+// --- ServiceBus Topic tests ---
 
-func TestServiceBusTopic_Chaining(t *testing.T) {
+func TestServiceBusTopic_Options(t *testing.T) {
 	app := FunctionApp()
 	handler := ServiceBusHandler(func(ctx context.Context, msg bindings.ServiceBusMessage) error {
 		return nil
 	})
 
-	app.ServiceBusTopic("sbTopicFull", handler).
-		TopicName("mytopic").
-		SubscriptionName("mysub").
-		Connection("ServiceBusConnection")
+	app.ServiceBusTopic("sbTopicFull", handler,
+		WithTopicName("mytopic"),
+		WithSubscriptionName("mysub"),
+		WithConnection("ServiceBusConnection"),
+	)
 
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*RegisteredFunction)
@@ -285,6 +289,138 @@ func TestServiceBusTopic_Chaining(t *testing.T) {
 	})
 }
 
+// --- Blob tests ---
+
+func TestBlob_BasicRegistration(t *testing.T) {
+	app := FunctionApp()
+	handler := BlobHandler(func(ctx context.Context, data []byte) error {
+		return nil
+	})
+
+	rf := app.Blob("processBlob", handler)
+	if rf == nil {
+		t.Fatal("expected non-nil RegisteredFunction")
+	}
+
+	count := 0
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		count++
+		rf := value.(*RegisteredFunction)
+		if rf.FuncName == "" {
+			t.Error("expected non-empty FuncName")
+		}
+		if rf.FuncId == "" {
+			t.Error("expected non-empty FuncId")
+		}
+		if len(rf.RawBindings) != 1 {
+			t.Errorf("expected 1 binding (trigger only, no output), got %d", len(rf.RawBindings))
+		}
+		if rf.RawBindings[0].Type != "blobTrigger" {
+			t.Errorf("expected binding type %q, got %q", "blobTrigger", rf.RawBindings[0].Type)
+		}
+		if rf.TriggerType != "blobTrigger" {
+			t.Errorf("expected TriggerType %q, got %q", "blobTrigger", rf.TriggerType)
+		}
+		return true
+	})
+
+	if count != 1 {
+		t.Errorf("expected 1 registered function, got %d", count)
+	}
+}
+
+func TestBlob_WithConnection(t *testing.T) {
+	app := FunctionApp()
+	handler := BlobHandler(func(ctx context.Context, data []byte) error {
+		return nil
+	})
+
+	app.Blob("blobConn", handler,
+		WithPath("samples-workitems/{name}"),
+		WithConnection("AzureWebJobsStorage"),
+	)
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.BlobBinding == nil {
+			t.Fatal("expected BlobBinding")
+		}
+		if binding.BlobBinding.Path != "samples-workitems/{name}" {
+			t.Errorf("expected path %q, got %q", "samples-workitems/{name}", binding.BlobBinding.Path)
+		}
+		if binding.BlobBinding.Connection != "AzureWebJobsStorage" {
+			t.Errorf("expected connection %q, got %q", "AzureWebJobsStorage", binding.BlobBinding.Connection)
+		}
+		return true
+	})
+}
+
+func TestBlob_NoOutputBinding(t *testing.T) {
+	app := FunctionApp()
+	handler := BlobHandler(func(ctx context.Context, data []byte) error {
+		return nil
+	})
+
+	rf := app.Blob("blobNoOutput", handler)
+
+	if len(rf.RawBindings) != 1 {
+		t.Errorf("blob trigger should have 1 binding (no $return output), got %d", len(rf.RawBindings))
+	}
+	if rf.RawBindings[0].Name == "$return" {
+		t.Error("blob trigger should not have a $return output binding")
+	}
+}
+
+func TestBlob_DefaultBindingValues(t *testing.T) {
+	app := FunctionApp()
+	handler := BlobHandler(func(ctx context.Context, data []byte) error {
+		return nil
+	})
+
+	rf := app.Blob("blobDefaults", handler)
+
+	binding := rf.RawBindings[0]
+	if binding.BlobBinding == nil {
+		t.Fatal("expected BlobBinding")
+	}
+	if binding.BlobBinding.Path != "" {
+		t.Errorf("expected empty default path, got %q", binding.BlobBinding.Path)
+	}
+	if binding.BlobBinding.Connection != "" {
+		t.Errorf("expected empty default connection, got %q", binding.BlobBinding.Connection)
+	}
+	if binding.Direction != "in" {
+		t.Errorf("expected direction %q, got %q", "in", binding.Direction)
+	}
+}
+
+func TestBlob_MismatchedOption_NoOp(t *testing.T) {
+	app := FunctionApp()
+	handler := BlobHandler(func(ctx context.Context, data []byte) error {
+		return nil
+	})
+
+	// HTTP-specific options should be no-ops on a blob trigger
+	rf := app.Blob("blobMismatch", handler,
+		WithMethods("GET"),
+		WithAuth("admin"),
+		WithConnection("AzureWebJobsStorage"),
+	)
+
+	if rf.RawBindings[0].BlobBinding == nil {
+		t.Fatal("expected BlobBinding")
+	}
+	// Connection should still apply (it's a shared option)
+	if rf.RawBindings[0].BlobBinding.Connection != "AzureWebJobsStorage" {
+		t.Errorf("expected connection %q, got %q", "AzureWebJobsStorage", rf.RawBindings[0].BlobBinding.Connection)
+	}
+	// HTTP binding should remain nil (HTTP options are no-ops)
+	if rf.RawBindings[0].HTTPBinding != nil {
+		t.Error("HTTP-specific options should not create an HTTPBinding on a blob trigger")
+	}
+}
+
 // --- No output bindings tests ---
 
 func TestServiceBusQueue_NoOutputBindings(t *testing.T) {
@@ -293,13 +429,13 @@ func TestServiceBusQueue_NoOutputBindings(t *testing.T) {
 		return nil
 	})
 
-	app.ServiceBusQueue("sbQueue", handler).
-		QueueName("myqueue").
-		Connection("ServiceBusConnection")
+	app.ServiceBusQueue("sbQueue", handler,
+		WithQueueName("myqueue"),
+		WithConnection("ServiceBusConnection"),
+	)
 
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*RegisteredFunction)
-		// Should only have 1 binding (trigger) — no output bindings
 		if len(rf.RawBindings) != 1 {
 			t.Errorf("expected 1 binding (trigger only), got %d", len(rf.RawBindings))
 		}
@@ -313,7 +449,7 @@ func TestRegisterFunction_HTTP(t *testing.T) {
 	app := FunctionApp()
 	handler := HTTPHandler(func(w http.ResponseWriter, r *http.Request) {})
 
-	rf := app.HTTP("test", handler).rf
+	rf := app.HTTP("test", handler)
 
 	if rf.FuncName == "" {
 		t.Error("expected non-empty FuncName")
@@ -354,18 +490,28 @@ func TestMixedTriggerTypes(t *testing.T) {
 	app := FunctionApp()
 
 	app.HTTP("httpFunc", HTTPHandler(func(w http.ResponseWriter, r *http.Request) {}))
-	app.CosmosDB("cosmosFunc", CosmosDBHandler(func(ctx context.Context, docs []bindings.CosmosDocument) error { return nil })).Database("db").Container("container")
+	app.CosmosDB("cosmosFunc", CosmosDBHandler(func(ctx context.Context, docs []bindings.CosmosDocument) error { return nil }),
+		WithDatabase("db"), WithContainer("container"))
 	app.EventGrid("eventFunc", EventGridHandler(func(ctx context.Context, event bindings.EventGridEvent) error { return nil }))
-	app.ServiceBusQueue("sbFunc", ServiceBusHandler(func(ctx context.Context, msg bindings.ServiceBusMessage) error { return nil })).QueueName("myqueue").Connection("SBConn")
+	app.ServiceBusQueue("sbFunc", ServiceBusHandler(func(ctx context.Context, msg bindings.ServiceBusMessage) error { return nil }),
+		WithQueueName("myqueue"), WithConnection("SBConn"))
+	app.Blob("blobFunc", BlobHandler(func(ctx context.Context, data []byte) error { return nil }),
+		WithConnection("AzureWebJobsStorage"))
 
 	count := 0
+	triggerTypes := map[string]bool{}
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		count++
+		rf := value.(*RegisteredFunction)
+		triggerTypes[rf.TriggerType] = true
 		return true
 	})
 
-	if count != 4 {
-		t.Errorf("expected 4 registered functions, got %d", count)
+	if count != 5 {
+		t.Errorf("expected 5 registered functions, got %d", count)
+	}
+	if !triggerTypes["blobTrigger"] {
+		t.Error("expected blobTrigger in registered trigger types")
 	}
 }
 
@@ -401,17 +547,68 @@ func TestWithRetry(t *testing.T) {
 	handler := HTTPHandler(func(w http.ResponseWriter, r *http.Request) {})
 
 	delay := 5 * time.Second
-	rf := app.HTTP("retryFunc", handler).rf
-	rf.WithRetry(&RetryOptions{
-		MaxRetryCount: 3,
-		DelayInterval: &delay,
-		Strategy:      ExponentialBackoff,
-	})
+	rf := app.HTTP("retryFunc", handler,
+		WithRetry(&RetryOptions{
+			MaxRetryCount: 3,
+			DelayInterval: &delay,
+			Strategy:      ExponentialBackoff,
+		}),
+	)
 
 	if rf.Retry == nil {
 		t.Fatal("expected retry options")
 	}
 	if rf.Retry.MaxRetryCount != 3 {
 		t.Errorf("expected MaxRetryCount 3, got %d", rf.Retry.MaxRetryCount)
+	}
+}
+
+// --- Shared option cross-trigger tests ---
+
+func TestWithConnection_MultipleTriggersTypes(t *testing.T) {
+	app := FunctionApp()
+
+	// EventHub with WithConnection
+	app.EventHub("eh", EventHubHandler(func(ctx context.Context, e bindings.EventHubMessage) error { return nil }),
+		WithEventHubName("hub"),
+		WithConnection("SharedConn"),
+	)
+
+	// ServiceBus Queue with same WithConnection
+	app.ServiceBusQueue("sb", ServiceBusHandler(func(ctx context.Context, m bindings.ServiceBusMessage) error { return nil }),
+		WithQueueName("q"),
+		WithConnection("SharedConn"),
+	)
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		b := rf.RawBindings[0]
+		if b.EventHubBinding != nil && b.EventHubBinding.Connection != "SharedConn" {
+			t.Errorf("expected EventHub connection %q, got %q", "SharedConn", b.EventHubBinding.Connection)
+		}
+		if b.ServiceBusBinding != nil && b.ServiceBusBinding.Connection != "SharedConn" {
+			t.Errorf("expected ServiceBus connection %q, got %q", "SharedConn", b.ServiceBusBinding.Connection)
+		}
+		return true
+	})
+}
+
+// --- Mismatched option no-op tests ---
+
+func TestMismatchedOption_NoOp(t *testing.T) {
+	app := FunctionApp()
+	handler := TimerHandler(func(ctx context.Context, timer bindings.TimerInfo) error { return nil })
+
+	// WithMethods is HTTP-specific, should be a no-op on a timer trigger
+	rf := app.Timer("tick", handler,
+		WithSchedule("0 */5 * * * *"),
+		WithMethods("GET"),
+	)
+
+	if rf.RawBindings[0].TimerBinding == nil {
+		t.Fatal("expected TimerBinding")
+	}
+	if rf.RawBindings[0].TimerBinding.Schedule != "0 */5 * * * *" {
+		t.Errorf("expected schedule %q, got %q", "0 */5 * * * *", rf.RawBindings[0].TimerBinding.Schedule)
 	}
 }

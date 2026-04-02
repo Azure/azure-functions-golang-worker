@@ -28,8 +28,8 @@ func TestHandleFunctionsMetadataRequest_Empty(t *testing.T) {
 
 func TestHandleFunctionsMetadataRequest_WithFunction(t *testing.T) {
 	app := newTestApp()
-	app.HTTP("hello", sdk.HTTPHandler(func(w http.ResponseWriter, r *http.Request) {})).
-		Methods("GET").Auth("anonymous")
+	app.HTTP("hello", sdk.HTTPHandler(func(w http.ResponseWriter, r *http.Request) {}),
+		sdk.WithMethods("GET"), sdk.WithAuth("anonymous"))
 
 	resp := handleFunctionsMetadataRequest(&pb.FunctionsMetadataRequest{}, app, "req-1")
 	metaResp := resp.GetContent().(*pb.StreamingMessage_FunctionMetadataResponse).FunctionMetadataResponse
@@ -70,7 +70,7 @@ func TestHandleInvocationRequest_SimpleHTTP(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("hello"))
 	})
-	app.HTTP("test", handler).Methods("GET")
+	app.HTTP("test", handler, sdk.WithMethods("GET"))
 
 	// Get function ID
 	var funcID string
@@ -127,7 +127,7 @@ func TestHandleInvocationRequest_TimerWithError(t *testing.T) {
 	handler := sdk.TimerHandler(func(ctx context.Context, timer bindings.TimerInfo) error {
 		return context.DeadlineExceeded
 	})
-	app.Timer("tick", handler).Schedule("0 * * * * *")
+	app.Timer("tick", handler, sdk.WithSchedule("0 * * * * *"))
 
 	var funcID string
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
@@ -168,7 +168,7 @@ func TestHandleFunctionsMetadataRequest_ServiceBus(t *testing.T) {
 	app := newTestApp()
 	app.ServiceBusQueue("sbFunc", sdk.ServiceBusHandler(func(ctx context.Context, msg bindings.ServiceBusMessage) error {
 		return nil
-	})).QueueName("myqueue").Connection("SBConn")
+	}), sdk.WithQueueName("myqueue"), sdk.WithConnection("SBConn"))
 
 	resp := handleFunctionsMetadataRequest(&pb.FunctionsMetadataRequest{}, app, "req-1")
 	metaResp := resp.GetContent().(*pb.StreamingMessage_FunctionMetadataResponse).FunctionMetadataResponse

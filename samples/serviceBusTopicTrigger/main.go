@@ -29,10 +29,11 @@ func ServiceBusTopicHandler(ctx context.Context, msg bindings.ServiceBusMessage)
 func main() {
 	app := sdk.FunctionApp()
 
-	app.ServiceBusTopic("topicFunc", ServiceBusTopicHandler).
-		TopicName("orders").
-		SubscriptionName("processor").
-		Connection("ServiceBusConnection")
+	app.ServiceBusTopic("topicFunc", ServiceBusTopicHandler,
+		sdk.WithTopicName("orders"),
+		sdk.WithSubscriptionName("processor"),
+		sdk.WithConnection("ServiceBusConnection"),
+	)
 
 	worker.Start(app)
 }

@@ -35,8 +35,9 @@ func StreamHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	app := sdk.FunctionApp()
-	app.HTTP("stream", StreamHandler).
-		Methods("GET").
-		Auth("anonymous")
+	app.HTTP("stream", StreamHandler,
+		sdk.WithMethods("GET"),
+		sdk.WithAuth("anonymous"),
+	)
 	worker.Start(app)
 }

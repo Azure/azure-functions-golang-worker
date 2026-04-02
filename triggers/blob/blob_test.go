@@ -1,9 +1,11 @@
 package blobtrigger
 
 import (
+	"context"
 	"os"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/azure/azure-functions-golang-worker/sdk"
 )
 
@@ -77,5 +79,34 @@ func TestCreateBlobClient_InvalidPath(t *testing.T) {
 	_, err := CreateBlobClient("BlobTestStorage2", "nocontainer")
 	if err == nil {
 		t.Fatal("expected error for invalid blob path")
+	}
+}
+
+func newTestApp() *sdk.App {
+	return sdk.FunctionApp()
+}
+
+func TestRegister(t *testing.T) {
+	app := newTestApp()
+	handler := func(ctx context.Context, client *blob.Client) error {
+		return nil
+	}
+
+	rf := Register(app, "blobFunc", handler,
+		WithPath("container/{name}"),
+		WithBlobConnection("AzureWebJobsStorage"),
+	)
+	if rf == nil {
+		t.Fatal("expected non-nil RegisteredFunction")
+	}
+
+	count := 0
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		count++
+		return true
+	})
+
+	if count != 1 {
+		t.Errorf("expected 1 registered function, got %d", count)
 	}
 }

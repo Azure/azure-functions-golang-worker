@@ -22,6 +22,7 @@
 package blobtrigger
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -34,8 +35,36 @@ import (
 	"github.com/azure/azure-functions-golang-worker/sdk"
 )
 
+// BlobHandler is the handler type for blob triggered functions.
+// The *blob.Client is scoped to the specific blob that triggered the function.
+type BlobHandler = func(context.Context, *blob.Client) error
+
 func init() {
 	sdk.RegisterClientFactory("blobTrigger", createBlobClientFromTrigger)
+}
+
+// Register creates a new blob-triggered function on the given app.
+// This is a convenience wrapper around app.Blob() for use by the triggers/blob module.
+func Register(app *sdk.App, name string, f BlobHandler, opts ...sdk.Option) *sdk.RegisteredFunction {
+	return app.Blob(name, f, opts...)
+}
+
+// WithPath sets the blob path pattern (e.g., "container/{name}").
+func WithPath(path string) sdk.Option {
+	return func(rf *sdk.RegisteredFunction) {
+		if b := rf.TriggerBinding(); b != nil && b.BlobBinding != nil {
+			b.BlobBinding.Path = path
+		}
+	}
+}
+
+// WithBlobConnection sets the connection string setting name (e.g., "AzureWebJobsStorage").
+func WithBlobConnection(connection string) sdk.Option {
+	return func(rf *sdk.RegisteredFunction) {
+		if b := rf.TriggerBinding(); b != nil && b.BlobBinding != nil {
+			b.BlobBinding.Connection = connection
+		}
+	}
 }
 
 // createBlobClientFromTrigger is the ClientFactory for blob triggers.

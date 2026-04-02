@@ -19,8 +19,9 @@ func TimerHandler(ctx context.Context, timer bindings.TimerInfo) error {
 func main() {
 	app := sdk.FunctionApp()
 
-	app.Timer("scheduledTask", TimerHandler).
-		Schedule("*/10 * * * * *")
+	app.Timer("scheduledTask", TimerHandler,
+		sdk.WithSchedule("*/10 * * * * *"),
+	)
 
 	worker.Start(app)
 }

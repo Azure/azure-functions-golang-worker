@@ -17,8 +17,9 @@ func HTTPTriggerHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	app := sdk.FunctionApp()
-	app.HTTP("hello", HTTPTriggerHandler).
-		Methods("GET", "POST").
-		Auth("anonymous")
+	app.HTTP("hello", HTTPTriggerHandler,
+		sdk.WithMethods("GET", "POST"),
+		sdk.WithAuth("anonymous"),
+	)
 	worker.Start(app)
 }

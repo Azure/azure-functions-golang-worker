@@ -69,7 +69,7 @@ my-function-app/
 
 ### 3.2 `main.go`
 
-The user's `main.go` imports the SDK, registers functions using the fluent builder API, and starts the worker:
+The user's `main.go` imports the SDK, registers functions using functional options, and starts the worker:
 
 ```go
 package main
@@ -84,7 +84,10 @@ import (
 
 func main() {
     app := sdk.FunctionApp()
-    app.HTTP("hello", hello).Methods("GET", "POST").Auth("anonymous")
+    app.HTTP("hello", hello,
+        sdk.WithMethods("GET", "POST"),
+        sdk.WithAuth("anonymous"),
+    )
     worker.Start(app)
 }
 
@@ -99,30 +102,29 @@ func hello(w http.ResponseWriter, r *http.Request) {
 
 HTTP trigger handlers use standard `net/http` types (`http.ResponseWriter`, `*http.Request`), making Go Functions feel native.
 
-### 3.3 Builder API
+### 3.3 Functional Options API
 
-Functions are registered using a fluent builder pattern:
+Functions are registered using the functional options pattern. Each trigger type has a registration method on `App` that accepts variadic `Option` functions:
 
 ```go
 // HTTP trigger
-app.HTTP("name", handler).Methods("GET", "POST").Auth("anonymous")
+app.HTTP("name", handler,
+    sdk.WithMethods("GET", "POST"),
+    sdk.WithAuth("anonymous"),
+)
 
-// HTTP trigger with blob input binding
-app.HTTP("process", handler).
-    Methods("POST").
-    Auth("function").
-    BlobInput("input", "container/{id}", "AzureWebJobsStorage")
-
-// Blob trigger
-app.Blob("processBlobTrigger", handler).
-    Path("samples-workitems/{name}").
-    Connection("AzureWebJobsStorage")
+// Blob trigger (via triggers/blob module)
+blob.Register(app, "processBlobTrigger", handler,
+    blob.WithPath("samples-workitems/{name}"),
+    blob.WithBlobConnection("AzureWebJobsStorage"),
+)
 
 // CosmosDB trigger
-app.CosmosDB("processChanges", handler).
-    Database("mydb").
-    Container("mycontainer").
-    Connection("CosmosDBConnection")
+app.CosmosDB("processChanges", handler,
+    sdk.WithDatabase("mydb"),
+    sdk.WithContainer("mycontainer"),
+    sdk.WithConnection("CosmosDBConnection"),
+)
 ```
 
 ### 3.4 Worker-Driven Indexing
@@ -229,14 +231,16 @@ import (
     "github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
     "github.com/azure/azure-functions-golang-worker/sdk"
     _ "github.com/azure/azure-functions-golang-worker/triggers/blob" // registers ClientFactory
+    blobTrigger "github.com/azure/azure-functions-golang-worker/triggers/blob"
     "github.com/azure/azure-functions-golang-worker/worker"
 )
 
 func main() {
     app := sdk.FunctionApp()
-    app.Blob("processBlobTrigger", processBlob).
-        Path("samples-workitems/{name}").
-        Connection("AzureWebJobsStorage")
+    blobTrigger.Register(app, "processBlobTrigger", processBlob,
+        blobTrigger.WithPath("samples-workitems/{name}"),
+        blobTrigger.WithBlobConnection("AzureWebJobsStorage"),
+    )
     worker.Start(app)
 }
 
@@ -269,8 +273,11 @@ import (
 
 func main() {
     app := sdk.FunctionApp()
-    app.CosmosDB("processChanges", handler).
-        Database("mydb").Container("items").Connection("CosmosDBConnection")
+    app.CosmosDB("processChanges", handler,
+        sdk.WithDatabase("mydb"),
+        sdk.WithContainer("items"),
+        sdk.WithConnection("CosmosDBConnection"),
+    )
     worker.Start(app)
 }
 

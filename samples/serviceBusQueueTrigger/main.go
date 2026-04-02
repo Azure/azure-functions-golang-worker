@@ -29,9 +29,10 @@ func ServiceBusQueueHandler(ctx context.Context, msg bindings.ServiceBusMessage)
 func main() {
 	app := sdk.FunctionApp()
 
-	app.ServiceBusQueue("queueFunc", ServiceBusQueueHandler).
-		QueueName("input-queue").
-		Connection("ServiceBusConnection")
+	app.ServiceBusQueue("queueFunc", ServiceBusQueueHandler,
+		sdk.WithQueueName("input-queue"),
+		sdk.WithConnection("ServiceBusConnection"),
+	)
 
 	worker.Start(app)
 }
