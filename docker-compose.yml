@@ -1,0 +1,70 @@
+# Docker Compose for Watchtower integration test dependencies.
+# Start with: docker compose -f tests/docker-compose.yml up -d
+#
+# Services:
+#   - azurite:             Azure Storage Emulator (blob, queue, table)
+#   - servicebus-emulator: Azure Service Bus Emulator (queues, topics, subscriptions)
+#   - eventhub-emulator:   Azure Event Hub Emulator (hubs, consumer groups)
+#   - sqlserver:           SQL Server backing store for the SB and EH emulators
+
+services:
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    ports:
+      - "10000:10000"   # Blob
+      - "10001:10001"   # Queue
+      - "10002:10002"   # Table
+    command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --silent"
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "StrongP@ssw0rd!"
+      MSSQL_MEMORY_LIMIT_MB: "512"
+    ports:
+      - "1433:1433"
+    mem_limit: 1g
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "StrongP@ssw0rd!" -C -Q "SELECT 1" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  servicebus-emulator:
+    image: mcr.microsoft.com/azure-messaging/servicebus-emulator:latest
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5672:5672"
+    environment:
+      SQL_SERVER: sqlserver
+      MSSQL_SA_PASSWORD: "StrongP@ssw0rd!"
+      ACCEPT_EULA: "Y"
+    volumes:
+      - ./servicebus-emulator-config.json:/ServiceBus_Emulator/ConfigFiles/Config.json
+
+  eventhub-emulator:
+    image: mcr.microsoft.com/azure-messaging/eventhubs-emulator:latest
+    depends_on:
+      azurite:
+        condition: service_started
+    ports:
+      - "127.0.0.2:5672:5672"
+    environment:
+      BLOB_SERVER: azurite
+      METADATA_SERVER: azurite
+      ACCEPT_EULA: "Y"
+    volumes:
+      - ./eventhub-emulator-config.json:/Eventhubs_Emulator/ConfigFiles/Config.json
+
+  cosmosdb-emulator:
+    image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:latest
+    ports:
+      - "8081:8081"
+      - "10250-10255:10250-10255"
+    environment:
+      AZURE_COSMOS_EMULATOR_PARTITION_COUNT: "2"
+      AZURE_COSMOS_EMULATOR_ENABLE_DATA_PERSISTENCE: "false"
+    mem_limit: 3g
