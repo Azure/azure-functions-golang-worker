@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
@@ -74,26 +75,108 @@ var (
 )
 
 // createServiceClient creates a new azblob.Client, auto-detecting auth method.
-// If the env var value contains "AccountName=" or "DefaultEndpointsProtocol=",
-// it's treated as a connection string. Otherwise, it's treated as a storage
-// account URL and DefaultAzureCredential is used.
+//
+// Auth detection follows the Azure Functions host convention:
+//
+// 1. Connection string: If the env var value contains "AccountKey=",
+//    "DefaultEndpointsProtocol=", or "UseDevelopmentStorage=true", it's
+//    treated as a connection string.
+//
+// 2. Identity-based (managed identity): If the env var is empty or not a
+//    connection string, the function checks for __-suffixed env vars:
+//      - {connection}__accountName   → builds https://{name}.blob.core.windows.net
+//      - {connection}__blobServiceUri → uses as-is
+//      - {connection}__serviceUri     → uses as-is (fallback)
+//      - {connection}__clientId       → user-assigned managed identity client ID
+//
+// 3. Direct URL: If the env var value is a URL (not a connection string),
+//    it's used as the endpoint with DefaultAzureCredential.
 func createServiceClient(connectionSetting string) (*azblob.Client, error) {
 	value := os.Getenv(connectionSetting)
-	if value == "" {
-		return nil, fmt.Errorf("environment variable %q not set", connectionSetting)
-	}
 
-	// Connection string auth
-	if strings.Contains(value, "AccountName=") || strings.Contains(value, "DefaultEndpointsProtocol=") {
+	// 1. Connection string auth
+	if value != "" && isConnectionString(value) {
 		return azblob.NewClientFromConnectionString(value, nil)
 	}
 
-	// Identity-based auth (URL + DefaultAzureCredential)
+	// 2. If value is a URL (not empty, not connection string), use it directly
+	if value != "" {
+		cred, err := buildCredential(connectionSetting)
+		if err != nil {
+			return nil, err
+		}
+		return azblob.NewClient(value, cred, nil)
+	}
+
+	// 3. Identity-based auth via __-suffixed env vars
+	endpoint := resolveEndpoint(connectionSetting)
+	if endpoint == "" {
+		return nil, fmt.Errorf(
+			"environment variable %q is empty and no %s__accountName, %s__blobServiceUri, or %s__serviceUri found",
+			connectionSetting, connectionSetting, connectionSetting, connectionSetting,
+		)
+	}
+
+	cred, err := buildCredential(connectionSetting)
+	if err != nil {
+		return nil, err
+	}
+	return azblob.NewClient(endpoint, cred, nil)
+}
+
+// isConnectionString checks if a value looks like an Azure Storage connection string.
+func isConnectionString(val string) bool {
+	return strings.Contains(val, "AccountKey=") ||
+		strings.Contains(val, "DefaultEndpointsProtocol=") ||
+		strings.Contains(val, "UseDevelopmentStorage=true")
+}
+
+// resolveEndpoint resolves the blob service endpoint from __-suffixed env vars.
+// Returns empty string if none are found.
+func resolveEndpoint(connectionSetting string) string {
+	// {connection}__accountName → https://{name}.blob.core.windows.net
+	if accountName := os.Getenv(connectionSetting + "__accountName"); accountName != "" {
+		return fmt.Sprintf("https://%s.blob.core.windows.net", accountName)
+	}
+
+	// {connection}__blobServiceUri → use as-is
+	if blobServiceURI := os.Getenv(connectionSetting + "__blobServiceUri"); blobServiceURI != "" {
+		return blobServiceURI
+	}
+
+	// {connection}__serviceUri → use as-is (fallback)
+	if serviceURI := os.Getenv(connectionSetting + "__serviceUri"); serviceURI != "" {
+		return serviceURI
+	}
+
+	return ""
+}
+
+// buildCredential creates an Azure credential for identity-based auth.
+// If {connection}__clientId is set, it creates a ManagedIdentityCredential
+// with the specified client ID (for user-assigned managed identity).
+// Otherwise, it creates a DefaultAzureCredential which tries multiple
+// auth methods (managed identity, Azure CLI, environment variables, etc.).
+func buildCredential(connectionSetting string) (azcore.TokenCredential, error) {
+	clientID := os.Getenv(connectionSetting + "__clientId")
+
+	if clientID != "" {
+		// User-assigned managed identity
+		cred, err := azidentity.NewManagedIdentityCredential(&azidentity.ManagedIdentityCredentialOptions{
+			ID: azidentity.ClientID(clientID),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ManagedIdentityCredential with clientId %q: %v", clientID, err)
+		}
+		return cred, nil
+	}
+
+	// Default credential chain (system-assigned MI, Azure CLI, env vars, etc.)
 	cred, err := azidentity.NewDefaultAzureCredential(nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create credential: %v", err)
+		return nil, fmt.Errorf("failed to create DefaultAzureCredential: %v", err)
 	}
-	return azblob.NewClient(value, cred, nil)
+	return cred, nil
 }
 
 // GetOrCreateServiceClient returns a cached service client for the given
