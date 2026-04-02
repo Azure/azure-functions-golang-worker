@@ -186,73 +186,73 @@ ClientFactory ClientFactory // Optional: creates trigger-specific client args
 // RegisterFunction registers a function with an explicit name and a trigger binding.
 // This is exported for use by external trigger modules (e.g., triggers/blob).
 func (app *App) RegisterFunction(name string, f any, b bindings.Bind, opts ...Option) *RegisteredFunction {
-return app.registerFunction(name, f, b, opts...)
+	return app.registerFunction(name, f, b, opts...)
 }
 
 func (app *App) registerFunction(name string, f any, b bindings.Bind, opts ...Option) *RegisteredFunction {
-triggerBinding := b.ToBinding()
-rawBindings := []bindings.Binding{triggerBinding}
+	triggerBinding := b.ToBinding()
+	rawBindings := []bindings.Binding{triggerBinding}
 
-// If this is an HTTP Trigger, we implicitly add the HTTP Output binding
-if b.GetBindingType() == bindings.HTTPTriggerType {
-rawBindings = append(rawBindings, bindings.Binding{
-Name:      "$return",
-Type:      "http",
-Direction: "out",
-})
-}
+	// If this is an HTTP Trigger, we implicitly add the HTTP Output binding
+	if b.GetBindingType() == bindings.HTTPTriggerType {
+		rawBindings = append(rawBindings, bindings.Binding{
+			Name:      "$return",
+			Type:      "http",
+			Direction: "out",
+		})
+	}
 
-ptr := reflect.ValueOf(f).Pointer()
-fun := runtime.FuncForPC(ptr)
-file, _ := fun.FileLine(ptr)
+	ptr := reflect.ValueOf(f).Pointer()
+	fun := runtime.FuncForPC(ptr)
+	file, _ := fun.FileLine(ptr)
 
-// Use the explicit name if provided, otherwise derive from function
-funcName := name
-if funcName == "" {
-funcName = GetFunctionName(f)
-}
+	// Use the explicit name if provided, otherwise derive from function
+	funcName := name
+	if funcName == "" {
+		funcName = GetFunctionName(f)
+	}
 
-rf := &RegisteredFunction{
-Func:        f,
-FuncName:    funcName,
-ScriptFile:  file,
-RawBindings: rawBindings,
-TriggerType: string(b.GetBindingType()),
-}
+	rf := &RegisteredFunction{
+		Func:        f,
+		FuncName:    funcName,
+		ScriptFile:  file,
+		RawBindings: rawBindings,
+		TriggerType: string(b.GetBindingType()),
+	}
 
-// Apply all options before storing
-for _, opt := range opts {
-opt(rf)
-}
+	// Apply all options before storing
+	for _, opt := range opts {
+		opt(rf)
+	}
 
-funcId, err := HashFunctionID(*rf)
-if err != nil {
-panic(err)
-}
+	funcId, err := HashFunctionID(*rf)
+	if err != nil {
+		panic(err)
+	}
 
-rf.FuncId = funcId
-app.registeredFunctions.Store(funcId, rf)
-return rf
+	rf.FuncId = funcId
+	app.registeredFunctions.Store(funcId, rf)
+	return rf
 }
 
 // GetFunctionName returns the simple name of the function, stripping the package path.
 func GetFunctionName(f any) string {
-fullName := runtime.FuncForPC(reflect.ValueOf(f).Pointer()).Name()
-parts := strings.Split(fullName, ".")
-return parts[len(parts)-1]
+	fullName := runtime.FuncForPC(reflect.ValueOf(f).Pointer()).Name()
+	parts := strings.Split(fullName, ".")
+	return parts[len(parts)-1]
 }
 
 // HashFunctionID generates a unique ID for the function based on its name
 // and trigger type to avoid collisions between functions with the same name.
 func HashFunctionID(rf RegisteredFunction) (string, error) {
-var sb strings.Builder
-sb.WriteString(rf.FuncName)
-sb.WriteString(":")
-sb.WriteString(rf.TriggerType)
+	var sb strings.Builder
+	sb.WriteString(rf.FuncName)
+	sb.WriteString(":")
+	sb.WriteString(rf.TriggerType)
 
-hash := sha256.New()
-if _, err := hash.Write([]byte(sb.String())); err != nil {
-return "", err
-}
-return hex.EncodeToString(hash.Sum(nil)), nil
+	hash := sha256.New()
+	if _, err := hash.Write([]byte(sb.String())); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
