@@ -28,9 +28,9 @@ func main() {
 	app := sdk.FunctionApp()
 
 	app.EventHub("eventHubTrigger", EventHubHandler).
-		EventHubName("myeventhub").
+		EventHubName("input-hub").
 		Connection("EventHubConnection").
-		ConsumerGroup("$Default")
+		ConsumerGroup("watchtower-test")
 
 	worker.Start(app)
 }
