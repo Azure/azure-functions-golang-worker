@@ -1,7 +1,5 @@
 package bindings
 
-import "encoding/json"
-
 const CosmosDBBindingType BindingType = "cosmosDBTrigger"
 
 // CosmosDBBinding is the JSON representation for CosmosDB.
@@ -46,8 +44,3 @@ func (c *CosmosDB) ToBinding() Binding {
 	}
 }
 
-func DeserializeCosmosDocument(jsonString string) []CosmosDocument {
-	var docs []CosmosDocument
-	json.Unmarshal([]byte(jsonString), &docs)
-	return docs
-}

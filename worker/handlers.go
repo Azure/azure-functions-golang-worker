@@ -233,8 +233,10 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 		// Extract trigger binding config
 		config := make(map[string]any)
 		if len(loadedFunc.Function.RawBindings) > 0 {
-			import_json, _ := json.Marshal(loadedFunc.Function.RawBindings[0])
-			json.Unmarshal(import_json, &config)
+			bindingJSON, err := json.Marshal(loadedFunc.Function.RawBindings[0])
+			if err == nil {
+				json.Unmarshal(bindingJSON, &config)
+			}
 		}
 
 		// Extract trigger metadata as strings

@@ -2,17 +2,10 @@ package bindings
 
 import (
 	"encoding/json"
-	"reflect"
 )
 
+// BindingType identifies the type of a trigger or binding.
 type BindingType string
-
-type BindingDirection int
-
-const (
-	In BindingDirection = iota
-	Out
-)
 
 // Bind is the interface that all bindings must implement.
 type Bind interface {
@@ -59,7 +52,6 @@ func (b Binding) MarshalJSON() ([]byte, error) {
 	}
 
 	if sub != nil {
-		// Use a temporary map to merge fields
 		data, err := json.Marshal(sub)
 		if err != nil {
 			return nil, err
@@ -74,25 +66,4 @@ func (b Binding) MarshalJSON() ([]byte, error) {
 	}
 
 	return json.Marshal(m)
-}
-
-// SimpleBinding implements Bind for simple/generic bindings.
-type SimpleBinding struct {
-	Name      string
-	Type      string
-	Direction string
-}
-
-func (s SimpleBinding) GetBindingType() BindingType { return BindingType(s.Type) }
-func (s SimpleBinding) ToBinding() Binding {
-	return Binding{
-		Name:      s.Name,
-		Type:      s.Type,
-		Direction: s.Direction,
-	}
-}
-
-type Parameter struct {
-	Name     string
-	DataType reflect.Type
 }

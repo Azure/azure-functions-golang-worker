@@ -57,19 +57,21 @@ func (app *App) HTTP(name string, f HTTPHandler) *HttpFunctionBuilder {
 // Methods sets the allowed HTTP methods.
 func (b *HttpFunctionBuilder) Methods(methods ...string) *HttpFunctionBuilder {
 	b.trigger.Methods = methods
-	if len(b.rf.RawBindings) > 0 {
-		b.rf.RawBindings[0] = b.trigger.ToBinding()
-	}
+	b.updateBinding()
 	return b
 }
 
 // Auth sets the authorization level.
 func (b *HttpFunctionBuilder) Auth(level string) *HttpFunctionBuilder {
 	b.trigger.AuthLevel = level
+	b.updateBinding()
+	return b
+}
+
+func (b *HttpFunctionBuilder) updateBinding() {
 	if len(b.rf.RawBindings) > 0 {
 		b.rf.RawBindings[0] = b.trigger.ToBinding()
 	}
-	return b
 }
 
 // --- Timer Trigger ---
@@ -357,23 +359,73 @@ func (b *ServiceBusTopicFunctionBuilder) updateBinding() {
 	}
 }
 
-// --- Registration ---
+// --- Blob Trigger ---
 
-// ClientFactory is a function that creates a trigger-specific client argument
-// from the invocation metadata. Used by trigger modules like triggers/blob
-// to create SDK clients (e.g., *blob.Client) during invocation.
-type ClientFactory func(config map[string]any, triggerMetadata map[string]string) (any, error)
+// BlobFunctionBuilder is a builder for creating blob triggered functions.
+// The handler receives a trigger-specific client (e.g., *blob.Client) created
+// by the registered ClientFactory. Import the triggers/blob package to enable:
+//
+//	import _ "github.com/azure/azure-functions-golang-worker/triggers/blob"
+type BlobFunctionBuilder struct {
+	trigger *bindings.Blob
+	rf      *RegisteredFunction
+}
+
+// Blob creates a new blob-triggered function.
+// The handler argument type depends on the registered blob trigger extension.
+// Import the triggers/blob package to enable *blob.Client support:
+//
+//	import _ "github.com/azure/azure-functions-golang-worker/triggers/blob"
+func (app *App) Blob(name string, f any) *BlobFunctionBuilder {
+	trigger := &bindings.Blob{
+		Name: "blob",
+	}
+
+	rf := app.registerFunction(f, trigger)
+
+	// Look up the globally registered factory for blob triggers
+	if factory, ok := GetClientFactory(string(bindings.BlobBindingType)); ok {
+		rf.ClientFactory = factory
+	}
+
+	return &BlobFunctionBuilder{
+		trigger: trigger,
+		rf:      rf,
+	}
+}
+
+// Path sets the blob path pattern (e.g., "container/{name}").
+func (b *BlobFunctionBuilder) Path(path string) *BlobFunctionBuilder {
+	b.trigger.Path = path
+	b.updateBinding()
+	return b
+}
+
+// Connection sets the blob connection string setting name.
+func (b *BlobFunctionBuilder) Connection(connection string) *BlobFunctionBuilder {
+	b.trigger.Connection = connection
+	b.updateBinding()
+	return b
+}
+
+func (b *BlobFunctionBuilder) updateBinding() {
+	if len(b.rf.RawBindings) > 0 {
+		b.rf.RawBindings[0] = b.trigger.ToBinding()
+	}
+}
+
+// --- Registration ---
 
 // RegisteredFunction holds metadata about a registered function.
 type RegisteredFunction struct {
-	Func           any
-	FuncName       string
-	FuncId         string
-	RawBindings    []bindings.Binding
-	Retry          *RetryOptions
-	ScriptFile     string
-	TriggerType    string
-	ClientFactory  ClientFactory // Optional: creates trigger-specific client args
+	Func          any
+	FuncName      string
+	FuncId        string
+	RawBindings   []bindings.Binding
+	Retry         *RetryOptions
+	ScriptFile    string
+	TriggerType   string
+	ClientFactory ClientFactory // Optional: creates trigger-specific client args
 }
 
 // RegisterFunction registers a function with a trigger binding.

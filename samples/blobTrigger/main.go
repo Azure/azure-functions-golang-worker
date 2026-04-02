@@ -7,10 +7,9 @@ import (
 	"log"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
-	blobtrigger "github.com/azure/azure-functions-golang-worker/triggers/blob"
-	"github.com/azure/azure-functions-golang-worker/worker"
-
 	"github.com/azure/azure-functions-golang-worker/sdk"
+	_ "github.com/azure/azure-functions-golang-worker/triggers/blob" // registers blob trigger client factory
+	"github.com/azure/azure-functions-golang-worker/worker"
 )
 
 // BlobHandler handles blob trigger events using a *blob.Client.
@@ -44,7 +43,7 @@ func BlobHandler(ctx context.Context, client *blob.Client) error {
 func main() {
 	app := sdk.FunctionApp()
 
-	blobtrigger.Register(app, "blobTrigger", BlobHandler).
+	app.Blob("blobTrigger", BlobHandler).
 		Path("test-container/{name}").
 		Connection("AzureWebJobsStorage")
 

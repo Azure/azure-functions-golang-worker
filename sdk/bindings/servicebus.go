@@ -40,12 +40,6 @@ type ServiceBusMessage struct {
 	UserProperties          map[string]interface{} `json:"userProperties"`
 }
 
-// DeserializeServiceBusMessage deserializes a JSON string into a ServiceBusMessage.
-func DeserializeServiceBusMessage(jsonString string) ServiceBusMessage {
-	var msg ServiceBusMessage
-	json.Unmarshal([]byte(jsonString), &msg)
-	return msg
-}
 
 // ServiceBusQueueTrigger is the user-facing configuration for a Service Bus queue trigger.
 type ServiceBusQueueTrigger struct {

@@ -1,16 +1,24 @@
 package blobtrigger
 
 import (
-	"context"
 	"os"
 	"testing"
 
-	blobsdk "github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/azure/azure-functions-golang-worker/sdk"
 )
 
+func TestInit_RegistersFactory(t *testing.T) {
+	// The init() function should have registered a factory for "blobTrigger"
+	factory, ok := sdk.GetClientFactory("blobTrigger")
+	if !ok {
+		t.Fatal("expected blob trigger factory to be registered via init()")
+	}
+	if factory == nil {
+		t.Fatal("expected non-nil factory")
+	}
+}
+
 func TestCreateServiceClient_ConnectionString(t *testing.T) {
-	// Use the standard development storage connection string
 	os.Setenv("TestStorage", "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;")
 	defer os.Unsetenv("TestStorage")
 
@@ -69,33 +77,5 @@ func TestCreateBlobClient_InvalidPath(t *testing.T) {
 	_, err := CreateBlobClient("BlobTestStorage2", "nocontainer")
 	if err == nil {
 		t.Fatal("expected error for invalid blob path")
-	}
-}
-
-func newTestApp() *sdk.App {
-	return sdk.FunctionApp()
-}
-
-func TestRegister(t *testing.T) {
-	app := newTestApp()
-	handler := BlobHandler(func(ctx context.Context, client *blobsdk.Client) error {
-		return nil
-	})
-
-	builder := Register(app, "blobFunc", handler)
-	if builder == nil {
-		t.Fatal("expected non-nil builder")
-	}
-
-	builder.Path("container/{name}").Connection("AzureWebJobsStorage")
-
-	count := 0
-	app.GetRegisteredFunctions().Range(func(key, value any) bool {
-		count++
-		return true
-	})
-
-	if count != 1 {
-		t.Errorf("expected 1 registered function, got %d", count)
 	}
 }

@@ -2,7 +2,7 @@ package worker
 
 import (
 	"bytes"
-	"io/ioutil"
+	"io"
 	"net/http"
 )
 
@@ -39,6 +39,6 @@ func (rw *ResponseWriterProxy) Result() *http.Response {
 	return &http.Response{
 		StatusCode: rw.statusCode,
 		Header:     rw.header,
-		Body:       ioutil.NopCloser(bytes.NewReader(rw.body.Bytes())),
+		Body:       io.NopCloser(bytes.NewReader(rw.body.Bytes())),
 	}
 }

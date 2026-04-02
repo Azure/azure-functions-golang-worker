@@ -1,10 +1,27 @@
-// Package blobtrigger provides a blob trigger for Azure Functions Go Worker.
-// It creates a *blob.Client pointed at the specific blob that triggered
-// the function, supporting both connection string and managed identity auth.
+// Package blobtrigger provides blob trigger support for Azure Functions Go Worker.
+//
+// Import this package with a blank identifier to enable blob trigger functions
+// that receive a *blob.Client scoped to the specific blob that triggered:
+//
+//	import _ "github.com/azure/azure-functions-golang-worker/triggers/blob"
+//
+// Then use app.Blob() to register handlers:
+//
+//	app.Blob("blobFunc", myHandler).Path("container/{name}").Connection("AzureWebJobsStorage")
+//
+// The handler receives a *blob.Client from the Azure SDK:
+//
+//	func myHandler(ctx context.Context, client *blob.Client) error {
+//	    data, _ := client.DownloadStream(ctx, nil)
+//	    // ...
+//	    return nil
+//	}
+//
+// Both connection string and managed identity auth are supported. The auth
+// method is auto-detected from the environment variable value.
 package blobtrigger
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -14,74 +31,39 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/azure/azure-functions-golang-worker/sdk"
-	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
 )
 
-// BlobHandler is the handler type for blob triggered functions.
-// The *blob.Client is scoped to the specific blob that triggered the function.
-type BlobHandler = func(context.Context, *blob.Client) error
-
-// BlobFunctionBuilder provides a fluent API for configuring blob-triggered functions.
-type BlobFunctionBuilder struct {
-	trigger *bindings.Blob
-	rf      *sdk.RegisteredFunction
+func init() {
+	sdk.RegisterClientFactory("blobTrigger", createBlobClientFromTrigger)
 }
 
-// Register creates a new blob-triggered function on the given app.
-func Register(app *sdk.App, name string, f BlobHandler) *BlobFunctionBuilder {
-	trigger := &bindings.Blob{
-		Name: "blob",
+// createBlobClientFromTrigger is the ClientFactory for blob triggers.
+// It reads the connection setting and blob path from the binding config
+// and trigger metadata, then creates a *blob.Client for the specific blob.
+func createBlobClientFromTrigger(config map[string]any, triggerMeta map[string]string) (any, error) {
+	// Get connection setting name from binding config
+	connection, _ := config["connection"].(string)
+	if connection == "" {
+		connection = "AzureWebJobsStorage"
 	}
 
-	rf := app.RegisterFunction(f, trigger)
+	// Get path template from binding config
+	path, _ := config["path"].(string)
 
-	builder := &BlobFunctionBuilder{
-		trigger: trigger,
-		rf:      rf,
+	// Resolve path parameters from trigger metadata
+	for k, v := range triggerMeta {
+		path = strings.ReplaceAll(path, "{"+k+"}", v)
+	}
+	// Fallback: use BlobTrigger metadata for the actual resolved path
+	if bt, ok := triggerMeta["BlobTrigger"]; ok && bt != "" {
+		path = bt
 	}
 
-	// Set the client factory — the dispatcher will call this during invocation
-	// to create a *blob.Client scoped to the specific blob that triggered.
-	rf.ClientFactory = func(config map[string]any, triggerMeta map[string]string) (any, error) {
-		connection := builder.trigger.Connection
-		if connection == "" {
-			connection = "AzureWebJobsStorage"
-		}
-
-		// Resolve blob path from trigger metadata
-		path := builder.trigger.Path
-		for k, v := range triggerMeta {
-			path = strings.ReplaceAll(path, "{"+k+"}", v)
-		}
-		// Fallback: use BlobTrigger metadata for the actual path
-		if bt, ok := triggerMeta["BlobTrigger"]; ok && bt != "" {
-			path = bt
-		}
-
-		return CreateBlobClient(connection, path)
+	if path == "" {
+		return nil, fmt.Errorf("unable to resolve blob path from trigger metadata")
 	}
 
-	return builder
-}
-
-// Path sets the blob path pattern (e.g., "container/{name}").
-func (b *BlobFunctionBuilder) Path(path string) *BlobFunctionBuilder {
-	b.trigger.Path = path
-	b.updateBinding()
-	return b
-}
-
-// Connection sets the connection string setting name (e.g., "AzureWebJobsStorage").
-func (b *BlobFunctionBuilder) Connection(connection string) *BlobFunctionBuilder {
-	b.trigger.Connection = connection
-	b.updateBinding()
-	return b
-}
-
-func (b *BlobFunctionBuilder) updateBinding() {
-	if len(b.rf.RawBindings) > 0 {
-		b.rf.RawBindings[0] = b.trigger.ToBinding()
-	}
+	return CreateBlobClient(connection, path)
 }
 
 // --- Client creation with caching and auto-detect auth ---

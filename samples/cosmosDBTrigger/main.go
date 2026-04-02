@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log"
-	"time"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
@@ -20,12 +19,6 @@ func CosmosDBTriggerHandler(ctx context.Context, docs []bindings.CosmosDocument)
 		log.Println("No documents received")
 	}
 	return nil
-}
-
-var retry = &sdk.RetryOptions{
-	MaxRetryCount: 3,
-	Strategy:      sdk.FixedDelay,
-	DelayInterval: func() *time.Duration { d := 5 * time.Second; return &d }(),
 }
 
 func main() {
