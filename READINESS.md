@@ -52,11 +52,10 @@ be addressed before any external users evaluate the programming model.
   cleanly.
   File: `worker/handlers.go`
 
-- [ ] **Validate handler signature at registration time for blob trigger**
-  `app.Blob()` accepts `any` handler. If the handler has the wrong signature
-  (e.g., wrong argument type), the error only surfaces at invocation time as a
-  reflect panic. Add type validation in `registerFunction` when `ClientFactory`
-  is set.
+- [x] **Validate handler signature at registration time for blob trigger**
+  `app.Blob()` validates at registration time that the handler is a function
+  with signature `func(context.Context, T) error`. Wrong signatures panic
+  immediately with a descriptive message instead of failing at invocation time.
   File: `sdk/app.go`
 
 ---

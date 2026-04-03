@@ -1,8 +1,10 @@
 package sdk
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"reflect"
 	"runtime"
 	"strings"
@@ -377,6 +379,29 @@ type BlobFunctionBuilder struct {
 //
 //	import _ "github.com/azure/azure-functions-golang-worker/triggers/blob"
 func (app *App) Blob(name string, f any) *BlobFunctionBuilder {
+	// Validate handler signature: must be a function
+	ft := reflect.TypeOf(f)
+	if ft == nil || ft.Kind() != reflect.Func {
+		panic("Blob handler must be a function")
+	}
+	// Must accept exactly 2 args: (context.Context, T)
+	if ft.NumIn() != 2 {
+		panic(fmt.Sprintf("Blob handler must accept exactly 2 arguments (context.Context, clientType), got %d", ft.NumIn()))
+	}
+	// First arg must implement context.Context
+	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
+	if !ft.In(0).Implements(ctxType) {
+		panic(fmt.Sprintf("Blob handler first argument must be context.Context, got %v", ft.In(0)))
+	}
+	// Must return exactly 1 value: error
+	if ft.NumOut() != 1 {
+		panic(fmt.Sprintf("Blob handler must return exactly 1 value (error), got %d", ft.NumOut()))
+	}
+	errType := reflect.TypeOf((*error)(nil)).Elem()
+	if !ft.Out(0).Implements(errType) {
+		panic(fmt.Sprintf("Blob handler return type must be error, got %v", ft.Out(0)))
+	}
+
 	trigger := &bindings.BlobTrigger{
 		Name: "blob",
 	}
