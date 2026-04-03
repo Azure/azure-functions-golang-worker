@@ -4,6 +4,21 @@ import "sync"
 
 // ClientFactory is a function that creates a trigger-specific client argument
 // from the binding configuration and trigger metadata.
+//
+// This is the core mechanism for Extension Triggers (see the two-tier trigger
+// architecture documented in sdk/app.go and TECHNICAL_SPEC.md §4).
+//
+// Extension triggers use ClientFactory instead of data passthrough when:
+//   - The trigger payload is potentially unbounded (e.g., blobs can be GBs)
+//   - A useful handler needs a live Azure SDK client (streaming, random access)
+//   - The required Azure SDK (azblob, azidentity, etc.) would add heavy deps
+//     that users of other triggers shouldn't pay for
+//
+// If a trigger's payload is bounded and already serialized in the gRPC message
+// (e.g., CosmosDB change feed docs, Service Bus messages, timer metadata),
+// it should be a Core Trigger with a typed handler alias in sdk/handlers.go
+// instead of using ClientFactory.
+//
 // Used by trigger extension modules (e.g., triggers/blob) to create SDK clients
 // (e.g., *blob.Client) during invocation without coupling the core SDK to
 // external Azure SDK dependencies.

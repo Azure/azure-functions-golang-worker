@@ -31,6 +31,21 @@ func (app *App) GetRegisteredFunctions() *sync.Map {
 	return app.registeredFunctions
 }
 
+// =============================================================================
+// Core Triggers — Data Passthrough
+//
+// These triggers receive their payload inline in the gRPC InvocationRequest.
+// The host serializes trigger data (JSON documents, messages, timer metadata)
+// into the protobuf message and the worker deserializes it into typed Go structs.
+//
+// Core triggers have:
+//   - Typed handler aliases (e.g., CosmosDBHandler, TimerHandler) for compile-time safety
+//   - Zero external Azure SDK dependencies — only encoding/json is needed
+//   - Bounded payloads — change feed docs, queue messages, events are discrete objects
+//
+// Triggers in this tier: HTTP, Timer, CosmosDB, ServiceBus, EventHub, EventGrid
+// =============================================================================
+
 // --- HTTP Trigger ---
 
 // HttpFunctionBuilder is a builder for creating HTTP triggered functions.
@@ -361,6 +376,28 @@ func (b *ServiceBusTopicFunctionBuilder) updateBinding() {
 	}
 }
 
+// =============================================================================
+// Extension Triggers — SDK Client Injection
+//
+// These triggers provide an authenticated Azure SDK client instead of raw data.
+// The host sends only metadata (e.g., container name, blob path); the actual
+// content never flows through gRPC.
+//
+// Extension triggers have:
+//   - SDK client injection — handler receives e.g. *blob.Client ready to use
+//   - Isolated dependencies — heavy Azure SDK deps live in triggers/<name>/
+//   - ClientFactory registration — activated via blank import + init()
+//   - Handler type is 'any' (validated via reflection at registration time)
+//
+// This tier is used when the trigger payload is potentially unbounded (GBs)
+// or when a useful handler requires a live SDK client for streaming, random
+// access, or write-back operations.
+//
+// Triggers in this tier: Blob (and future Queue, Table, etc.)
+//
+// See sdk/factories.go for the ClientFactory mechanism and decision criteria.
+// =============================================================================
+
 // --- Blob Trigger ---
 
 // BlobFunctionBuilder is a builder for creating blob triggered functions.
@@ -453,14 +490,9 @@ type RegisteredFunction struct {
 	ClientFactory ClientFactory // Optional: creates trigger-specific client args
 }
 
-// RegisterFunction registers a function with a trigger binding.
+// RegisterFunction registers a function with an explicit name and a trigger binding.
 // This is exported for use by external trigger modules (e.g., triggers/blob).
-func (app *App) RegisterFunction(f any, b bindings.Bind) *RegisteredFunction {
-	return app.registerFunction("", f, b)
-}
-
-// RegisterFunctionWithName registers a function with a trigger binding and explicit name.
-func (app *App) RegisterFunctionWithName(name string, f any, b bindings.Bind) *RegisteredFunction {
+func (app *App) RegisterFunction(name string, f any, b bindings.Bind) *RegisteredFunction {
 	return app.registerFunction(name, f, b)
 }
 

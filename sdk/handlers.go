@@ -7,6 +7,23 @@ import (
 	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
 )
 
+// ---------------------------------------------------------------------------
+// Core Trigger Handler Types
+//
+// These typed aliases exist for Core Triggers — triggers whose payload is
+// bounded, already serialized in the gRPC InvocationRequest, and requires
+// only encoding/json for deserialization (no external Azure SDK).
+//
+// Typed aliases provide compile-time safety: the compiler catches wrong
+// handler signatures immediately, unlike Extension Triggers which accept
+// 'any' and validate via reflection at registration time.
+//
+// Extension Triggers (e.g., Blob) do NOT have typed aliases here because
+// their handler's second argument is an SDK client type (e.g., *blob.Client)
+// that lives in an external module. Adding it here would couple the core SDK
+// to azblob/azidentity and bloat every user's binary.
+// ---------------------------------------------------------------------------
+
 // HTTPHandler is the handler type for HTTP triggered functions.
 // It uses the standard net/http handler signature for maximum compatibility
 // with the Go ecosystem (middleware, testing, etc.).

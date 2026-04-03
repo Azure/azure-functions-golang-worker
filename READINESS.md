@@ -15,11 +15,10 @@ be addressed before any external users evaluate the programming model.
   with "not yet implemented" to avoid misleading users.
   Files: `sdk/retry.go`, `sdk/app.go`, `worker/handlers.go`
 
-- [ ] **Remove `RegisterFunction()` export (keep only `RegisterFunctionWithName`)**
-  `RegisterFunction(f, b)` passes empty name and was only needed by the old
-  `blobtrigger.Register()` pattern which no longer exists. Having two exported
-  registration methods is confusing. Consolidate to `RegisterFunctionWithName`
-  or remove the parameterless variant.
+- [x] **Consolidate `RegisterFunction` export**
+  Removed the parameterless `RegisterFunction(f, b)` variant and renamed
+  `RegisterFunctionWithName` to `RegisterFunction(name, f, b)`. There is now
+  a single exported registration method that always requires an explicit name.
   File: `sdk/app.go`
 
 - [ ] **Mark httpStreaming sample as not-yet-supported**
@@ -106,6 +105,13 @@ where users are evaluating the programming model.
   File: `worker/handlers.go`
 
 ### Should Fix
+
+- [x] **Document the two-tier trigger model (Core vs Extension)**
+  The codebase has two distinct trigger patterns (data passthrough for core
+  triggers in `sdk/`, SDK client injection for extension triggers in
+  `triggers/`) but this was not documented anywhere. The distinction is now
+  explained in `README.md`, `TECHNICAL_SPEC.md` §4, and in code comments in
+  `sdk/app.go`, `sdk/handlers.go`, and `sdk/factories.go`.
 
 - [ ] **Re-export key types from `sdk` package**
   Users currently need two imports: `sdk` for builders and `sdk/bindings` for
