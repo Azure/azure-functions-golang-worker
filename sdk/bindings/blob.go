@@ -1,6 +1,7 @@
 package bindings
 
-const BlobBindingType BindingType = "blobTrigger"
+// BlobTriggerBindingType is the binding type constant for Blob triggers.
+const BlobTriggerBindingType BindingType = "blobTrigger"
 // BlobBinding is the JSON representation for Blob Trigger.
 type BlobBinding struct {
 	Path       string `json:"path"`
@@ -14,7 +15,7 @@ type BlobTrigger struct {
 	Connection string
 }
 
-func (b *BlobTrigger) GetBindingType() BindingType { return BlobBindingType }
+func (b *BlobTrigger) GetBindingType() BindingType { return BlobTriggerBindingType }
 
 func (b *BlobTrigger) ToBinding() Binding {
 	return Binding{

@@ -384,7 +384,7 @@ func (app *App) Blob(name string, f any) *BlobFunctionBuilder {
 	rf := app.registerFunction(name, f, trigger)
 
 	// Look up the globally registered factory for blob triggers
-	if factory, ok := GetClientFactory(string(bindings.BlobBindingType)); ok {
+	if factory, ok := GetClientFactory(string(bindings.BlobTriggerBindingType)); ok {
 		rf.ClientFactory = factory
 	}
 
@@ -444,7 +444,7 @@ func (app *App) registerFunction(name string, f any, b bindings.Bind) *Registere
 	rawBindings := []bindings.Binding{triggerBinding}
 
 	// If this is an HTTP Trigger, we implicitly add the HTTP Output binding
-	if b.GetBindingType() == bindings.HttpBindingType {
+	if b.GetBindingType() == bindings.HttpTriggerBindingType {
 		rawBindings = append(rawBindings, bindings.Binding{
 			Name:      "$return",
 			Type:      "http",

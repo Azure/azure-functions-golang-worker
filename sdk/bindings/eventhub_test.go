@@ -32,7 +32,7 @@ func TestEventHubTrigger_ToBinding(t *testing.T) {
 
 func TestEventHubMessage_JSON(t *testing.T) {
 	msg := EventHubMessage{
-		Body:            "hello",
+		Body:            json.RawMessage(`"hello"`),
 		SequenceNumber:  42,
 		Offset:          "1024",
 		EnqueuedTimeUtc: "2026-01-01T00:00:00Z",

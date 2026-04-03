@@ -1,6 +1,9 @@
 package bindings
 
-const CosmosDBBindingType BindingType = "cosmosDBTrigger"
+import "encoding/json"
+
+// CosmosDBTriggerBindingType is the binding type constant for CosmosDB triggers.
+const CosmosDBTriggerBindingType BindingType = "cosmosDBTrigger"
 
 // CosmosDBBinding is the JSON representation for CosmosDB.
 type CosmosDBBinding struct {
@@ -9,16 +12,18 @@ type CosmosDBBinding struct {
 	Connection    string `json:"connection"`
 }
 
-// CosmosDocument represents a document in CosmosDB.
+// CosmosDocument represents a document from the CosmosDB change feed.
+// Fields prefixed with _ are CosmosDB system properties.
+// Use json.Unmarshal on the raw document to extract custom properties.
 type CosmosDocument struct {
-	ID          string `json:"id"`
-	Data        string `json:"data"`
-	Rid         string `json:"_rid"`
-	Self        string `json:"_self"`
-	Etag        string `json:"_etag"`
-	Attachments string `json:"_attachments"`
-	Timestamp   int64  `json:"_ts"`
-	Lsn         int    `json:"_lsn"`
+	ID          string          `json:"id"`
+	Data        json.RawMessage `json:"data"`
+	Rid         string          `json:"_rid"`
+	Self        string          `json:"_self"`
+	Etag        string          `json:"_etag"`
+	Attachments string          `json:"_attachments"`
+	Timestamp   int64           `json:"_ts"`
+	Lsn         int             `json:"_lsn"`
 }
 
 // CosmosDBTrigger is the user-facing configuration for a CosmosDB trigger.
@@ -29,7 +34,7 @@ type CosmosDBTrigger struct {
 	Connection    string
 }
 
-func (c *CosmosDBTrigger) GetBindingType() BindingType { return CosmosDBBindingType }
+func (c *CosmosDBTrigger) GetBindingType() BindingType { return CosmosDBTriggerBindingType }
 
 func (c *CosmosDBTrigger) ToBinding() Binding {
 	return Binding{

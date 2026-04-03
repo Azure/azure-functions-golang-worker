@@ -16,6 +16,10 @@ type ServiceBusBinding struct {
 }
 
 // ServiceBusMessage represents a message received from Azure Service Bus.
+// The Body field uses the special json tag "azfuncdata" which instructs the
+// worker's converter to populate this field from the raw trigger input data
+// rather than from trigger metadata. Other fields are populated from trigger
+// metadata using case-insensitive matching on their json tags.
 type ServiceBusMessage struct {
 	Body                    json.RawMessage        `json:"azfuncdata"`
 	ContentType             string                 `json:"contentType"`

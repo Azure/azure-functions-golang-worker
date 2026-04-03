@@ -12,7 +12,7 @@ import (
 // EventHubHandler handles EventHub trigger events using a typed data struct.
 func EventHubHandler(ctx context.Context, event bindings.EventHubMessage) error {
 	log.Printf("EventHub Trigger Executed")
-	log.Printf("Body: %s", event.Body)
+	log.Printf("Body: %s", string(event.Body))
 	log.Printf("Sequence Number: %d", event.SequenceNumber)
 	log.Printf("Offset: %s", event.Offset)
 	log.Printf("Enqueued Time: %s", event.EnqueuedTimeUtc)
