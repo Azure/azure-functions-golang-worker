@@ -4,9 +4,6 @@ import "encoding/json"
 
 const EventGridTriggerType BindingType = "eventGridTrigger"
 
-// EventGridBinding is the JSON representation for EventGrid trigger bindings.
-type EventGridBinding struct{}
-
 // EventGridEvent represents an Azure Event Grid event.
 type EventGridEvent struct {
 	Id              string          `json:"id"`
@@ -28,10 +25,9 @@ func (e *EventGridTrigger) GetBindingType() BindingType { return EventGridTrigge
 
 func (e *EventGridTrigger) ToBinding() Binding {
 	return Binding{
-		Name:             e.Name,
-		Type:             string(e.GetBindingType()),
-		Direction:        "in",
-		EventGridBinding: &EventGridBinding{},
+		Name:      e.Name,
+		Type:      string(e.GetBindingType()),
+		Direction: "in",
 	}
 }
 

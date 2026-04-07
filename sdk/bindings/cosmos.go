@@ -13,7 +13,7 @@ type CosmosDBBinding struct {
 }
 
 // CosmosDocument represents a document from the CosmosDB change feed.
-// Fields prefixed with _ are CosmosDB system properties.
+// System properties: _rid, _self, _etag, _attachments, _ts (timestamp), _lsn.
 // Use json.Unmarshal on the raw document to extract custom properties.
 type CosmosDocument struct {
 	ID          string          `json:"id"`
