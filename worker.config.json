@@ -1,12 +1,26 @@
 {
     "description": {
         "language": "golang",
-        "supportedOperatingSystems":["LINUX", "OSX", "WINDOWS"],
-        "supportedArchitectures":["X64", "X86", "Arm64"],
-        "defaultExecutablePath": "app.exe",
+        "supportedOperatingSystems": ["LINUX"],
+        "supportedArchitectures": ["Arm64"],
+        "defaultExecutablePath": "app",
         "workerIndexing": "true"
-
     },
+    "profiles": [
+        {
+            "profileName": "FlexConsumption",
+            "conditions": [
+                {
+                    "conditionType": "environment",
+                    "conditionName": "WEBSITE_SKU",
+                    "conditionExpression": "(?i)^FlexConsumption$"
+                }
+            ],
+            "description": {
+                "defaultExecutablePath": "{workerDirectoryPath}/proxy"
+            }
+        }
+    ],
     "processOptions": {
         "initializationTimeout": "00:02:00",
         "environmentReloadTimeout": "00:02:00"

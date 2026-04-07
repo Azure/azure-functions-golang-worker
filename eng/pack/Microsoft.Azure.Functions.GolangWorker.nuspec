@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd">
+  <metadata>
+    <id>Microsoft.Azure.Functions.GolangWorker</id>
+    <version>0.1.0</version>
+    <authors>Microsoft</authors>
+    <owners>Microsoft</owners>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>Microsoft Azure Functions Golang Worker</description>
+    <copyright>© .NET Foundation. All rights reserved.</copyright>
+    <contentFiles>
+      <files include="**/*" buildAction="None" copyToOutput="true" flatten="false" />
+    </contentFiles>
+  </metadata>
+  <files>
+    <file src="workers\golang\worker.config.json" target="contentFiles\any\any\workers\golang\" />
+    <file src="workers\golang\proxy" target="contentFiles\any\any\workers\golang\" />
+  </files>
+</package>

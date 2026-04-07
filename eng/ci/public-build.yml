@@ -48,6 +48,8 @@ extends:
         displayName: 'Build & Test'
         jobs:
           - template: /eng/ci/templates/jobs/build.yml@self
+            parameters:
+              PoolName: 1es-pool-azfunc-public
 
       - stage: UnitTests
         displayName: 'Unit Tests'
