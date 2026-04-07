@@ -6,13 +6,6 @@
         "Name": "emulatorns1",
         "Entities": [
           {
-            "Name": "myeventhub",
-            "PartitionCount": "2",
-            "ConsumerGroups": [
-              { "Name": "$Default" }
-            ]
-          },
-          {
             "Name": "input-hub",
             "PartitionCount": "2",
             "ConsumerGroups": [
