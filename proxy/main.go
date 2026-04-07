@@ -202,7 +202,7 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 						"WorkerStatus":                      "true",
 						"RpcHttpBodyOnly":                   "true",
 						"RawHttpBodyBytes":                  "true",
-						"RpcHttpTriggerMetadataRemoved":     "true",
+						"RpcHTTPTriggerMetadataRemoved":     "true",
 						"UseNullableValueDictionaryForHttp": "true",
 						"HandlesWorkerTermination":          "true",
 					},

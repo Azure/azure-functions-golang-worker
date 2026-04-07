@@ -49,15 +49,15 @@ func (app *App) GetRegisteredFunctions() *sync.Map {
 
 // --- HTTP Trigger ---
 
-// HttpFunctionBuilder is a builder for creating HTTP triggered functions.
-type HttpFunctionBuilder struct {
-	trigger *bindings.HttpTrigger
+// HTTPFunctionBuilder is a builder for creating HTTP triggered functions.
+type HTTPFunctionBuilder struct {
+	trigger *bindings.HTTPTrigger
 	rf      *RegisteredFunction
 }
 
 // HTTP creates a new HTTP triggered function.
-func (app *App) HTTP(name string, f HTTPHandler) *HttpFunctionBuilder {
-	trigger := &bindings.HttpTrigger{
+func (app *App) HTTP(name string, f HTTPHandler) *HTTPFunctionBuilder {
+	trigger := &bindings.HTTPTrigger{
 		Name:      "req",
 		Route:     name,
 		AuthLevel: "anonymous",
@@ -66,27 +66,27 @@ func (app *App) HTTP(name string, f HTTPHandler) *HttpFunctionBuilder {
 
 	rf := app.registerFunction(name, f, trigger)
 
-	return &HttpFunctionBuilder{
+	return &HTTPFunctionBuilder{
 		trigger: trigger,
 		rf:      rf,
 	}
 }
 
 // Methods sets the allowed HTTP methods.
-func (b *HttpFunctionBuilder) Methods(methods ...string) *HttpFunctionBuilder {
+func (b *HTTPFunctionBuilder) Methods(methods ...string) *HTTPFunctionBuilder {
 	b.trigger.Methods = methods
 	b.updateBinding()
 	return b
 }
 
 // Auth sets the authorization level.
-func (b *HttpFunctionBuilder) Auth(level string) *HttpFunctionBuilder {
+func (b *HTTPFunctionBuilder) Auth(level string) *HTTPFunctionBuilder {
 	b.trigger.AuthLevel = level
 	b.updateBinding()
 	return b
 }
 
-func (b *HttpFunctionBuilder) updateBinding() {
+func (b *HTTPFunctionBuilder) updateBinding() {
 	if len(b.rf.RawBindings) > 0 {
 		b.rf.RawBindings[0] = b.trigger.ToBinding()
 	}
@@ -453,10 +453,10 @@ func (app *App) Blob(name string, f any) *BlobFunctionBuilder {
 	rf := app.registerFunction(name, f, trigger)
 
 	// Look up the globally registered factory for blob triggers
-	if factory, ok := GetClientFactory(string(bindings.BlobTriggerBindingType)); ok {
+	if factory, ok := GetClientFactory(string(bindings.BlobTriggerType)); ok {
 		rf.ClientFactory = factory
 	} else {
-		log.Printf("WARNING: no ClientFactory registered for %s \u2014 did you forget to import triggers/blob?", bindings.BlobTriggerBindingType)
+		log.Printf("WARNING: no ClientFactory registered for %s \u2014 did you forget to import triggers/blob?", bindings.BlobTriggerType)
 	}
 
 	return &BlobFunctionBuilder{
@@ -510,7 +510,7 @@ func (app *App) registerFunction(name string, f any, b bindings.Bind) *Registere
 	rawBindings := []bindings.Binding{triggerBinding}
 
 	// If this is an HTTP Trigger, we implicitly add the HTTP Output binding
-	if b.GetBindingType() == bindings.HttpTriggerBindingType {
+	if b.GetBindingType() == bindings.HTTPTriggerType {
 		rawBindings = append(rawBindings, bindings.Binding{
 			Name:      "$return",
 			Type:      "http",

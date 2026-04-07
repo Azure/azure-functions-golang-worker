@@ -2,8 +2,8 @@ package bindings
 
 import "encoding/json"
 
-// ServiceBusTriggerBindingType is the binding type constant for Service Bus triggers.
-const ServiceBusTriggerBindingType BindingType = "serviceBusTrigger"
+// ServiceBusTrigger is the binding type constant for Service Bus triggers.
+const ServiceBusTriggerType BindingType = "serviceBusTrigger"
 
 // ServiceBusBinding is the JSON representation for Service Bus bindings.
 type ServiceBusBinding struct {
@@ -55,7 +55,7 @@ type ServiceBusQueueTrigger struct {
 }
 
 // GetBindingType returns the Service Bus trigger binding type.
-func (s *ServiceBusQueueTrigger) GetBindingType() BindingType { return ServiceBusTriggerBindingType }
+func (s *ServiceBusQueueTrigger) GetBindingType() BindingType { return ServiceBusTriggerType }
 
 // ToBinding converts the ServiceBusQueueTrigger to a Binding.
 func (s *ServiceBusQueueTrigger) ToBinding() Binding {
@@ -83,7 +83,7 @@ type ServiceBusTopicTrigger struct {
 }
 
 // GetBindingType returns the Service Bus trigger binding type.
-func (s *ServiceBusTopicTrigger) GetBindingType() BindingType { return ServiceBusTriggerBindingType }
+func (s *ServiceBusTopicTrigger) GetBindingType() BindingType { return ServiceBusTriggerType }
 
 // ToBinding converts the ServiceBusTopicTrigger to a Binding.
 func (s *ServiceBusTopicTrigger) ToBinding() Binding {

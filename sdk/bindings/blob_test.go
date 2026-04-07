@@ -31,10 +31,10 @@ func TestBlobTrigger_ToBinding(t *testing.T) {
 	}
 }
 
-func TestBlobTriggerBindingType(t *testing.T) {
+func TestBlobTrigger(t *testing.T) {
 	trigger := &BlobTrigger{}
-	if trigger.GetBindingType() != BlobTriggerBindingType {
-		t.Errorf("expected %q, got %q", BlobTriggerBindingType, trigger.GetBindingType())
+	if trigger.GetBindingType() != BlobTriggerType {
+		t.Errorf("expected %q, got %q", BlobTriggerType, trigger.GetBindingType())
 	}
 }
 

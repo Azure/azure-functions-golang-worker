@@ -11,8 +11,8 @@ func TestTimerTriggerGetBindingType(t *testing.T) {
 		Schedule: "0 */5 * * * *",
 	}
 
-	if got := trigger.GetBindingType(); got != TimerTriggerBindingType {
-		t.Errorf("GetBindingType() = %q, want %q", got, TimerTriggerBindingType)
+	if got := trigger.GetBindingType(); got != TimerTriggerType {
+		t.Errorf("GetBindingType() = %q, want %q", got, TimerTriggerType)
 	}
 }
 

@@ -2,7 +2,7 @@ package bindings
 
 import "encoding/json"
 
-const EventGridTriggerBindingType BindingType = "eventGridTrigger"
+const EventGridTriggerType BindingType = "eventGridTrigger"
 
 // EventGridBinding is the JSON representation for EventGrid trigger bindings.
 type EventGridBinding struct{}
@@ -24,7 +24,7 @@ type EventGridTrigger struct {
 	Name string
 }
 
-func (e *EventGridTrigger) GetBindingType() BindingType { return EventGridTriggerBindingType }
+func (e *EventGridTrigger) GetBindingType() BindingType { return EventGridTriggerType }
 
 func (e *EventGridTrigger) ToBinding() Binding {
 	return Binding{

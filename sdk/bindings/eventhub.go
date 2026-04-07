@@ -2,8 +2,8 @@ package bindings
 
 import "encoding/json"
 
-// EventHubTriggerBindingType is the binding type constant for EventHub triggers.
-const EventHubTriggerBindingType BindingType = "eventHubTrigger"
+// EventHubTrigger is the binding type constant for EventHub triggers.
+const EventHubTriggerType BindingType = "eventHubTrigger"
 
 // EventHubBinding is the JSON representation for EventHub bindings.
 type EventHubBinding struct {
@@ -34,7 +34,7 @@ type EventHubTrigger struct {
 }
 
 // GetBindingType returns the EventHub trigger binding type.
-func (e *EventHubTrigger) GetBindingType() BindingType { return EventHubTriggerBindingType }
+func (e *EventHubTrigger) GetBindingType() BindingType { return EventHubTriggerType }
 
 // ToBinding converts the EventHubTrigger to a Binding.
 func (e *EventHubTrigger) ToBinding() Binding {

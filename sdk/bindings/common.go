@@ -20,7 +20,7 @@ type Binding struct {
 	Direction string `json:"direction"`
 
 	*CosmosDBBinding
-	*HttpBinding
+	*HTTPBinding
 	*BlobBinding
 	*EventGridBinding
 	*TimerBinding
@@ -37,8 +37,8 @@ func (b Binding) MarshalJSON() ([]byte, error) {
 	var sub interface{}
 	if b.CosmosDBBinding != nil {
 		sub = b.CosmosDBBinding
-	} else if b.HttpBinding != nil {
-		sub = b.HttpBinding
+	} else if b.HTTPBinding != nil {
+		sub = b.HTTPBinding
 	} else if b.BlobBinding != nil {
 		sub = b.BlobBinding
 	} else if b.EventGridBinding != nil {

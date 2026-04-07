@@ -2,8 +2,8 @@ package bindings
 
 import "encoding/json"
 
-// CosmosDBTriggerBindingType is the binding type constant for CosmosDB triggers.
-const CosmosDBTriggerBindingType BindingType = "cosmosDBTrigger"
+// CosmosDBTrigger is the binding type constant for CosmosDB triggers.
+const CosmosDBTriggerType BindingType = "cosmosDBTrigger"
 
 // CosmosDBBinding is the JSON representation for CosmosDB.
 type CosmosDBBinding struct {
@@ -34,7 +34,7 @@ type CosmosDBTrigger struct {
 	Connection    string
 }
 
-func (c *CosmosDBTrigger) GetBindingType() BindingType { return CosmosDBTriggerBindingType }
+func (c *CosmosDBTrigger) GetBindingType() BindingType { return CosmosDBTriggerType }
 
 func (c *CosmosDBTrigger) ToBinding() Binding {
 	return Binding{

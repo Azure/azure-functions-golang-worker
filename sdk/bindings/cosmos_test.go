@@ -61,9 +61,9 @@ func TestCosmosDocument_JSON(t *testing.T) {
 	}
 }
 
-func TestCosmosDBTriggerBindingType(t *testing.T) {
+func TestCosmosDBTrigger(t *testing.T) {
 	trigger := &CosmosDBTrigger{}
-	if trigger.GetBindingType() != CosmosDBTriggerBindingType {
-		t.Errorf("expected %q, got %q", CosmosDBTriggerBindingType, trigger.GetBindingType())
+	if trigger.GetBindingType() != CosmosDBTriggerType {
+		t.Errorf("expected %q, got %q", CosmosDBTriggerType, trigger.GetBindingType())
 	}
 }
