@@ -100,5 +100,3 @@ func (s *ServiceBusTopicTrigger) ToBinding() Binding {
 		},
 	}
 }
-
-

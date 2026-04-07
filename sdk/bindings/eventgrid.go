@@ -3,6 +3,7 @@ package bindings
 import "encoding/json"
 
 const EventGridTriggerBindingType BindingType = "eventGridTrigger"
+
 // EventGridBinding is the JSON representation for EventGrid trigger bindings.
 type EventGridBinding struct{}
 

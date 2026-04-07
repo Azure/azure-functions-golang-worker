@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"reflect"
 	"runtime"
 	"strings"
@@ -194,6 +195,12 @@ func (app *App) EventGrid(name string, f EventGridHandler) *EventGridFunctionBui
 	return &EventGridFunctionBuilder{
 		trigger: trigger,
 		rf:      rf,
+	}
+}
+
+func (b *EventGridFunctionBuilder) updateBinding() {
+	if len(b.rf.RawBindings) > 0 {
+		b.rf.RawBindings[0] = b.trigger.ToBinding()
 	}
 }
 
@@ -448,6 +455,8 @@ func (app *App) Blob(name string, f any) *BlobFunctionBuilder {
 	// Look up the globally registered factory for blob triggers
 	if factory, ok := GetClientFactory(string(bindings.BlobTriggerBindingType)); ok {
 		rf.ClientFactory = factory
+	} else {
+		log.Printf("WARNING: no ClientFactory registered for %s \u2014 did you forget to import triggers/blob?", bindings.BlobTriggerBindingType)
 	}
 
 	return &BlobFunctionBuilder{

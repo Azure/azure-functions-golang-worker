@@ -2,6 +2,7 @@ package bindings
 
 // BlobTriggerBindingType is the binding type constant for Blob triggers.
 const BlobTriggerBindingType BindingType = "blobTrigger"
+
 // BlobBinding is the JSON representation for Blob Trigger.
 type BlobBinding struct {
 	Path       string `json:"path"`

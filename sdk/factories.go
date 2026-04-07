@@ -41,6 +41,9 @@ var (
 func RegisterClientFactory(triggerType string, factory ClientFactory) {
 	clientFactoriesMu.Lock()
 	defer clientFactoriesMu.Unlock()
+	if _, exists := clientFactories[triggerType]; exists {
+		panic("duplicate ClientFactory registration for trigger type: " + triggerType)
+	}
 	clientFactories[triggerType] = factory
 }
 
