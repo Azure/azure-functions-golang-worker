@@ -29,20 +29,15 @@ jobs:
 
     - script: |
         export PATH=$PATH:$(go env GOPATH)/bin
-        golangci-lint run --config=$(Build.SourcesDirectory)/eng/ci/.golangci.yml --out-format=colored-line-number ./... || true
-        golangci-lint run --config=$(Build.SourcesDirectory)/eng/ci/.golangci.yml --out-format=junit-xml ./... > $(Build.SourcesDirectory)/lint-results.xml 2>&1 || true
+        golangci-lint run --config=$(Build.SourcesDirectory)/eng/ci/.golangci.yml --out-format=colored-line-number ./... | tee $(Build.SourcesDirectory)/lint-results.txt || true
       displayName: 'Run golangci-lint'
 
-    - task: PublishTestResults@2
-      displayName: 'Publish lint results'
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish lint report'
       condition: always()
       inputs:
-        testResultsFormat: 'JUnit'
-        testResultsFiles: '$(Build.SourcesDirectory)/lint-results.xml'
-        testRunTitle: 'golangci-lint'
-        mergeTestResults: false
-        failTaskOnFailedTests: false
-        failTaskOnMissingResultsFile: false
+        PathtoPublish: '$(Build.SourcesDirectory)/lint-results.txt'
+        ArtifactName: 'lint-report'
 
     - script: |
         export PATH=$PATH:$(go env GOPATH)/bin
