@@ -29,7 +29,8 @@ jobs:
 
     - script: |
         export PATH=$PATH:$(go env GOPATH)/bin
-        golangci-lint run --config=$(Build.SourcesDirectory)/eng/ci/.golangci.yml --out-format=colored-line-number,checkstyle:$(Build.SourcesDirectory)/lint-results.xml ./... || true
+        golangci-lint run --config=$(Build.SourcesDirectory)/eng/ci/.golangci.yml --out-format=colored-line-number ./... || true
+        golangci-lint run --config=$(Build.SourcesDirectory)/eng/ci/.golangci.yml --out-format=junit-xml ./... > $(Build.SourcesDirectory)/lint-results.xml 2>&1 || true
       displayName: 'Run golangci-lint'
 
     - task: PublishTestResults@2
