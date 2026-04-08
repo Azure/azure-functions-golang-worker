@@ -32,13 +32,6 @@ jobs:
         golangci-lint run --config=$(Build.SourcesDirectory)/eng/ci/.golangci.yml --out-format=colored-line-number ./... | tee $(Build.SourcesDirectory)/lint-results.txt || true
       displayName: 'Run golangci-lint'
 
-    - task: PublishBuildArtifacts@1
-      displayName: 'Publish lint report'
-      condition: always()
-      inputs:
-        PathtoPublish: '$(Build.SourcesDirectory)/lint-results.txt'
-        ArtifactName: 'lint-report'
-
     - script: |
         export PATH=$PATH:$(go env GOPATH)/bin
         gotestsum --junitfile $(Build.SourcesDirectory)/test-results.xml -- -coverprofile=$(Build.SourcesDirectory)/coverage.out -covermode=atomic -coverpkg=./worker/...,./sdk/... ./worker/... ./sdk/...
