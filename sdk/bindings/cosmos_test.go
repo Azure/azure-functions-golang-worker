@@ -40,7 +40,7 @@ func TestCosmosDocument_JSON(t *testing.T) {
 		ID:        "doc-123",
 		Data:      json.RawMessage(`{"key":"value"}`),
 		Etag:      "etag-1",
-		Timestamp: 1234567890,
+		Timestamp: "1234567890",
 	}
 
 	data, err := json.Marshal(doc)
