@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"reflect"
 	"strings"
 
-	"github.com/azure/azure-functions-golang-worker/sdk"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 )
 
@@ -19,10 +18,9 @@ type funcField struct {
 	Name       string
 	Type       reflect.Type
 	Position   int
-	Direction  string                 // "in" or "out"
-	IsArgument bool                   // true if mapped to function argument, false if return value
-	IsWriter   bool                   // true if this argument is an http.ResponseWriter
-	Config     map[string]interface{} // The raw JSON configuration for this binding (e.g. path, connection)
+	Direction  string // "in" or "out"
+	IsArgument bool   // true if mapped to function argument, false if return value
+	IsWriter   bool   // true if this argument is an http.ResponseWriter
 }
 
 // FromProto converts protobuf parameters to golang values
@@ -32,7 +30,7 @@ func FromProto(req *pb.InvocationRequest, fields map[string]*funcField, args []r
 		param, ok := fields[input.Name]
 		if ok && param.Direction == "in" && param.IsArgument {
 			if param.Position < len(args) {
-				r, err := convertToTypeValue(param.Type, input.GetData(), req.GetTriggerMetadata(), param.Config)
+				r, err := convertToTypeValue(param.Type, input.GetData(), req.GetTriggerMetadata())
 				if err != nil {
 					return err
 				}
@@ -43,126 +41,8 @@ func FromProto(req *pb.InvocationRequest, fields map[string]*funcField, args []r
 	return nil
 }
 
-// ToProto converts Values to grpc protocol results
-// args: The arguments passed TO the function (populated with output pointers).
-// results: The return values FROM the function.
-// fields: The output bindings metadata.
-func ToProto(args []reflect.Value, results []reflect.Value, fields map[string]*funcField) ([]*pb.ParameterBinding, *pb.TypedData, *pb.StatusResult, error) {
-	// Identify max index for protoData list?
-	// The protoData list order doesn't strictly matter as they are named,
-	// but keeping them in order of definition (Position?) is tricky if mixed.
-	// Actually, we can return a list of defined bindings.
-
-	var protoData []*pb.ParameterBinding
-	status := &pb.StatusResult{
-		Status: pb.StatusResult_Success,
-	}
-	var returnValue *pb.TypedData
-	var err error
-
-	for _, v := range fields {
-		if v.Direction != "out" {
-			continue
-		}
-
-		var valToEncode reflect.Value
-
-		if v.IsArgument {
-			// It should be a pointer argument that was written to
-			if v.Position < len(args) {
-				arg := args[v.Position]
-
-				if v.IsWriter {
-					// It's a ResponseWriterProxy
-					if proxy, ok := arg.Interface().(*ResponseWriterProxy); ok {
-						valToEncode = reflect.ValueOf(proxy.Result()).Elem()
-					}
-				} else if arg.Kind() == reflect.Ptr && !arg.IsNil() {
-					valToEncode = arg.Elem()
-				}
-			}
-		} else {
-			// It is a return value
-			if v.Position < len(results) {
-				valToEncode = results[v.Position]
-			}
-		}
-
-		if valToEncode.IsValid() {
-			d, err := encodeProto(valToEncode)
-			if err != nil {
-				// Log error?
-				d = &pb.TypedData{}
-			}
-
-			// Special handling for $return: Put it in ReturnValue field
-			if v.Name == "$return" {
-				returnValue = d
-			} else {
-				protoData = append(protoData, &pb.ParameterBinding{
-					Name: v.Name,
-					RpcData: &pb.ParameterBinding_Data{
-						Data: d,
-					},
-				})
-			}
-		}
-	}
-
-	// Check for error in return values
-	errIndex := -1
-	for k, v := range results {
-		if v.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) && !v.IsNil() {
-			errIndex = k
-			e := v.Interface().(error)
-			status.Exception = &pb.RpcException{
-				Message: e.Error(),
-				Source:  "User function",
-			}
-			status.Status = pb.StatusResult_Failure
-			break
-		}
-	}
-
-	// Determine the main return value ($return) if not already set
-	// Use heuristic: First return value that is NOT an error and NOT mapped to an output binding?
-
-	// Build map of used return positions
-	usedReturns := make(map[int]bool)
-	for _, v := range fields {
-		if !v.IsArgument && v.Direction == "out" {
-			usedReturns[v.Position] = true
-		}
-	}
-
-	if returnValue == nil && len(results) > 0 {
-		for i, v := range results {
-			if i == errIndex {
-				continue
-			}
-			if usedReturns[i] {
-				continue
-			}
-
-			// Found a candidate for $return
-			returnValue, err = encodeProto(v)
-			if err != nil {
-				return nil, nil, status, err
-			}
-			break
-		}
-	}
-
-	return protoData, returnValue, status, nil
-}
-
 // convertToTypeValue returns a native value from protobuf
-func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.TypedData, config map[string]interface{}) (reflect.Value, error) {
-	// Check for Custom Converter via SDK Registry
-	if fn, found := sdk.GetConverter(pt); found {
-		return fn(context.Background(), config, data, tm)
-	}
-
+func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.TypedData) (reflect.Value, error) {
 	var t reflect.Type
 	if pt.Kind() == reflect.Ptr {
 		t = pt.Elem()
@@ -207,9 +87,7 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 				td = val
 				fieldsDecoded++
 			} else {
-				// Case-insensitive fallback: TriggerMetadata keys from the host
-				// are PascalCase (e.g. "MessageId") while struct json tags are
-				// typically camelCase (e.g. "messageId").
+				// Case-insensitive fallback
 				for k, val := range tm {
 					if strings.EqualFold(k, tag) {
 						td = val
@@ -277,6 +155,10 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 		if data.GetInt() != 0 {
 			return reflect.ValueOf(int(data.GetInt())), nil
 		}
+	case reflect.Int64:
+		if data.GetInt() != 0 {
+			return reflect.ValueOf(data.GetInt()), nil
+		}
 	case reflect.Float64:
 		if data.GetDouble() != 0 {
 			return reflect.ValueOf(data.GetDouble()), nil
@@ -338,7 +220,7 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 		}
 	}
 
-	// Json handling (already partly above, but ensure bytes support)
+	// Json handling (bytes support)
 	if val := data.GetJson(); val != "" {
 		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
 			return reflect.ValueOf([]byte(val)), nil
@@ -348,72 +230,37 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 	return reflect.Zero(t), nil
 }
 
-func encodeProto(v reflect.Value) (*pb.TypedData, error) {
-	if !v.IsValid() {
-		return nil, nil
-	}
-	if v.Kind() == reflect.Ptr {
-		if v.IsNil() {
-			return nil, nil
-		}
-		v = v.Elem()
-	}
-
-	// Handle http.Response
-	if v.Type() == reflect.TypeOf(http.Response{}) {
-		resp := v.Interface().(http.Response)
-		rpcHttp, err := encodeHTTP(&resp)
-		if err != nil {
-			return nil, err
-		}
-		return &pb.TypedData{
-			Data: &pb.TypedData_Http{
-				Http: rpcHttp,
-			},
-		}, nil
-	}
-
-	// Default JSON
-	b, err := json.Marshal(v.Interface())
-	if err != nil {
-		return nil, err
-	}
-	return &pb.TypedData{
-		Data: &pb.TypedData_Json{
-			Json: string(b),
-		},
-	}, nil
-}
-
-func encodeHTTP(resp *http.Response) (*pb.RpcHttp, error) {
-	if resp == nil {
-		return nil, nil
-	}
+// encodeHTTPResponse encodes a ResponseWriterProxy result into an RPC HTTP response.
+func encodeHTTPResponse(proxy *ResponseWriterProxy) *pb.TypedData {
+	result := proxy.Result()
 
 	headers := make(map[string]string)
-	for k, v := range resp.Header {
+	for k, v := range result.Header {
 		if len(v) > 0 {
 			headers[k] = v[0]
 		}
 	}
 
-	var body *pb.TypedData
-	if resp.Body != nil {
-		b, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return nil, err
-		}
-		resp.Body.Close()
-		body = &pb.TypedData{
-			Data: &pb.TypedData_Bytes{
-				Bytes: b,
-			},
-		}
+	var bodyBytes []byte
+	if result.Body != nil {
+		bodyBytes, _ = io.ReadAll(result.Body)
+		result.Body.Close()
 	}
 
-	return &pb.RpcHttp{
-		StatusCode: fmt.Sprintf("%d", resp.StatusCode),
-		Headers:    headers,
-		Body:       body,
-	}, nil
+	return &pb.TypedData{
+		Data: &pb.TypedData_Http{
+			Http: &pb.RpcHttp{
+				StatusCode: fmt.Sprintf("%d", result.StatusCode),
+				Headers:    headers,
+				Body: &pb.TypedData{
+					Data: &pb.TypedData_Bytes{
+						Bytes: bodyBytes,
+					},
+				},
+			},
+		},
+	}
 }
+
+// Needed for context type checking
+var contextType = reflect.TypeOf((*context.Context)(nil)).Elem()

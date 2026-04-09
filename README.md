@@ -83,6 +83,58 @@ For more advanced scenarios involving Azure storage blobs, events grids, Cosmos 
 
 ---
 
+## Trigger Model: Core Triggers vs Extension Triggers
+
+The Go Worker organizes triggers into two tiers based on their dependency requirements:
+
+### Core Triggers (`sdk/`)
+
+**HTTP, Timer, CosmosDB, ServiceBus, EventHub, EventGrid**
+
+These triggers receive data inline via gRPC — the host serializes the trigger payload (JSON documents, messages, events) into the `InvocationRequest` and the worker deserializes it into typed Go structs. They have:
+
+- **Typed handler signatures** — e.g., `func(context.Context, []bindings.CosmosDocument) error`
+- **Zero external dependencies** — only `encoding/json` needed for deserialization
+- **Bounded payloads** — change feed docs, queue messages, and events are discrete, size-limited objects
+
+```go
+// Core trigger — typed, no extra imports needed
+app.CosmosDB("processChanges", handler).
+    Database("mydb").Container("mycontainer").Connection("CosmosDBConnection")
+```
+
+### Extension Triggers (`triggers/`)
+
+**Blob** (and future Queue, Table, etc.)
+
+These triggers provide an authenticated Azure SDK client instead of raw data. The host sends only metadata (container, blob path); the worker constructs a client scoped to the specific resource. They have:
+
+- **SDK client injection** — handler receives e.g., `*blob.Client` ready to use
+- **Isolated dependencies** — `azblob`, `azidentity` etc. live in `triggers/blob/`, activated via blank import
+- **Streaming support** — user can `DownloadStream()` without buffering GBs through gRPC
+
+```go
+import _ "github.com/azure/azure-functions-golang-worker/triggers/blob" // activate extension
+
+// Extension trigger — handler gets a live SDK client
+app.Blob("processBlobTrigger", handler).
+    Path("samples-workitems/{name}").Connection("AzureWebJobsStorage")
+```
+
+### When is each tier used?
+
+| Criterion | Core (data passthrough) | Extension (SDK client) |
+|---|---|---|
+| Payload size | Bounded (KB–low MB) | Potentially unbounded (GBs) |
+| External SDK needed? | No | Yes |
+| Data in gRPC message? | Yes — already serialized by host | No — only metadata |
+| Streaming? | Not needed | Essential |
+| Handler type | Typed alias (`CosmosDBHandler`) | `any` (validated via reflection) |
+
+This is similar to the .NET worker extensions model (`Microsoft.Azure.Functions.Worker.Extensions.*`) but avoids over-abstracting core triggers that don't need external dependencies.
+
+---
+
 ## Custom Handlers vs First-Class Go Worker
 
 Historically, Go was only supported on Azure Functions via "Custom Handlers" (an HTTP-based proxy pattern). This new natively supported Go Worker provides a richer experience:

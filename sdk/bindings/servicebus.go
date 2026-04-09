@@ -2,11 +2,8 @@ package bindings
 
 import "encoding/json"
 
-// ServiceBusTriggerBindingType is the binding type constant for Service Bus triggers.
-const ServiceBusTriggerBindingType BindingType = "serviceBusTrigger"
-
-// ServiceBusOutputType is the binding type constant for Service Bus output bindings.
-const ServiceBusOutputType BindingType = "serviceBus"
+// ServiceBusTrigger is the binding type constant for Service Bus triggers.
+const ServiceBusTriggerType BindingType = "serviceBusTrigger"
 
 // ServiceBusBinding is the JSON representation for Service Bus bindings.
 type ServiceBusBinding struct {
@@ -19,6 +16,10 @@ type ServiceBusBinding struct {
 }
 
 // ServiceBusMessage represents a message received from Azure Service Bus.
+// The Body field uses the special json tag "azfuncdata" which instructs the
+// worker's converter to populate this field from the raw trigger input data
+// rather than from trigger metadata. Other fields are populated from trigger
+// metadata using case-insensitive matching on their json tags.
 type ServiceBusMessage struct {
 	Body                    json.RawMessage        `json:"azfuncdata"`
 	ContentType             string                 `json:"contentType"`
@@ -43,12 +44,6 @@ type ServiceBusMessage struct {
 	UserProperties          map[string]interface{} `json:"userProperties"`
 }
 
-// DeserializeServiceBusMessage deserializes a JSON string into a ServiceBusMessage.
-func DeserializeServiceBusMessage(jsonString string) ServiceBusMessage {
-	var msg ServiceBusMessage
-	json.Unmarshal([]byte(jsonString), &msg)
-	return msg
-}
 
 // ServiceBusQueueTrigger is the user-facing configuration for a Service Bus queue trigger.
 type ServiceBusQueueTrigger struct {
@@ -60,7 +55,7 @@ type ServiceBusQueueTrigger struct {
 }
 
 // GetBindingType returns the Service Bus trigger binding type.
-func (s *ServiceBusQueueTrigger) GetBindingType() BindingType { return ServiceBusTriggerBindingType }
+func (s *ServiceBusQueueTrigger) GetBindingType() BindingType { return ServiceBusTriggerType }
 
 // ToBinding converts the ServiceBusQueueTrigger to a Binding.
 func (s *ServiceBusQueueTrigger) ToBinding() Binding {
@@ -88,7 +83,7 @@ type ServiceBusTopicTrigger struct {
 }
 
 // GetBindingType returns the Service Bus trigger binding type.
-func (s *ServiceBusTopicTrigger) GetBindingType() BindingType { return ServiceBusTriggerBindingType }
+func (s *ServiceBusTopicTrigger) GetBindingType() BindingType { return ServiceBusTriggerType }
 
 // ToBinding converts the ServiceBusTopicTrigger to a Binding.
 func (s *ServiceBusTopicTrigger) ToBinding() Binding {
@@ -102,52 +97,6 @@ func (s *ServiceBusTopicTrigger) ToBinding() Binding {
 			Connection:        s.Connection,
 			IsSessionsEnabled: s.IsSessionsEnabled,
 			Cardinality:       s.Cardinality,
-		},
-	}
-}
-
-// ServiceBusQueueOutput is the user-facing configuration for a Service Bus queue output binding.
-type ServiceBusQueueOutput struct {
-	Name       string
-	QueueName  string
-	Connection string
-}
-
-// GetBindingType returns the Service Bus output binding type.
-func (s *ServiceBusQueueOutput) GetBindingType() BindingType { return ServiceBusOutputType }
-
-// ToBinding converts the ServiceBusQueueOutput to a Binding.
-func (s *ServiceBusQueueOutput) ToBinding() Binding {
-	return Binding{
-		Name:      s.Name,
-		Type:      string(s.GetBindingType()),
-		Direction: "out",
-		ServiceBusBinding: &ServiceBusBinding{
-			QueueName:  s.QueueName,
-			Connection: s.Connection,
-		},
-	}
-}
-
-// ServiceBusTopicOutput is the user-facing configuration for a Service Bus topic output binding.
-type ServiceBusTopicOutput struct {
-	Name       string
-	TopicName  string
-	Connection string
-}
-
-// GetBindingType returns the Service Bus output binding type.
-func (s *ServiceBusTopicOutput) GetBindingType() BindingType { return ServiceBusOutputType }
-
-// ToBinding converts the ServiceBusTopicOutput to a Binding.
-func (s *ServiceBusTopicOutput) ToBinding() Binding {
-	return Binding{
-		Name:      s.Name,
-		Type:      string(s.GetBindingType()),
-		Direction: "out",
-		ServiceBusBinding: &ServiceBusBinding{
-			TopicName:  s.TopicName,
-			Connection: s.Connection,
 		},
 	}
 }

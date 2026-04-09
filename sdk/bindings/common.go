@@ -3,16 +3,11 @@ package bindings
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 )
 
+// BindingType identifies the type of a trigger or binding.
 type BindingType string
-
-type BindingDirection int
-
-const (
-	In BindingDirection = iota
-	Out
-)
 
 // Bind is the interface that all bindings must implement.
 type Bind interface {
@@ -29,18 +24,21 @@ type Binding struct {
 	*CosmosDBBinding
 	*HTTPBinding
 	*BlobBinding
-	*EventGridBinding
 	*TimerBinding
 	*EventHubBinding
 	*ServiceBusBinding
 }
 
+// MarshalJSON flattens the embedded sub-binding fields into the top-level
+// JSON object alongside name, type, and direction.
 func (b Binding) MarshalJSON() ([]byte, error) {
 	m := make(map[string]interface{})
 	m["name"] = b.Name
 	m["type"] = b.Type
 	m["direction"] = b.Direction
 
+	// Merge sub-binding fields directly via reflection instead of
+	// marshal → unmarshal → merge round-trip.
 	var sub interface{}
 	if b.CosmosDBBinding != nil {
 		sub = b.CosmosDBBinding
@@ -48,8 +46,6 @@ func (b Binding) MarshalJSON() ([]byte, error) {
 		sub = b.HTTPBinding
 	} else if b.BlobBinding != nil {
 		sub = b.BlobBinding
-	} else if b.EventGridBinding != nil {
-		sub = b.EventGridBinding
 	} else if b.TimerBinding != nil {
 		sub = b.TimerBinding
 	} else if b.EventHubBinding != nil {
@@ -59,40 +55,26 @@ func (b Binding) MarshalJSON() ([]byte, error) {
 	}
 
 	if sub != nil {
-		// Use a temporary map to merge fields
-		data, err := json.Marshal(sub)
-		if err != nil {
-			return nil, err
+		v := reflect.ValueOf(sub)
+		if v.Kind() == reflect.Ptr {
+			v = v.Elem()
 		}
-		var temp map[string]interface{}
-		if err := json.Unmarshal(data, &temp); err != nil {
-			return nil, err
-		}
-		for k, v := range temp {
-			m[k] = v
+		t := v.Type()
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			tag := field.Tag.Get("json")
+			if tag == "" || tag == "-" {
+				continue
+			}
+			// Handle "name,omitempty" style tags
+			name, opts, _ := strings.Cut(tag, ",")
+			val := v.Field(i)
+			if strings.Contains(opts, "omitempty") && val.IsZero() {
+				continue
+			}
+			m[name] = val.Interface()
 		}
 	}
 
 	return json.Marshal(m)
-}
-
-// SimpleBinding implements Bind for simple/generic bindings.
-type SimpleBinding struct {
-	Name      string
-	Type      string
-	Direction string
-}
-
-func (s SimpleBinding) GetBindingType() BindingType { return BindingType(s.Type) }
-func (s SimpleBinding) ToBinding() Binding {
-	return Binding{
-		Name:      s.Name,
-		Type:      s.Type,
-		Direction: s.Direction,
-	}
-}
-
-type Parameter struct {
-	Name     string
-	DataType reflect.Type
 }

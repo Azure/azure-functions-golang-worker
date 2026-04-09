@@ -10,7 +10,7 @@ import (
 func Start(app *sdk.App) {
 	config, err := GetWorkerStartupConfig()
 	if err != nil {
-		log.Fatalf("Failed to parsing worker configuration: %v", err)
+		log.Fatalf("Failed to parse worker configuration: %v", err)
 	}
 
 	dispatcher := NewDispatcher(config, app)

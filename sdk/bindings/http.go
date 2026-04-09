@@ -1,6 +1,7 @@
 package bindings
 
-const HttpBindingType BindingType = "httpTrigger"
+// HTTPTrigger is the binding type constant for HTTP triggers.
+const HTTPTriggerType BindingType = "httpTrigger"
 
 // HTTPBinding is the JSON representation for HTTP.
 type HTTPBinding struct {
@@ -9,17 +10,17 @@ type HTTPBinding struct {
 	Route     string   `json:"route,omitempty"`
 }
 
-// HttpTrigger is the user-facing configuration for an HTTP trigger.
-type HttpTrigger struct {
+// HTTPTrigger is the user-facing configuration for an HTTP trigger.
+type HTTPTrigger struct {
 	Name      string
 	Route     string
 	Methods   []string
 	AuthLevel string // "anonymous", "function", "admin"
 }
 
-func (c *HttpTrigger) GetBindingType() BindingType { return HttpBindingType }
+func (c *HTTPTrigger) GetBindingType() BindingType { return HTTPTriggerType }
 
-func (c *HttpTrigger) ToBinding() Binding {
+func (c *HTTPTrigger) ToBinding() Binding {
 	return Binding{
 		Name:      c.Name,
 		Type:      string(c.GetBindingType()),

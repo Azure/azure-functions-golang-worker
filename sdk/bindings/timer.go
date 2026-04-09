@@ -1,7 +1,7 @@
 package bindings
 
-// TimerTriggerBindingType is the binding type constant for timer triggers.
-const TimerTriggerBindingType BindingType = "timerTrigger"
+// TimerTrigger is the binding type constant for timer triggers.
+const TimerTriggerType BindingType = "timerTrigger"
 
 // TimerBinding is the JSON wire format for timer trigger bindings,
 // embedded in Binding and flattened during serialization.
@@ -38,7 +38,7 @@ type TimerTrigger struct {
 }
 
 // GetBindingType returns the timer trigger binding type.
-func (t *TimerTrigger) GetBindingType() BindingType { return TimerTriggerBindingType }
+func (t *TimerTrigger) GetBindingType() BindingType { return TimerTriggerType }
 
 // ToBinding converts the user-facing TimerTrigger into an internal Binding
 // suitable for serialization to the Azure Functions host.

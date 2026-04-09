@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"net/http"
 	"sync"
 	"testing"
 
@@ -164,12 +165,13 @@ func TestProcessRequestMessage_InvocationUsesEnvelopeRequestId(t *testing.T) {
 	disp := newTestDispatcher("startup-req-id")
 
 	// Register and load a simple function
-	myFunc := func() string { return "hello" }
 	app := disp.App
-	app.HTTP("test", myFunc)
+	app.HTTP("test", sdk.HTTPHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	}))
 
 	// Load all registered functions
-	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+	app.GetRegisteredFunctions().Range(func(key, value interface{}) bool {
 		funcID := key.(string)
 		loadMsg := &pb.StreamingMessage{
 			Content: &pb.StreamingMessage_FunctionLoadRequest{
@@ -187,7 +189,7 @@ func TestProcessRequestMessage_InvocationUsesEnvelopeRequestId(t *testing.T) {
 
 	// Find the registered function ID
 	var funcID string
-	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+	app.GetRegisteredFunctions().Range(func(key, value interface{}) bool {
 		funcID = key.(string)
 		return false
 	})

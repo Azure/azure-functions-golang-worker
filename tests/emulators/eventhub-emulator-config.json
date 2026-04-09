@@ -1,0 +1,29 @@
+{
+  "UserConfig": {
+    "NamespaceConfig": [
+      {
+        "Type": "EventHub",
+        "Name": "emulatorns1",
+        "Entities": [
+          {
+            "Name": "input-hub",
+            "PartitionCount": "2",
+            "ConsumerGroups": [
+              { "Name": "watchtower-test" }
+            ]
+          },
+          {
+            "Name": "output-hub",
+            "PartitionCount": "2",
+            "ConsumerGroups": [
+              { "Name": "watchtower-test" }
+            ]
+          }
+        ]
+      }
+    ],
+    "LoggingConfig": {
+      "Type": "File"
+    }
+  }
+}

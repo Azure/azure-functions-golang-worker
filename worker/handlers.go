@@ -36,16 +36,12 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string) *pb.St
 func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.App, requestId string) *pb.StreamingMessage {
 	log.Printf("Received FunctionsMetadataRequest: RequestId=%s", requestId)
 	var functions []*pb.RpcFunctionMetadata
-	app.RegisteredFunctions.Range(func(key, value interface{}) bool {
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*sdk.RegisteredFunction)
 
 		// Map bindings.Binding to pb.BindingInfo
-		bindings := make(map[string]*pb.BindingInfo)
+		bindingsMap := make(map[string]*pb.BindingInfo)
 		var rawBindings []string
-
-		// Analyze function arguments for DataType inference
-		ft := reflect.TypeOf(rf.Func)
-		argIndex := 0
 
 		for _, b := range rf.RawBindings {
 			var dir pb.BindingInfo_Direction
@@ -58,38 +54,12 @@ func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.A
 				dir = pb.BindingInfo_inout
 			}
 
-			dataType := pb.BindingInfo_undefined
-
-			if b.Direction != "out" {
-				// Find corresponding argument
-				for argIndex < ft.NumIn() {
-					t := ft.In(argIndex)
-					// Skip Context and ResponseWriter as they are not input data bindings
-					if t.Implements(reflect.TypeOf((*context.Context)(nil)).Elem()) ||
-						t == reflect.TypeOf((*http.ResponseWriter)(nil)).Elem() {
-						argIndex++
-						continue
-					}
-					break
-				}
-
-				if argIndex < ft.NumIn() {
-					t := ft.In(argIndex)
-					if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
-						dataType = pb.BindingInfo_binary
-					}
-					// Consume this argument
-					argIndex++
-				}
-			}
-
-			bindings[b.Name] = &pb.BindingInfo{
+			bindingsMap[b.Name] = &pb.BindingInfo{
 				Type:      b.Type,
 				Direction: dir,
-				DataType:  dataType,
+				DataType:  pb.BindingInfo_undefined,
 			}
 
-			// Serialize binding to JSON for RawBindings
 			if bData, err := json.Marshal(b); err == nil {
 				rawBindings = append(rawBindings, string(bData))
 			}
@@ -98,7 +68,7 @@ func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.A
 		functions = append(functions, &pb.RpcFunctionMetadata{
 			FunctionId:  rf.FuncId,
 			Name:        rf.FuncName,
-			Bindings:    bindings,
+			Bindings:    bindingsMap,
 			RawBindings: rawBindings,
 			Language:    "go",
 			ScriptFile:  rf.ScriptFile,
@@ -124,7 +94,7 @@ func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.A
 func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, requestId string) *pb.StreamingMessage {
 	log.Printf("Received FunctionLoadRequest: RequestId=%s, FunctionId=%s", requestId, req.FunctionId)
 	funcID := req.FunctionId
-	val, ok := disp.App.RegisteredFunctions.Load(funcID)
+	val, ok := disp.App.GetRegisteredFunctions().Load(funcID)
 	if !ok {
 		return &pb.StreamingMessage{
 			RequestId: requestId,
@@ -143,14 +113,10 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, re
 	}
 
 	rf := val.(*sdk.RegisteredFunction)
-
-	// Create map of bindings
+	ft := reflect.TypeOf(rf.Func)
 	fields := make(map[string]*funcField)
 
-	// Analyze function arguments
-	ft := reflect.TypeOf(rf.Func)
-
-	// Identify writer index (heuristic)
+	// Identify writer index for HTTP triggers
 	writerIndex := -1
 	for i := 0; i < ft.NumIn(); i++ {
 		if ft.In(i) == reflect.TypeOf((*http.ResponseWriter)(nil)).Elem() {
@@ -171,96 +137,37 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, re
 		}
 	}
 
+	// Map trigger input binding to the appropriate argument
 	argIndex := 0
-	retIndex := 0
-
 	for _, b := range rf.RawBindings {
-		// $return is handled separately if writer exists, otherwise it's a return value
-		if b.Name == "$return" {
-			if writerIndex != -1 {
-				// Already mapped to writer
-			} else {
-				fields[b.Name] = &funcField{
-					Name:       b.Name,
-					Direction:  b.Direction,
-					IsArgument: false,
-					Position:   retIndex, // Assuming first return is $return?
-				}
-				retIndex++
-			}
+		if b.Direction != "in" {
 			continue
 		}
 
-		// Serialize binding to JSON to pass as configuration
-		rawBindingBytes, _ := json.Marshal(b)
-		var config map[string]interface{}
-		_ = json.Unmarshal(rawBindingBytes, &config)
-
-		// Try to match with an argument
-		if argIndex < ft.NumIn() {
-			// Check if this binding CAN be this argument
+		// Find the next argument that is not context.Context or http.ResponseWriter
+		for argIndex < ft.NumIn() {
 			argType := ft.In(argIndex)
-
-			// Context is skipped in binding loop usually
-			if argType.Implements(reflect.TypeOf((*context.Context)(nil)).Elem()) {
+			if argType.Implements(contextType) || argType == reflect.TypeOf((*http.ResponseWriter)(nil)).Elem() {
 				argIndex++
-				if argIndex >= ft.NumIn() {
-					break
-				}
-				argType = ft.In(argIndex)
+				continue
 			}
-
-			// Check for http.ResponseWriter
-			if argType == reflect.TypeOf((*http.ResponseWriter)(nil)).Elem() {
-				// We found a ResponseWriter.
-				// This implies we have an HTTP Output binding (usually named $return).
-				// We map $return to this argument position for "out" usage.
-				// But wait, the $return binding is already processed or will be processed.
-				// If we encounter ResponseWriter, we should link it to the $return binding if possible.
-				// OR we simply mark this argument index as "IsWriter" and use it later.
-				// But we are iterating bindings here.
-
-				// If we are seeing "req" input binding, but the current argument is ResponseWriter,
-				// we should SKIP ResponseWriter for "req" and move to next argument.
-
-				// SO: Iterate arguments until we find one that matches the binding OR is not special.
-
-				argIndex++
-				if argIndex < ft.NumIn() {
-					argType = ft.In(argIndex)
-				} else {
-					// No more args to map this binding to
-					break
-				}
-			}
-
-			// Assign this binding to this argument
-			fields[b.Name] = &funcField{
-				Name:       b.Name,
-				Type:       argType,
-				Position:   argIndex,
-				Direction:  b.Direction,
-				IsArgument: true,
-				Config:     config,
-			}
-			argIndex++
-		} else {
-			// If we ran out of arguments, maybe it's a return value?
-			// Only for "out" bindings
-			if b.Direction == "out" {
-				fields[b.Name] = &funcField{
-					Name:       b.Name,
-					Direction:  b.Direction,
-					IsArgument: false, // It's a return value
-					Position:   retIndex,
-					Config:     config,
-				}
-				retIndex++
-			}
+			break
 		}
+
+		if argIndex >= ft.NumIn() {
+			break
+		}
+
+		fields[b.Name] = &funcField{
+			Name:       b.Name,
+			Type:       ft.In(argIndex),
+			Position:   argIndex,
+			Direction:  b.Direction,
+			IsArgument: true,
+		}
+		argIndex++
 	}
 
-	// Logic to log the computed fields for debugging
 	for k, v := range fields {
 		log.Printf("Debug: Field Mapping - Name: %s, Pos: %d, Type: %v, Dir: %s, Arg: %v", k, v.Position, v.Type, v.Direction, v.IsArgument)
 	}
@@ -283,6 +190,7 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, re
 		},
 	}
 }
+
 func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, requestId string) (*pb.StreamingMessage, error) {
 	log.Printf("Received InvocationRequest: RequestId=%s, InvocationId=%s, FunctionId=%s", requestId, req.InvocationId, req.FunctionId)
 	funcID := req.FunctionId
@@ -295,11 +203,10 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	ft := reflect.TypeOf(loadedFunc.Function.Func)
 	args := make([]reflect.Value, ft.NumIn())
 
-	// 1. Pre-allocate pointer arguments
-	// 2. Handle Context
+	// 1. Pre-allocate arguments
 	for i := 0; i < ft.NumIn(); i++ {
 		t := ft.In(i)
-		if t.Implements(reflect.TypeOf((*context.Context)(nil)).Elem()) {
+		if t.Implements(contextType) {
 			args[i] = reflect.ValueOf(context.Background())
 			continue
 		}
@@ -310,48 +217,86 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 		}
 
 		if t.Kind() == reflect.Ptr {
-			// Allocate new value for the pointer
 			args[i] = reflect.New(t.Elem())
 		} else {
-			// Zero value for non-pointers (will be overwritten by FromProto if "in" binding)
 			args[i] = reflect.Zero(t)
 		}
 	}
 
-	// 3. Populate Inputs
+	// 2. Populate trigger input
 	if err := FromProto(req, loadedFunc.Fields, args); err != nil {
 		return nil, err
 	}
 
-	// 3b. Create SDK clients for output bindings (deferred bindings)
-	// Output bindings like EventHub have Direction "out" so FromProto skips them,
-	// but the user's function expects an SDK client (e.g. *ProducerClient) as an argument.
-	for _, field := range loadedFunc.Fields {
-		if field.Direction == "out" && field.IsArgument && !field.IsWriter {
-			if fn, found := sdk.GetConverter(field.Type); found {
-				val, err := fn(context.Background(), field.Config, nil, req.GetTriggerMetadata())
-				if err != nil {
-					return nil, fmt.Errorf("failed to create SDK client for output binding '%s': %v", field.Name, err)
-				}
-				if field.Position < len(args) {
-					args[field.Position] = val
-				}
+	// 2b. If the function has a ClientFactory, use it to create the trigger client
+	if loadedFunc.Function.ClientFactory != nil {
+		// Extract trigger binding config
+		config := make(map[string]any)
+		if len(loadedFunc.Function.RawBindings) > 0 {
+			bindingJSON, err := json.Marshal(loadedFunc.Function.RawBindings[0])
+			if err == nil {
+				json.Unmarshal(bindingJSON, &config)
 			}
+		}
+
+		// Extract trigger metadata as strings
+		triggerMeta := make(map[string]string)
+		for k, v := range req.GetTriggerMetadata() {
+			if s := v.GetString_(); s != "" {
+				triggerMeta[k] = s
+			}
+		}
+
+		clientVal, err := loadedFunc.Function.ClientFactory(config, triggerMeta)
+		if err != nil {
+			return nil, fmt.Errorf("client factory error: %v", err)
+		}
+
+		// Find the argument position for the client (skip context, writer, and already-populated args)
+		for i := 0; i < ft.NumIn(); i++ {
+			t := ft.In(i)
+			if t.Implements(contextType) || t == reflect.TypeOf((*http.ResponseWriter)(nil)).Elem() {
+				continue
+			}
+			// This is the trigger argument — replace it with the client
+			args[i] = reflect.ValueOf(clientVal)
+			break
 		}
 	}
 
-	// 4. Invoke
+	// 3. Invoke handler
 	fv := reflect.ValueOf(loadedFunc.Function.Func)
 	results := fv.Call(args)
 
-	// 5. Extract Outputs
-	outputData, returnValue, status, err := ToProto(args, results, loadedFunc.Fields)
-	if err != nil {
-		status = &pb.StatusResult{
-			Status: pb.StatusResult_Failure,
-			Exception: &pb.RpcException{
-				Message: err.Error(),
-			},
+	// 4. Build response
+	status := &pb.StatusResult{
+		Status: pb.StatusResult_Success,
+	}
+
+	// Check for error return
+	for _, r := range results {
+		if r.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) && !r.IsNil() {
+			e := r.Interface().(error)
+			status = &pb.StatusResult{
+				Status: pb.StatusResult_Failure,
+				Exception: &pb.RpcException{
+					Message: e.Error(),
+					Source:  "User function",
+				},
+			}
+			break
+		}
+	}
+
+	// 5. Extract HTTP response if applicable
+	var returnValue *pb.TypedData
+	for _, field := range loadedFunc.Fields {
+		if field.Direction == "out" && field.IsWriter && field.Name == "$return" {
+			if field.Position < len(args) {
+				if proxy, ok := args[field.Position].Interface().(*ResponseWriterProxy); ok {
+					returnValue = encodeHTTPResponse(proxy)
+				}
+			}
 		}
 	}
 
@@ -360,7 +305,6 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 		Content: &pb.StreamingMessage_InvocationResponse{
 			InvocationResponse: &pb.InvocationResponse{
 				InvocationId: req.InvocationId,
-				OutputData:   outputData,
 				ReturnValue:  returnValue,
 				Result:       status,
 			},
@@ -378,11 +322,10 @@ func handleWorkerStatusRequest(requestId string, req *pb.WorkerStatusRequest) (*
 }
 
 func handleWorkerTerminate(requestId string, req *pb.WorkerTerminate) (*pb.StreamingMessage, error) {
-	return nil, nil // Graceful shutdown managed by host
+	return nil, nil
 }
 
 func handleFunctionEnvironmentReloadRequest(requestId string, req *pb.FunctionEnvironmentReloadRequest) (*pb.StreamingMessage, error) {
-	// Reload env vars or other settings
 	return &pb.StreamingMessage{
 		RequestId: requestId,
 		Content: &pb.StreamingMessage_FunctionEnvironmentReloadResponse{

@@ -2,7 +2,8 @@ package bindings
 
 import "encoding/json"
 
-const CosmosDBBindingType BindingType = "cosmosDBTrigger"
+// CosmosDBTrigger is the binding type constant for CosmosDB triggers.
+const CosmosDBTriggerType BindingType = "cosmosDBTrigger"
 
 // CosmosDBBinding is the JSON representation for CosmosDB.
 type CosmosDBBinding struct {
@@ -11,31 +12,33 @@ type CosmosDBBinding struct {
 	Connection    string `json:"connection"`
 }
 
-// CosmosDocument represents a document in CosmosDB.
+// CosmosDocument represents a document from the CosmosDB change feed.
+// System properties: _rid, _self, _etag, _attachments, _ts (timestamp), _lsn.
+// Use json.Unmarshal on the raw document to extract custom properties.
 type CosmosDocument struct {
-	ID          string `json:"id"`
-	Data        string `json:"data"`
-	Rid         string `json:"_rid"`
-	Self        string `json:"_self"`
-	Etag        string `json:"_etag"`
-	Attachments string `json:"_attachments"`
-	Timestamp   int64  `json:"_ts"`
-	Lsn         int    `json:"_lsn"`
+	ID          string          `json:"id"`
+	Data        json.RawMessage `json:"data"`
+	Rid         string          `json:"_rid"`
+	Self        string          `json:"_self"`
+	Etag        string          `json:"_etag"`
+	Attachments string          `json:"_attachments"`
+	Timestamp   string          `json:"_ts"`
+	Lsn         int             `json:"_lsn"`
 }
 
-// CosmosDB is the user-facing configuration for a CosmosDB trigger.
-type CosmosDB struct {
-	ArgName       string
+// CosmosDBTrigger is the user-facing configuration for a CosmosDB trigger.
+type CosmosDBTrigger struct {
+	Name          string
 	DatabaseName  string
 	ContainerName string
 	Connection    string
 }
 
-func (c *CosmosDB) GetBindingType() BindingType { return CosmosDBBindingType }
+func (c *CosmosDBTrigger) GetBindingType() BindingType { return CosmosDBTriggerType }
 
-func (c *CosmosDB) ToBinding() Binding {
+func (c *CosmosDBTrigger) ToBinding() Binding {
 	return Binding{
-		Name:      c.ArgName,
+		Name:      c.Name,
 		Type:      string(c.GetBindingType()),
 		Direction: "in",
 		CosmosDBBinding: &CosmosDBBinding{
@@ -46,8 +49,3 @@ func (c *CosmosDB) ToBinding() Binding {
 	}
 }
 
-func DeserializeCosmosDocument(jsonString string) []CosmosDocument {
-	var docs []CosmosDocument
-	json.Unmarshal([]byte(jsonString), &docs)
-	return docs
-}

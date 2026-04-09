@@ -1,0 +1,24 @@
+{
+  "UserConfig": {
+    "Namespaces": [
+      {
+        "Name": "emulatorns1",
+        "Queues": [
+          { "Name": "input-queue", "Properties": {} }
+        ],
+        "Topics": [
+          {
+            "Name": "orders",
+            "Properties": {},
+            "Subscriptions": [
+              { "Name": "processor", "Properties": {} }
+            ]
+          }
+        ]
+      }
+    ],
+    "Logging": {
+      "Type": "File"
+    }
+  }
+}
