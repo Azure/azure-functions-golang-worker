@@ -114,9 +114,9 @@ app.HTTP("name", handler,
 )
 
 // Blob trigger (via triggers/blob module)
-blob.Register(app, "processBlobTrigger", handler,
-    blob.WithPath("samples-workitems/{name}"),
-    blob.WithBlobConnection("AzureWebJobsStorage"),
+app.Blob("processBlobTrigger", handler,
+    sdk.WithPath("samples-workitems/{name}"),
+    sdk.WithConnection("AzureWebJobsStorage"),
 )
 
 // CosmosDB trigger
@@ -162,8 +162,11 @@ Core trigger types are defined in `sdk/handlers.go` and binding structs in `sdk/
 // Core trigger — typed handler, no extra imports
 type CosmosDBHandler = func(context.Context, []bindings.CosmosDocument) error
 
-app.CosmosDB("processChanges", handler).
-    Database("mydb").Container("items").Connection("CosmosDBConnection")
+app.CosmosDB("processChanges", handler,
+    sdk.WithDatabase("mydb"),
+    sdk.WithContainer("items"),
+    sdk.WithConnection("CosmosDBConnection"),
+)
 ```
 
 ### 4.2 Extension Triggers — SDK Client Injection (`triggers/`)
@@ -231,15 +234,14 @@ import (
     "github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
     "github.com/azure/azure-functions-golang-worker/sdk"
     _ "github.com/azure/azure-functions-golang-worker/triggers/blob" // registers ClientFactory
-    blobTrigger "github.com/azure/azure-functions-golang-worker/triggers/blob"
     "github.com/azure/azure-functions-golang-worker/worker"
 )
 
 func main() {
     app := sdk.FunctionApp()
-    blobTrigger.Register(app, "processBlobTrigger", processBlob,
-        blobTrigger.WithPath("samples-workitems/{name}"),
-        blobTrigger.WithBlobConnection("AzureWebJobsStorage"),
+    app.Blob("processBlobTrigger", processBlob,
+        sdk.WithPath("samples-workitems/{name}"),
+        sdk.WithConnection("AzureWebJobsStorage"),
     )
     worker.Start(app)
 }
