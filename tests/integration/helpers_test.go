@@ -1,0 +1,228 @@
+package integration
+
+import (
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+)
+
+// repoRoot returns the absolute path to the repository root.
+func repoRoot() string {
+	// This file lives at tests/integration/helpers_test.go
+	_, thisFile, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(thisFile), "..", "..")
+}
+
+// samplesDir returns the absolute path to the samples directory.
+func samplesDir() string {
+	return filepath.Join(repoRoot(), "samples")
+}
+
+// funcExe returns the path to the func CLI executable.
+func funcExe() string {
+	if v := os.Getenv("FUNC_EXE"); v != "" {
+		return v
+	}
+	return "func"
+}
+
+// requireEmulator checks that a TCP endpoint is reachable, and fails the test if not.
+func requireEmulator(t *testing.T, name, addr string) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("%s is not running at %s — start emulators with: docker compose -f tests/emulators/docker-compose.yml up -d", name, addr)
+	}
+	conn.Close()
+}
+
+func requireAzurite(t *testing.T)    { t.Helper(); requireEmulator(t, "azurite", "127.0.0.1:10000") }
+func requireCosmosDB(t *testing.T)   { t.Helper(); requireEmulator(t, "cosmosdb-emulator", "127.0.0.1:8081") }
+func requireServiceBus(t *testing.T) { t.Helper(); requireEmulator(t, "servicebus-emulator", "127.0.0.1:5672") }
+func requireEventHub(t *testing.T)   { t.Helper(); requireEmulator(t, "eventhub-emulator", "127.0.0.2:5672") }
+
+// FuncHostProcess manages a func.exe process for a sample directory.
+type FuncHostProcess struct {
+	SampleDir string
+	Port      int
+	Env       map[string]string
+	logFile   string
+	logFH     *os.File
+	cmd       *exec.Cmd
+	t         *testing.T
+}
+
+// StartFuncHost builds the Go sample binary and starts func host.
+// It waits for the worker to initialize before returning.
+func StartFuncHost(t *testing.T, sampleName string, port int, env map[string]string, initTimeout time.Duration) *FuncHostProcess {
+	t.Helper()
+
+	sampleDir := filepath.Join(samplesDir(), sampleName)
+	if _, err := os.Stat(sampleDir); os.IsNotExist(err) {
+		t.Fatalf("sample directory not found: %s", sampleDir)
+	}
+
+	// Build the Go binary
+	exeName := "app"
+	if runtime.GOOS == "windows" {
+		exeName = "app.exe"
+	}
+	buildCmd := exec.Command("go", "build", "-o", exeName, ".")
+	buildCmd.Dir = sampleDir
+	buildOut, err := buildCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go build failed in %s:\n%s", sampleDir, string(buildOut))
+	}
+	t.Cleanup(func() {
+		os.Remove(filepath.Join(sampleDir, exeName))
+	})
+
+	// Create log file
+	logFile, err := os.CreateTemp("", fmt.Sprintf("funchost_%s_*.log", sampleName))
+	if err != nil {
+		t.Fatalf("failed to create log file: %v", err)
+	}
+
+	proc := &FuncHostProcess{
+		SampleDir: sampleDir,
+		Port:      port,
+		Env:       env,
+		logFile:   logFile.Name(),
+		logFH:     logFile,
+		t:         t,
+	}
+
+	// Prepare environment
+	runEnv := os.Environ()
+	for k, v := range env {
+		runEnv = append(runEnv, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	// Start func host
+	proc.cmd = exec.Command(funcExe(), "start", "--port", fmt.Sprintf("%d", port))
+	proc.cmd.Dir = sampleDir
+	proc.cmd.Env = runEnv
+	proc.cmd.Stdout = logFile
+	proc.cmd.Stderr = logFile
+
+	if err := proc.cmd.Start(); err != nil {
+		logFile.Close()
+		t.Fatalf("failed to start func host: %v", err)
+	}
+
+	t.Cleanup(func() {
+		proc.Stop()
+	})
+
+	// Wait for worker initialization
+	if !proc.waitForPattern("Worker process started and initialized", initTimeout) {
+		log := proc.ReadLog()
+		lines := strings.Split(log, "\n")
+		start := len(lines) - 30
+		if start < 0 {
+			start = 0
+		}
+		t.Fatalf("func host did not initialize within %v for sample %s.\nLast lines:\n%s",
+			initTimeout, sampleName, strings.Join(lines[start:], "\n"))
+	}
+
+	return proc
+}
+
+// Stop kills the func host process.
+func (p *FuncHostProcess) Stop() {
+	if p.cmd != nil && p.cmd.Process != nil {
+		p.cmd.Process.Kill()
+		p.cmd.Wait()
+	}
+	if p.logFH != nil {
+		p.logFH.Close()
+	}
+}
+
+// ReadLog returns the current log file contents.
+func (p *FuncHostProcess) ReadLog() string {
+	p.logFH.Sync()
+	data, err := os.ReadFile(p.logFile)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// WaitForLog waits until a pattern appears in the log file within the given timeout.
+func (p *FuncHostProcess) WaitForLog(pattern string, timeout time.Duration) bool {
+	return p.waitForPattern(pattern, timeout)
+}
+
+// AssertLogContains asserts that a pattern appears in the log within timeout.
+func (p *FuncHostProcess) AssertLogContains(pattern string, timeout time.Duration) {
+	p.t.Helper()
+	if !p.waitForPattern(pattern, timeout) {
+		log := p.ReadLog()
+		lines := strings.Split(log, "\n")
+		start := len(lines) - 20
+		if start < 0 {
+			start = 0
+		}
+		p.t.Fatalf("pattern %q not found in log within %v.\nLast 20 lines:\n%s",
+			pattern, timeout, strings.Join(lines[start:], "\n"))
+	}
+}
+
+// AssertLogNotContainsError checks that no error lines appear in the log (with allowed exceptions).
+func (p *FuncHostProcess) AssertLogNotContainsError(allowedPatterns ...string) {
+	p.t.Helper()
+	log := p.ReadLog()
+	for _, line := range strings.Split(log, "\n") {
+		lower := strings.ToLower(line)
+		if !strings.Contains(lower, "error") {
+			continue
+		}
+		allowed := false
+		for _, pattern := range allowedPatterns {
+			if strings.Contains(line, pattern) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			p.t.Errorf("unexpected error in log: %s", line)
+		}
+	}
+}
+
+func (p *FuncHostProcess) waitForPattern(pattern string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// Check if process exited
+		if p.cmd.ProcessState != nil && p.cmd.ProcessState.Exited() {
+			log := p.ReadLog()
+			return strings.Contains(log, pattern)
+		}
+		log := p.ReadLog()
+		if strings.Contains(log, pattern) {
+			return true
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return false
+}
+
+// readAll is a test helper to read the full body of an io.ReadCloser.
+func readAll(t *testing.T, body io.ReadCloser) []byte {
+	t.Helper()
+	defer body.Close()
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+	return data
+}
