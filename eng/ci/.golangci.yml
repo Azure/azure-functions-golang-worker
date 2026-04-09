@@ -5,6 +5,7 @@ linters:
   disable-all: true
   enable:
     - govet # Always keep the default govet enabled
+    - gofmt # Checks code is formatted with go fmt
     - revive # Checks variable/struct names
     - stylecheck # Checks Go style guide rules
     - tagliatelle # Checks struct tags
