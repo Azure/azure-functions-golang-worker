@@ -612,3 +612,209 @@ func TestMismatchedOption_NoOp(t *testing.T) {
 		t.Errorf("expected schedule %q, got %q", "0 */5 * * * *", rf.RawBindings[0].TimerBinding.Schedule)
 	}
 }
+
+// --- WithRoute test ---
+
+func TestHTTP_WithRoute(t *testing.T) {
+	app := FunctionApp()
+	handler := HTTPHandler(func(w http.ResponseWriter, r *http.Request) {})
+
+	app.HTTP("routeFunc", handler, WithRoute("custom/path"))
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.HTTPBinding == nil {
+			t.Fatal("expected HTTPBinding")
+		}
+		if binding.HTTPBinding.Route != "custom/path" {
+			t.Errorf("expected route %q, got %q", "custom/path", binding.HTTPBinding.Route)
+		}
+		return true
+	})
+}
+
+// --- WithIsSessionsEnabled test ---
+
+func TestServiceBusQueue_WithIsSessionsEnabled(t *testing.T) {
+	app := FunctionApp()
+	handler := ServiceBusHandler(func(ctx context.Context, msg bindings.ServiceBusMessage) error { return nil })
+
+	app.ServiceBusQueue("sbSessions", handler,
+		WithQueueName("session-queue"),
+		WithConnection("SBConn"),
+		WithIsSessionsEnabled(true),
+	)
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.ServiceBusBinding == nil {
+			t.Fatal("expected ServiceBusBinding")
+		}
+		if !binding.ServiceBusBinding.IsSessionsEnabled {
+			t.Error("expected IsSessionsEnabled to be true")
+		}
+		return true
+	})
+}
+
+// --- WithCardinality on ServiceBus test ---
+
+func TestServiceBusQueue_WithCardinality(t *testing.T) {
+	app := FunctionApp()
+	handler := ServiceBusHandler(func(ctx context.Context, msg bindings.ServiceBusMessage) error { return nil })
+
+	app.ServiceBusQueue("sbCard", handler,
+		WithQueueName("card-queue"),
+		WithCardinality("many"),
+	)
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.ServiceBusBinding == nil {
+			t.Fatal("expected ServiceBusBinding")
+		}
+		if binding.ServiceBusBinding.Cardinality != "many" {
+			t.Errorf("expected cardinality %q, got %q", "many", binding.ServiceBusBinding.Cardinality)
+		}
+		return true
+	})
+}
+
+// --- Blob panic tests ---
+
+func TestBlob_PanicOnNonFunction(t *testing.T) {
+	app := FunctionApp()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for non-function handler")
+		}
+	}()
+	app.Blob("bad", "not a function")
+}
+
+func TestBlob_PanicOnWrongArgCount(t *testing.T) {
+	app := FunctionApp()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for wrong arg count")
+		}
+	}()
+	app.Blob("bad", func() error { return nil })
+}
+
+func TestBlob_PanicOnNonContextFirstArg(t *testing.T) {
+	app := FunctionApp()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for non-context first arg")
+		}
+	}()
+	app.Blob("bad", func(s string, data []byte) error { return nil })
+}
+
+func TestBlob_PanicOnWrongReturnCount(t *testing.T) {
+	app := FunctionApp()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for wrong return count")
+		}
+	}()
+	app.Blob("bad", func(ctx context.Context, data []byte) {})
+}
+
+func TestBlob_PanicOnNonErrorReturn(t *testing.T) {
+	app := FunctionApp()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for non-error return type")
+		}
+	}()
+	app.Blob("bad", func(ctx context.Context, data []byte) string { return "" })
+}
+
+// --- RegisterClientFactory test ---
+
+func TestRegisterClientFactory_AndRetrieve(t *testing.T) {
+	factoryCalled := false
+	factory := ClientFactory(func(config map[string]any, triggerMetadata map[string]string) (any, error) {
+		factoryCalled = true
+		return "mock-client", nil
+	})
+
+	RegisterClientFactory("testTrigger", factory)
+
+	got, ok := GetClientFactory("testTrigger")
+	if !ok {
+		t.Fatal("expected factory to be registered")
+	}
+	result, err := got(nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "mock-client" {
+		t.Errorf("expected %q, got %q", "mock-client", result)
+	}
+	if !factoryCalled {
+		t.Error("expected factory to be called")
+	}
+}
+
+func TestRegisterClientFactory_DuplicatePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for duplicate registration")
+		}
+	}()
+	noop := ClientFactory(func(config map[string]any, triggerMetadata map[string]string) (any, error) {
+		return nil, nil
+	})
+	RegisterClientFactory("dupTrigger", noop)
+	RegisterClientFactory("dupTrigger", noop) // should panic
+}
+
+// --- GetFunctionName test ---
+
+func TestGetFunctionName(t *testing.T) {
+	name := GetFunctionName(TestGetFunctionName)
+	if name != "TestGetFunctionName" {
+		t.Errorf("expected %q, got %q", "TestGetFunctionName", name)
+	}
+}
+
+// --- RegisterFunction (exported) test ---
+
+func TestRegisterFunction_Exported(t *testing.T) {
+	app := FunctionApp()
+	handler := func(ctx context.Context, data []byte) error { return nil }
+
+	trigger := &bindings.BlobTrigger{Name: "blob"}
+	rf := app.RegisterFunction("exportedBlob", handler, trigger,
+		WithPath("my-container/{name}"),
+		WithConnection("AzureWebJobsStorage"),
+	)
+
+	if rf.FuncName != "exportedBlob" {
+		t.Errorf("expected FuncName %q, got %q", "exportedBlob", rf.FuncName)
+	}
+	if rf.FuncId == "" {
+		t.Error("expected non-empty FuncId")
+	}
+	if rf.RawBindings[0].BlobBinding == nil {
+		t.Fatal("expected BlobBinding")
+	}
+	if rf.RawBindings[0].BlobBinding.Path != "my-container/{name}" {
+		t.Errorf("expected path %q, got %q", "my-container/{name}", rf.RawBindings[0].BlobBinding.Path)
+	}
+}
+
+// --- TriggerBinding exported helper test ---
+
+func TestTriggerBinding_Empty(t *testing.T) {
+	rf := &RegisteredFunction{}
+	if rf.TriggerBinding() != nil {
+		t.Error("expected nil TriggerBinding for empty RawBindings")
+	}
+}
