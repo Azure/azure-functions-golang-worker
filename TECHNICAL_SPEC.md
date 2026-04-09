@@ -8,20 +8,16 @@ The Azure Functions Go Worker enables developers to write Azure Functions in Go 
 
 ### 2.1 Overview
 
-The Go Worker architecture supports two distinct deployment modes to address Go's static compilation nature:
-
-- **Dedicated / Local Development** — The host launches the user's compiled Go binary (`app`) directly. No proxy is needed.
-- **Consumption / Placeholder** — A lightweight Proxy process handles the placeholder lifecycle, then spawns the user binary on specialization.
+The host launches the user's compiled Go binary (`app`) directly. The binary contains the Function Worker SDK, the user's function code, and SDK bindings. The host communicates with it over a bidirectional gRPC stream using the `FunctionRpc` protocol.
 
 ### 2.2 Components
 
 1. **The Host**: The Azure Functions Host (Runtime), which manages triggers and orchestrates invocations via gRPC.
-2. **The Worker (`app` / `app.exe`)**: The user's compiled Go application. It contains the Function Worker SDK, the user's function code, and SDK bindings. The host communicates with it over a bidirectional gRPC stream using the `FunctionRpc` protocol.
-3. **The Proxy (`proxy` / `proxy.exe`)**: A lightweight Go process used only in consumption/placeholder deployments. It brokers gRPC communication between the host and the user's binary.
+2. **The Worker (`app` / `app.exe`)**: The user's compiled Go application. It contains the Function Worker SDK, the user's function code, and SDK bindings.
 
 ### 2.3 Communication Protocol
 
-Both the Worker and the Proxy use the same gRPC `FunctionRpc.EventStream` bidirectional streaming RPC. The message lifecycle is:
+The Worker uses the gRPC `FunctionRpc.EventStream` bidirectional streaming RPC. The message lifecycle is:
 
 1. **StartStream** — Worker sends its `WorkerId` to establish the stream.
 2. **WorkerInitRequest / WorkerInitResponse** — Host initializes the worker; worker reports capabilities and version.
@@ -41,9 +37,9 @@ Startup arguments are passed via command-line flags:
 --functions-grpc-max-message-length <max bytes>
 ```
 
-### 2.4 Dedicated Mode (Local Development)
+### 2.4 Startup Flow
 
-In dedicated mode — including local development with `func start` — the host reads `worker.config.json`, finds `defaultExecutablePath`, and launches the user's binary directly. The flow is:
+The host reads `worker.config.json`, finds `defaultExecutablePath`, and launches the user's binary directly. The flow is:
 
 ```
 Host  ──gRPC──>  app (user binary)
@@ -54,69 +50,6 @@ The user binary:
 2. Connects to the host's gRPC server (`connectToHost()`).
 3. Sends `StartStream`.
 4. Enters the main message loop (`handleBidiStream()`), dispatching each message through the `Dispatcher`.
-
-No proxy is involved. This is the simplest path and what `func start` uses.
-
-### 2.5 Placeholder Mode (Consumption Plan)
-
-The Azure Functions platform uses "Placeholder" workers to reduce cold start latency. Placeholders are pre-warmed containers initialized before a specific user application is assigned to them. When the platform assigns ("specializes") a placeholder to a user app, it sends a `FunctionEnvironmentReloadRequest` containing the user's environment variables and application directory.
-
-#### 2.5.1 Architectural Constraints
-
-Unlike managed runtimes (.NET, Java, Python) which can dynamically load user code (DLLs, JARs, `.py` files) into a running process, Go compiles into static, self-contained binaries. A Go binary bundles the runtime, garbage collector, and user logic into a single inseparable unit. This prevents the Go Worker from adopting the "code injection" specialization strategy used by .NET Isolated (FunctionsNetHost) or the module-loading approach used by Python/Node.
-
-#### 2.5.2 Strategy: The Proxy Model
-
-To support specialization without incurring a full cold start penalty (container creation + network setup), the Go Worker implements a Parent/Child Proxy Model.
-
-**The Placeholder Phase (Parent Process):**
-
-1. The platform starts `proxy` as the entry point in the Docker image.
-2. The Proxy connects to the host's gRPC server and sends `StartStream`.
-3. It starts a local gRPC server on a random port (`127.0.0.1:0`) to accept connections from the child worker.
-4. It handles messages from the host with stub responses:
-   - `WorkerInitRequest` → Responds with success and a set of worker capabilities. Saves the request for later replay to the child.
-   - `FunctionsMetadataRequest` → Returns an empty function list (no user code loaded yet).
-   - `WorkerHeartbeat` → Echoes back.
-   - `WorkerStatusRequest` → Responds with empty status.
-5. The container stays "warm" — network, gRPC connection, and process are all established.
-
-**Specialization Event:**
-
-When the host sends `FunctionEnvironmentReloadRequest`:
-
-1. The Proxy marks itself as specializing (prevents double-specialization).
-2. It prepares the child process environment by merging the host-provided environment variables with the current environment.
-3. It determines the user binary path: `{FunctionAppDirectory}/app` (or `app.exe` on Windows).
-4. It spawns the user binary as a child process, pointing it at the Proxy's local gRPC server (not the host's):
-   ```
-   app --functions-uri http://127.0.0.1:<proxy-port> \
-       --functions-worker-id <same-worker-id> \
-       --functions-request-id <same-request-id> \
-       --functions-grpc-max-message-length <same-max-length>
-   ```
-5. The child connects to the Proxy's local gRPC server via `EventStream`.
-
-**Message Bridging:**
-
-Once the child connects:
-
-1. The Proxy replays the saved `WorkerInitRequest` to the child.
-2. The child's `StartStream` is dropped (the Proxy already sent its own to the host).
-3. The child's `WorkerInitResponse` is dropped in placeholder mode (the Proxy already responded to the host).
-4. All subsequent messages from the host are forwarded to the child.
-5. All subsequent messages from the child are forwarded to the host.
-
-The Proxy becomes an opaque bidirectional pipe:
-
-```
-Host  ──gRPC──>  Proxy  ──local gRPC──>  app (user binary)
-      <──gRPC──         <──local gRPC──
-```
-
-**Dedicated Mode via Proxy:**
-
-If `WEBSITE_PLACEHOLDER_MODE` is not set to `"1"`, the Proxy immediately spawns the child worker without waiting for a `FunctionEnvironmentReloadRequest`. In this case, the child's `WorkerInitResponse` is forwarded to the host (since the Proxy did not pre-respond).
 
 ## 3. User Application Structure
 
