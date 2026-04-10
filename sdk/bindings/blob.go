@@ -29,5 +29,3 @@ func (b *BlobTrigger) ToBinding() Binding {
 		},
 	}
 }
-
-
