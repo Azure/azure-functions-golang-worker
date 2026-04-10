@@ -1,0 +1,40 @@
+run:
+  timeout: 5m
+  
+linters:
+  disable-all: true
+  enable:
+    - govet # Always keep the default govet enabled
+    - gofmt # Checks code is formatted with go fmt
+    - revive # Checks variable/struct names
+    - stylecheck # Checks Go style guide rules
+    - tagliatelle # Checks struct tags
+
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+
+linters-settings:
+  revive:
+    rules:
+      - name: var-naming
+        severity: warning
+        disabled: false
+        arguments:
+          # Allowed initialisms (adds to the default list like ID, HTTP, etc)
+          - - "VM"
+            - "API"
+
+  stylecheck:
+    # ST1003: Poorly chosen identifier (enforces Initialisms)
+    checks: ["all", "-ST1000"] # We disable ST1000 (missing package comment) to focus on naming
+
+  tagliatelle:
+    # Check the struct tag names
+    case:
+      rules:
+        # Enforce camelCase for json tags (e.g., json:"firstName")
+        json: camel
+        # Enforce snake_case for yaml tags (e.g., yaml:"first_name")
+        yaml: snake
