@@ -23,11 +23,12 @@ import (
 )
 
 const (
-	flexTestImage        = "goworker-flex-test:latest"
-	flexTestIdealImage   = "goworker-flex-test-ideal:latest"
-	flexTestIdealWAImage = "goworker-flex-test-ideal-wa:latest"
-	dummyContKey         = "MDEyMzQ1Njc4OUFCQ0RFRjAxMjM0NTY3ODlBQkNERUY="
-	encryptionIV         = "0123456789abcedf"
+	flexTestImage          = "goworker-flex-test:latest"
+	flexTestIdealImage     = "goworker-flex-test-ideal:latest"
+	flexTestIdealWAImage   = "goworker-flex-test-ideal-wa:latest"
+	flexTestHostFixImage   = "goworker-flex-test-hostfix:latest"
+	dummyContKey           = "MDEyMzQ1Njc4OUFCQ0RFRjAxMjM0NTY3ODlBQkNERUY="
+	encryptionIV           = "0123456789abcedf"
 )
 
 // repoRoot returns the absolute path to the repository root.
@@ -45,10 +46,10 @@ func samplesDir() string {
 type flexContainer struct {
 	id   string
 	port string
-	t    *testing.T
+	t    testing.TB
 }
 
-func requireDocker(t *testing.T) {
+func requireDocker(t testing.TB) {
 	t.Helper()
 	if out, err := exec.Command("docker", "info").CombinedOutput(); err != nil {
 		t.Fatalf("docker is not available: %v\n%s", err, out)
@@ -57,11 +58,11 @@ func requireDocker(t *testing.T) {
 
 // buildAndStartFlex builds a Docker image from the given Dockerfile name and
 // starts a flex consumption container in placeholder mode.
-func buildAndStartFlex(t *testing.T, dockerfileName, imageName string) *flexContainer {
+func buildAndStartFlex(t testing.TB, dockerfileName, imageName string) *flexContainer {
 	t.Helper()
 
 	dockerfile := filepath.Join(repoRoot(), "tests", "consumption", dockerfileName)
-	out, err := exec.Command("docker", "build", "-t", imageName, "-f", dockerfile, ".").CombinedOutput()
+	out, err := exec.Command("docker", "build", "-t", imageName, "-f", dockerfile, repoRoot()).CombinedOutput()
 	if err != nil {
 		t.Fatalf("failed to build %s: %v\n%s", imageName, err, out)
 	}
@@ -106,7 +107,7 @@ func buildAndStartFlex(t *testing.T, dockerfileName, imageName string) *flexCont
 
 // startFlexContainer starts a container using Dockerfile.flex-test (Option A:
 // user provides worker.config.json in deploy package).
-func startFlexContainer(t *testing.T) *flexContainer {
+func startFlexContainer(t testing.TB) *flexContainer {
 	return buildAndStartFlex(t, "Dockerfile.flex-test", flexTestImage)
 }
 
@@ -114,7 +115,7 @@ func startFlexContainer(t *testing.T) *flexContainer {
 // (worker.config.json baked in image, FUNCTIONS_WORKER_RUNTIME=native set).
 // This demonstrates the host limitation: the host fatally fails during
 // placeholder because it tries to start the worker binary that doesn't exist.
-func startFlexContainerIdeal(t *testing.T) *flexContainer {
+func startFlexContainerIdeal(t testing.TB) *flexContainer {
 	return buildAndStartFlex(t, "Dockerfile.flex-test-ideal", flexTestIdealImage)
 }
 
@@ -122,8 +123,64 @@ func startFlexContainerIdeal(t *testing.T) *flexContainer {
 // Dockerfile.flex-test-ideal-workaround (worker.config.json baked in image,
 // FUNCTIONS_WORKER_RUNTIME intentionally NOT set so the host skips worker init
 // during placeholder).
-func startFlexContainerIdealWorkaround(t *testing.T) *flexContainer {
+func startFlexContainerIdealWorkaround(t testing.TB) *flexContainer {
 	return buildAndStartFlex(t, "Dockerfile.flex-test-ideal-workaround", flexTestIdealWAImage)
+}
+
+// startFlexContainerHostFix starts a container using
+// Dockerfile.flex-test-ideal-hostfix which includes a modified host with
+// skipPlaceholderInit support. Requires CUSTOM_HOST_PATH env var pointing to the
+// self-contained host publish output (e.g. azure-functions-host/out/publish/linux-x64).
+func startFlexContainerHostFix(t testing.TB) *flexContainer {
+	t.Helper()
+
+	hostPath := os.Getenv("CUSTOM_HOST_PATH")
+	if hostPath == "" {
+		t.Skip("CUSTOM_HOST_PATH not set -- skipping hostfix test (requires a custom host build)")
+	}
+
+	dockerfile := filepath.Join(repoRoot(), "tests", "consumption", "Dockerfile.flex-test-ideal-hostfix")
+	out, err := exec.Command("docker", "build", "-t", flexTestHostFixImage, "-f", dockerfile, hostPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to build %s: %v\n%s", flexTestHostFixImage, err, out)
+	}
+	t.Cleanup(func() {
+		exec.Command("docker", "rmi", flexTestHostFixImage).Run()
+	})
+
+	id := fmt.Sprintf("goworker-test-%d", time.Now().UnixNano())
+	args := []string{
+		"run", "-p", "0:80", "-d",
+		"--name", id, "--privileged",
+		"--cap-add", "SYS_ADMIN",
+		"--device", "/dev/fuse",
+		"-e", fmt.Sprintf("CONTAINER_ENCRYPTION_KEY=%s", dummyContKey),
+		"-e", "WEBSITE_PLACEHOLDER_MODE=1",
+		"-e", fmt.Sprintf("WEBSITE_SITE_NAME=%s", id),
+		"-e", fmt.Sprintf("WEBSITE_POD_NAME=%s", id),
+		"-e", "WEBSITE_SKU=FlexConsumption",
+		flexTestHostFixImage,
+	}
+
+	out, err = exec.Command("docker", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to start container: %v\n%s", err, out)
+	}
+
+	fc := &flexContainer{id: id, t: t}
+	t.Cleanup(func() { fc.kill() })
+
+	time.Sleep(3 * time.Second)
+
+	portOut, err := exec.Command("docker", "port", id).CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to get container port: %v\n%s", err, portOut)
+	}
+	parts := strings.Split(strings.TrimSpace(string(portOut)), ":")
+	fc.port = parts[len(parts)-1]
+
+	time.Sleep(6 * time.Second)
+	return fc
 }
 
 func (fc *flexContainer) url() string {
@@ -154,6 +211,14 @@ func (fc *flexContainer) waitForPing(timeout time.Duration) {
 		time.Sleep(1 * time.Second)
 	}
 	fc.t.Fatalf("container did not become ready within %v\nlogs:\n%s", timeout, fc.logs())
+}
+
+// killWorkerProcess kills the worker process (/home/site/wwwroot/app) inside
+// the container, leaving the host running but with a dead worker channel.
+func (fc *flexContainer) killWorkerProcess() {
+	fc.t.Helper()
+	// pkill by the executable path
+	exec.Command("docker", "exec", fc.id, "pkill", "-f", "/home/site/wwwroot/app").Run()
 }
 
 // deployApp extracts a zip and copies its contents into /home/site/wwwroot/.
@@ -226,7 +291,7 @@ func (fc *flexContainer) sendRequest(method, path string) (int, []byte) {
 	fc.t.Helper()
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequest(method, fc.url()+path, nil)
 		fc.addAuthHeaders(req)
@@ -256,7 +321,7 @@ func (fc *flexContainer) addAuthHeaders(req *http.Request) {
 
 // buildSampleZip cross-compiles a sample app for linux/amd64 and creates a zip
 // containing the binary (named "app"), host.json, and worker.config.json.
-func buildSampleZip(t *testing.T, sampleName string) string {
+func buildSampleZip(t testing.TB, sampleName string) string {
 	t.Helper()
 
 	sampleDir := filepath.Join(samplesDir(), sampleName)
@@ -318,7 +383,7 @@ func buildSampleZip(t *testing.T, sampleName string) string {
 // buildSampleZipMinimal cross-compiles a sample app for linux/amd64 and creates
 // a zip containing only the binary (named "app") and host.json — no
 // worker.config.json. Used with the ideal image where the config is in the image.
-func buildSampleZipMinimal(t *testing.T, sampleName string) string {
+func buildSampleZipMinimal(t testing.TB, sampleName string) string {
 	t.Helper()
 
 	sampleDir := filepath.Join(samplesDir(), sampleName)
@@ -353,7 +418,7 @@ func buildSampleZipMinimal(t *testing.T, sampleName string) string {
 	return zipPath
 }
 
-func addFileToZip(t *testing.T, w *zip.Writer, srcPath, name string) {
+func addFileToZip(t testing.TB, w *zip.Writer, srcPath, name string) {
 	t.Helper()
 	data, err := os.ReadFile(srcPath)
 	if err != nil {

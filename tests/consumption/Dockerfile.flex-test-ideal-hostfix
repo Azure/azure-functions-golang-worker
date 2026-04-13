@@ -1,9 +1,11 @@
 FROM mcr.microsoft.com/azure-functions/bookworm/flexconsumption:4.1047.100-0-custom1.0
 
-# This Dockerfile represents the ideal production image for the native runtime.
-# The worker.config.json is baked into the image with skipPlaceholderInit=true,
-# which tells the host to skip starting the worker during placeholder mode.
-# No placeholder binary needed -- the host simply waits for specialization.
+# Replace the entire host with a self-contained build that includes the
+# skipPlaceholderInit support. This is a test-only approach to validate the
+# host change before it's merged upstream.
+COPY . /azure-functions-host/
+
+# Create the native worker directory with worker.config.json including skipPlaceholderInit
 RUN mkdir -p /azure-functions-host/workers/native && \
     echo '{ \
         "description": { \
