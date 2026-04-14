@@ -51,6 +51,7 @@ type Proxy struct {
 	childWorkerMetadata  *pb.WorkerMetadata
 	mutex                sync.Mutex
 	hostSendMu           sync.Mutex
+	childConnectedOnce   sync.Once
 	isSpecializing       bool
 }
 
@@ -160,7 +161,7 @@ func (p *Proxy) startLocalServer() error {
 
 	go func() {
 		if err := p.server.Serve(lis); err != nil {
-			log.Fatalf("Local server failed: %v", err)
+			log.Printf("Local gRPC server stopped: %v", err)
 		}
 	}()
 	return nil
@@ -173,7 +174,7 @@ func (p *Proxy) EventStream(stream pb.FunctionRpc_EventStreamServer) error {
 	p.childStream = stream
 	p.mutex.Unlock()
 
-	close(p.childConnected)
+	p.childConnectedOnce.Do(func() { close(p.childConnected) })
 
 	// Wait until stream closes
 	<-stream.Context().Done()
