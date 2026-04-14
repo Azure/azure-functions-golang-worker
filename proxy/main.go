@@ -211,15 +211,15 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 	}
 
 	// If we're specializing (env reload in progress),
-	// wait for the child to connect before forwarding.
+	// wait for the child to be fully initialized before forwarding.
+	// This ensures the child has received its WorkerInitRequest and responded
+	// before any host messages (like FunctionsMetadataRequest) reach it.
 	if specializing {
-		log.Printf("Specializing - waiting for child before forwarding: %T", msg.Content)
-		<-p.childConnected
-		p.mutex.Lock()
+		log.Printf("Specializing - waiting for child init before forwarding: %T", msg.Content)
+		<-p.childInitDone
 		if err := p.childStream.Send(msg); err != nil {
 			log.Printf("Error forwarding to child during specialization: %v", err)
 		}
-		p.mutex.Unlock()
 		return
 	}
 
