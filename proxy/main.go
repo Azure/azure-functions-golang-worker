@@ -50,7 +50,16 @@ type Proxy struct {
 	childCapabilities    map[string]string
 	childWorkerMetadata  *pb.WorkerMetadata
 	mutex                sync.Mutex
+	hostSendMu           sync.Mutex
 	isSpecializing       bool
+}
+
+// sendToHost sends a message to the host with mutex protection.
+// gRPC stream Send is not safe for concurrent use.
+func (p *Proxy) sendToHost(msg *pb.StreamingMessage) error {
+	p.hostSendMu.Lock()
+	defer p.hostSendMu.Unlock()
+	return p.hostStream.Send(msg)
 }
 
 func main() {
@@ -128,7 +137,7 @@ func (p *Proxy) connectToHost() error {
 
 	// Send StartStream to Host
 	log.Printf("Sending StartStream to Host (WorkerID: %s)", p.config.FunctionsWorkerId)
-	return p.hostStream.Send(&pb.StreamingMessage{
+	return p.sendToHost(&pb.StreamingMessage{
 		RequestId: p.config.FunctionsRequestId,
 		Content: &pb.StreamingMessage_StartStream{
 			StartStream: &pb.StartStream{
@@ -242,10 +251,10 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 				},
 			},
 		}
-		p.hostStream.Send(response)
+		p.sendToHost(response)
 
 	case *pb.StreamingMessage_WorkerHeartbeat:
-		p.hostStream.Send(&pb.StreamingMessage{
+		p.sendToHost(&pb.StreamingMessage{
 			RequestId: msg.RequestId,
 			Content: &pb.StreamingMessage_WorkerHeartbeat{
 				WorkerHeartbeat: &pb.WorkerHeartbeat{},
@@ -264,7 +273,7 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 
 	case *pb.StreamingMessage_FunctionsMetadataRequest:
 		log.Println("Received FunctionsMetadataRequest in placeholder mode - returning empty")
-		p.hostStream.Send(&pb.StreamingMessage{
+		p.sendToHost(&pb.StreamingMessage{
 			RequestId: msg.RequestId,
 			Content: &pb.StreamingMessage_FunctionMetadataResponse{
 				FunctionMetadataResponse: &pb.FunctionMetadataResponse{
@@ -277,7 +286,7 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 		})
 
 	case *pb.StreamingMessage_WorkerStatusRequest:
-		p.hostStream.Send(&pb.StreamingMessage{
+		p.sendToHost(&pb.StreamingMessage{
 			RequestId: msg.RequestId,
 			Content: &pb.StreamingMessage_WorkerStatusResponse{
 				WorkerStatusResponse: &pb.WorkerStatusResponse{},
@@ -391,7 +400,7 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 			}
 
 			// Forward to Host
-			p.hostStream.Send(msg)
+			p.sendToHost(msg)
 		}
 	}()
 
@@ -402,7 +411,7 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 	meta := p.childWorkerMetadata
 	p.mutex.Unlock()
 	log.Printf("Child initialized - sending FunctionEnvironmentReloadResponse with capabilities: %v", caps)
-	p.hostStream.Send(&pb.StreamingMessage{
+	p.sendToHost(&pb.StreamingMessage{
 		RequestId: p.savedReloadRequestId,
 		Content: &pb.StreamingMessage_FunctionEnvironmentReloadResponse{
 			FunctionEnvironmentReloadResponse: &pb.FunctionEnvironmentReloadResponse{
