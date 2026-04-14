@@ -38,8 +38,7 @@ If the child process dies, the proxy exits with the same exit code. The host det
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FUNCTION_APP_DIRECTORY` | `/home/site/wwwroot` | Directory to check for the app binary (exec bypass) |
-| `FUNCTION_APP_NAME` | `app` | Name of the app binary |
+| `FUNCTIONS_APP_BINARY_NAME` | `app` | Name of the app binary |
 | `WEBSITE_PLACEHOLDER_MODE` | — | Must be `1` for the proxy to run |
 
 ## Files

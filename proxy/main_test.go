@@ -8,7 +8,7 @@ import (
 )
 
 func TestAppBinaryPath_Default(t *testing.T) {
-	os.Unsetenv("FUNCTION_APP_NAME")
+	os.Unsetenv("FUNCTIONS_APP_BINARY_NAME")
 	path := appBinaryPath("/home/site/wwwroot")
 	expected := filepath.Join("/home/site/wwwroot", "app")
 	if path != expected {
@@ -17,8 +17,8 @@ func TestAppBinaryPath_Default(t *testing.T) {
 }
 
 func TestAppBinaryPath_CustomName(t *testing.T) {
-	os.Setenv("FUNCTION_APP_NAME", "myservice")
-	defer os.Unsetenv("FUNCTION_APP_NAME")
+	os.Setenv("FUNCTIONS_APP_BINARY_NAME", "myservice")
+	defer os.Unsetenv("FUNCTIONS_APP_BINARY_NAME")
 
 	path := appBinaryPath("/home/site/wwwroot")
 	expected := filepath.Join("/home/site/wwwroot", "myservice")
@@ -28,8 +28,8 @@ func TestAppBinaryPath_CustomName(t *testing.T) {
 }
 
 func TestAppBinaryPath_PicksUpSetenv(t *testing.T) {
-	// Simulate FERR setting FUNCTION_APP_NAME via os.Setenv
-	os.Unsetenv("FUNCTION_APP_NAME")
+	// Simulate FERR setting FUNCTIONS_APP_BINARY_NAME via os.Setenv
+	os.Unsetenv("FUNCTIONS_APP_BINARY_NAME")
 
 	// Before FERR: default name
 	path := appBinaryPath("/app")
@@ -39,8 +39,8 @@ func TestAppBinaryPath_PicksUpSetenv(t *testing.T) {
 	}
 
 	// Simulate FERR applying env vars
-	os.Setenv("FUNCTION_APP_NAME", "custom")
-	defer os.Unsetenv("FUNCTION_APP_NAME")
+	os.Setenv("FUNCTIONS_APP_BINARY_NAME", "custom")
+	defer os.Unsetenv("FUNCTIONS_APP_BINARY_NAME")
 
 	// After FERR: custom name
 	path = appBinaryPath("/app")

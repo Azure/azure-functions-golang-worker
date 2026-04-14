@@ -22,9 +22,9 @@ const defaultAppDir = "/home/site/wwwroot"
 const defaultAppName = "app"
 
 // appBinaryPath returns the full path to the user's app binary,
-// using FUNCTION_APP_NAME env var with a default of "app".
+// using FUNCTIONS_APP_BINARY_NAME env var with a default of "app".
 func appBinaryPath(dir string) string {
-	name := os.Getenv("FUNCTION_APP_NAME")
+	name := os.Getenv("FUNCTIONS_APP_BINARY_NAME")
 	if name == "" {
 		name = defaultAppName
 	}
@@ -61,11 +61,7 @@ func main() {
 	// /home/site/wwwroot/app, the host restarts and starts the "proxy" again
 	// (since defaultExecutablePath points here). Instead of running as a proxy,
 	// we replace ourselves with the real app. Zero overhead.
-	appDir := os.Getenv("FUNCTION_APP_DIRECTORY")
-	if appDir == "" {
-		appDir = defaultAppDir
-	}
-	appPath := appBinaryPath(appDir)
+	appPath := appBinaryPath(defaultAppDir)
 	if _, err := os.Stat(appPath); err == nil {
 		log.Printf("Real app found at %s, exec into it", appPath)
 		args := append([]string{appPath}, os.Args[1:]...)
@@ -300,7 +296,7 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 	// 1. Apply FERR environment to the proxy process.
 	// This keeps the proxy aligned with the child's env and ensures
-	// helpers like appBinaryPath() see FERR values (e.g., FUNCTION_APP_NAME).
+	// helpers like appBinaryPath() see FERR values (e.g., FUNCTIONS_APP_BINARY_NAME).
 	// The child inherits the updated env via cmd.Env = os.Environ().
 	for k, v := range req.EnvironmentVariables {
 		os.Setenv(k, v)
