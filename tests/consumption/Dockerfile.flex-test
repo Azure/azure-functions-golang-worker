@@ -1,0 +1,34 @@
+FROM golang:1.24 AS proxy-builder
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY sdk/ sdk/
+COPY worker/ worker/
+COPY proxy/ proxy/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /proxy ./proxy/
+
+FROM mcr.microsoft.com/azure-functions/bookworm/flexconsumption:4.1047.100-0-custom1.0
+
+# Dockerfile for benchmarking the proxy approach.
+# The proxy sits between the host and the worker, forwarding gRPC messages.
+# During placeholder mode, the proxy handles init and reports zero functions.
+# During specialization, the proxy spawns the real app binary.
+RUN mkdir -p /azure-functions-host/workers/native && \
+    echo '{ \
+        "description": { \
+            "language": "native", \
+            "supportedOperatingSystems": ["LINUX"], \
+            "supportedArchitectures": ["X64"], \
+            "defaultExecutablePath": "/azure-functions-host/workers/native/proxy", \
+            "workerIndexing": "true" \
+        }, \
+        "processOptions": { \
+            "initializationTimeout": "00:02:00", \
+            "environmentReloadTimeout": "00:02:00" \
+        } \
+    }' > /azure-functions-host/workers/native/worker.config.json
+
+COPY --from=proxy-builder /proxy /azure-functions-host/workers/native/proxy
+RUN chmod +x /azure-functions-host/workers/native/proxy
+
+ENV FUNCTIONS_WORKER_RUNTIME=native \
+    FUNCTIONS_WORKER_RUNTIME_VERSION=1.0
