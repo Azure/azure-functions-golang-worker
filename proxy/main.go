@@ -211,7 +211,9 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 		log.Printf("Specializing - waiting for child before forwarding: %T", msg.Content)
 		<-p.childConnected
 		p.mutex.Lock()
-		p.childStream.Send(msg)
+		if err := p.childStream.Send(msg); err != nil {
+			log.Printf("Error forwarding to child during specialization: %v", err)
+		}
 		p.mutex.Unlock()
 		return
 	}
@@ -296,10 +298,12 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 }
 
 func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
-	// 1. Prepare Environment from FERR
-	env := os.Environ()
+	// 1. Apply FERR environment to the proxy process.
+	// This keeps the proxy aligned with the child's env and ensures
+	// helpers like appBinaryPath() see FERR values (e.g., FUNCTION_APP_NAME).
+	// The child inherits the updated env via cmd.Env = os.Environ().
 	for k, v := range req.EnvironmentVariables {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
+		os.Setenv(k, v)
 	}
 	dir := req.FunctionAppDirectory
 
@@ -307,7 +311,9 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 	workerPath := appBinaryPath(dir)
 
 	// 3. Construct Args
-	// We need to point the child to the PROXY, not the Host.
+	// Point the child to the proxy's local gRPC server, not the host.
+	// We reuse the host-assigned worker ID and request ID since the child
+	// connects to the proxy (not the host) and its StartStream is dropped.
 	_, port, _ := net.SplitHostPort(p.listener.Addr().String())
 	proxyUri := fmt.Sprintf("http://127.0.0.1:%s", port)
 
@@ -320,7 +326,7 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 
 	// 4. Start Process
 	cmd := exec.Command(workerPath, args...)
-	cmd.Env = env
+	cmd.Env = os.Environ()
 	cmd.Dir = dir
 	if cmd.Dir == "" {
 		cmd.Dir, _ = os.Getwd()

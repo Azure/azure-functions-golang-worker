@@ -8,18 +8,42 @@ import (
 	"time"
 )
 
-// BenchmarkHttpTriggerDirect benchmarks HTTP trigger latency with the
-// skipPlaceholderInit host fix (direct host-to-worker, no proxy).
-// Requires CUSTOM_HOST_PATH env var pointing to the host publish output.
+// BenchmarkHttpTriggerDirect benchmarks HTTP trigger latency with the proxy's
+// exec bypass (direct host-to-worker, no proxy). The app binary is prebaked
+// into the image so the proxy execs into it immediately on startup.
 func BenchmarkHttpTriggerDirect(b *testing.B) {
-	fc := setupBenchContainer(b, "direct")
+	b.Helper()
+	requireDocker(b)
+
+	fc := buildAndStartFlex(b, "Dockerfile.flex-test-direct-bench", "goworker-flex-bench-direct:latest")
+	fc.waitForPing(60 * time.Second)
+
+	fc.specialize(map[string]string{
+		"AzureWebJobsStorage": "UseDevelopmentStorage=true",
+	})
+
+	waitForFunction(b, fc)
 	benchmarkRequests(b, fc)
 }
 
 // BenchmarkHttpTriggerProxy benchmarks HTTP trigger latency with the proxy
 // sitting between host and worker (extra gRPC hop on localhost).
+// This is the production path for flex consumption.
 func BenchmarkHttpTriggerProxy(b *testing.B) {
-	fc := setupBenchContainer(b, "proxy")
+	b.Helper()
+	requireDocker(b)
+
+	fc := buildAndStartFlex(b, "Dockerfile.flex-test", "goworker-flex-bench:latest")
+	fc.waitForPing(60 * time.Second)
+
+	zipPath := buildSampleZipMinimal(b, "httpTrigger")
+	fc.deployApp(zipPath)
+
+	fc.specialize(map[string]string{
+		"AzureWebJobsStorage": "UseDevelopmentStorage=true",
+	})
+
+	waitForFunction(b, fc)
 	benchmarkRequests(b, fc)
 }
 
@@ -55,30 +79,8 @@ func benchmarkRequests(b *testing.B, fc *flexContainer) {
 	}
 }
 
-func setupBenchContainer(b *testing.B, mode string) *flexContainer {
+func waitForFunction(b *testing.B, fc *flexContainer) {
 	b.Helper()
-	requireDocker(b)
-
-	var fc *flexContainer
-	switch mode {
-	case "direct":
-		fc = startFlexContainerHostFix(b)
-	case "proxy":
-		fc = buildAndStartFlex(b, "Dockerfile.flex-test-proxy-bench", "goworker-flex-bench-proxy:latest")
-	default:
-		b.Fatalf("unknown mode: %s", mode)
-	}
-
-	fc.waitForPing(60 * time.Second)
-
-	zipPath := buildSampleZipMinimal(b, "httpTrigger")
-	fc.deployApp(zipPath)
-
-	fc.specialize(map[string]string{
-		"AzureWebJobsStorage": "UseDevelopmentStorage=true",
-	})
-
-	// Wait for the function to be loaded
 	client := &http.Client{Timeout: 10 * time.Second}
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
@@ -87,14 +89,13 @@ func setupBenchContainer(b *testing.B, mode string) *flexContainer {
 		resp, err := client.Do(req)
 		if err == nil && resp.StatusCode == 200 {
 			resp.Body.Close()
-			fmt.Printf("[%s] Container ready at %s\n", mode, fc.url())
-			return fc
+			fmt.Printf("Container ready at %s\n", fc.url())
+			return
 		}
 		if resp != nil {
 			resp.Body.Close()
 		}
 		time.Sleep(2 * time.Second)
 	}
-	b.Fatalf("[%s] function never became ready\nlogs:\n%s", mode, fc.logs())
-	return nil
+	b.Fatalf("function never became ready\nlogs:\n%s", fc.logs())
 }
