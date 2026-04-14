@@ -35,6 +35,8 @@ type Proxy struct {
 
 	savedInitRequest          *pb.StreamingMessage
 	savedReloadRequestId      string
+	childCapabilities         map[string]string
+	childWorkerMetadata       *pb.WorkerMetadata
 	mutex                     sync.Mutex
 	isSpecializing            bool
 }
@@ -362,9 +364,14 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 				log.Println("Dropping StartStream from Child")
 				continue
 			case *pb.StreamingMessage_WorkerInitResponse:
+				initResp := msg.GetWorkerInitResponse()
 				if p.savedInitRequest != nil {
-					// Placeholder mode: proxy already responded to the host
-					log.Println("Dropping WorkerInitResponse from Child (proxy already responded)")
+					// Placeholder mode: capture child's capabilities for the FERR
+					log.Printf("Captured child capabilities: %v", initResp.GetCapabilities())
+					p.mutex.Lock()
+					p.childCapabilities = initResp.GetCapabilities()
+					p.childWorkerMetadata = initResp.GetWorkerMetadata()
+					p.mutex.Unlock()
 					close(p.childInitDone)
 					continue
 				}
@@ -381,12 +388,19 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 	// 8. Send FunctionEnvironmentReloadResponse after child is initialized
 	if req != nil {
 		<-p.childInitDone
-		log.Println("Child initialized - sending FunctionEnvironmentReloadResponse to Host")
+		p.mutex.Lock()
+		caps := p.childCapabilities
+		meta := p.childWorkerMetadata
+		p.mutex.Unlock()
+		log.Printf("Child initialized - sending FunctionEnvironmentReloadResponse with capabilities: %v", caps)
 		p.hostStream.Send(&pb.StreamingMessage{
 			RequestId: p.savedReloadRequestId,
 			Content: &pb.StreamingMessage_FunctionEnvironmentReloadResponse{
 				FunctionEnvironmentReloadResponse: &pb.FunctionEnvironmentReloadResponse{
-					Result: &pb.StatusResult{Status: pb.StatusResult_Success},
+					Result:                      &pb.StatusResult{Status: pb.StatusResult_Success},
+					Capabilities:                 caps,
+					CapabilitiesUpdateStrategy:   pb.FunctionEnvironmentReloadResponse_replace,
+					WorkerMetadata:               meta,
 				},
 			},
 		})
