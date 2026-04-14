@@ -1,0 +1,71 @@
+# ---------------------------------------------------------------
+# Azure DevOps Pipeline: Official Build & Unit Tests
+# Runs on pushes to main and release branches (CI only, no PRs).
+# Uses 1ES Official pipeline template with code signing enabled.
+# ---------------------------------------------------------------
+
+trigger:
+  batch: true
+  branches:
+    include:
+      - main
+      - release/*
+
+# CI only, does not trigger on PRs.
+pr: none
+
+schedules:
+  - cron: '0 0 * * MON'
+    displayName: At 12:00 AM, only on Monday
+    branches:
+      include:
+        - main
+    always: true
+
+resources:
+  repositories:
+    - repository: 1es
+      type: git
+      name: 1ESPipelineTemplates/1ESPipelineTemplates
+      ref: refs/tags/release
+    - repository: eng
+      type: git
+      name: engineering
+      ref: refs/tags/release
+
+extends:
+  template: v1/1ES.Official.PipelineTemplate.yml@1es
+  parameters:
+    pool:
+      name: 1es-pool-azfunc
+      image: 1es-windows-2022
+      os: windows
+    featureFlags:
+      golang:
+        internalModuleProxy:
+          enabled: true
+
+    sdl:
+      codeSignValidation:
+        enabled: true
+        break: true
+      codeql:
+        compiled:
+          enabled: true
+        language: go
+
+    stages:
+      - stage: Build
+        displayName: 'Build'
+        jobs:
+          - template: /eng/ci/templates/jobs/build.yml@self
+            parameters:
+              PoolName: 1es-pool-azfunc
+
+      - stage: UnitTests
+        displayName: 'Unit Tests'
+        dependsOn: []
+        jobs:
+          - template: /eng/ci/templates/jobs/unit-tests.yml@self
+            parameters:
+              PoolName: 1es-pool-azfunc
