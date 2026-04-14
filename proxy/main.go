@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"syscall"
 
@@ -18,6 +17,19 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+const defaultAppDir = "/home/site/wwwroot"
+const defaultAppName = "app"
+
+// appBinaryPath returns the full path to the user's app binary,
+// using FUNCTION_APP_NAME env var with a default of "app".
+func appBinaryPath(dir string) string {
+	name := os.Getenv("FUNCTION_APP_NAME")
+	if name == "" {
+		name = defaultAppName
+	}
+	return filepath.Join(dir, name)
+}
 
 type Proxy struct {
 	pb.UnimplementedFunctionRpcServer
@@ -33,12 +45,12 @@ type Proxy struct {
 	server   *grpc.Server
 	listener net.Listener
 
-	savedInitRequest          *pb.StreamingMessage
-	savedReloadRequestId      string
-	childCapabilities         map[string]string
-	childWorkerMetadata       *pb.WorkerMetadata
-	mutex                     sync.Mutex
-	isSpecializing            bool
+	savedInitRequest     *pb.StreamingMessage
+	savedReloadRequestId string
+	childCapabilities    map[string]string
+	childWorkerMetadata  *pb.WorkerMetadata
+	mutex                sync.Mutex
+	isSpecializing       bool
 }
 
 func main() {
@@ -49,12 +61,24 @@ func main() {
 	// /home/site/wwwroot/app, the host restarts and starts the "proxy" again
 	// (since defaultExecutablePath points here). Instead of running as a proxy,
 	// we replace ourselves with the real app. Zero overhead.
-	appPath := "/home/site/wwwroot/app"
+	appDir := os.Getenv("FUNCTION_APP_DIRECTORY")
+	if appDir == "" {
+		appDir = defaultAppDir
+	}
+	appPath := appBinaryPath(appDir)
 	if _, err := os.Stat(appPath); err == nil {
 		log.Printf("Real app found at %s, exec into it", appPath)
 		args := append([]string{appPath}, os.Args[1:]...)
 		err := syscall.Exec(appPath, args, os.Environ())
 		log.Fatalf("exec failed: %v", err)
+	}
+
+	// The proxy only serves a purpose in flex consumption placeholder mode.
+	// If the app binary exists, the exec bypass above handles it.
+	// If we reach here without placeholder mode, it's a misconfiguration.
+	if os.Getenv("WEBSITE_PLACEHOLDER_MODE") != "1" {
+		log.Fatalf("Proxy requires WEBSITE_PLACEHOLDER_MODE=1. "+
+			"App binary not found at %s and not in placeholder mode.", appPath)
 	}
 
 	// 1. Parse Args (same as Worker)
@@ -81,17 +105,7 @@ func main() {
 	}
 	defer p.server.Stop()
 
-	// 4. Check for Placeholder Mode vs Dedicated
-	isPlaceholder := os.Getenv("WEBSITE_PLACEHOLDER_MODE") == "1"
-	if !isPlaceholder {
-		log.Println("Not in Placeholder Mode - Starting Worker immediately")
-		p.mutex.Lock()
-		p.isSpecializing = true
-		p.mutex.Unlock()
-		go p.specialize(nil) // nil means Use Default Environment
-	}
-
-	// 5. Start Main Loop
+	// 4. Start Main Loop
 	p.run()
 }
 
@@ -191,7 +205,7 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 		return
 	}
 
-	// If we're specializing (dedicated mode or env reload in progress),
+	// If we're specializing (env reload in progress),
 	// wait for the child to connect before forwarding.
 	if specializing {
 		log.Printf("Specializing - waiting for child before forwarding: %T", msg.Content)
@@ -209,13 +223,14 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 		log.Println("Received WorkerInitRequest from Host")
 		p.savedInitRequest = msg
 
-		// Respond to Host
+		// Respond to Host with placeholder capabilities.
+		// These are replaced by the child's real capabilities via the
+		// FunctionEnvironmentReloadResponse after specialization.
 		response := &pb.StreamingMessage{
 			RequestId: msg.RequestId,
 			Content: &pb.StreamingMessage_WorkerInitResponse{
 				WorkerInitResponse: &pb.WorkerInitResponse{
 					Result: &pb.StatusResult{Status: pb.StatusResult_Success},
-					// TODO: Populate capabilities matching real worker
 					Capabilities: map[string]string{
 						"TypedDataCollection":               "true",
 						"WorkerStatus":                      "true",
@@ -223,14 +238,13 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 						"RawHttpBodyBytes":                  "true",
 						"RpcHttpTriggerMetadataRemoved":     "true",
 						"UseNullableValueDictionaryForHttp": "true",
-						"HandlesWorkerTermination":          "true",
+						"HandlesWorkerTerminateMessage":     "true",
 					},
-					WorkerVersion: "1.0.0", // TODO: Get from build
+					WorkerVersion: "1.0.0",
 				},
 			},
 		}
 		p.hostStream.Send(response)
-		p.sendHeartbeat() // Start failing heartbeat?
 
 	case *pb.StreamingMessage_WorkerHeartbeat:
 		p.hostStream.Send(&pb.StreamingMessage{
@@ -272,41 +286,25 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 			},
 		})
 
+	case *pb.StreamingMessage_WorkerTerminate:
+		log.Println("Received WorkerTerminate in placeholder mode, exiting")
+		os.Exit(0)
+
 	default:
 		log.Printf("Unhandled message in placeholder mode: %T", msg.Content)
 	}
 }
 
 func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
-	// 1. Prepare Environment and Dir
-	var env []string
-	var dir string
-
-	if req != nil {
-		env = os.Environ()
-		for k, v := range req.EnvironmentVariables {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		dir = req.FunctionAppDirectory
-	} else {
-		// Default / Dedicated Mode
-		env = os.Environ()
-		dir, _ = os.Getwd()
+	// 1. Prepare Environment from FERR
+	env := os.Environ()
+	for k, v := range req.EnvironmentVariables {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
-
-	// Default to /home/site/wwwroot if no directory was specified
-	if dir == "" || dir == "/" {
-		dir = "/home/site/wwwroot"
-	}
+	dir := req.FunctionAppDirectory
 
 	// 2. Determine App Path
-	workerPath := "app"
-	if runtime.GOOS == "windows" {
-		workerPath = "app.exe"
-	}
-	if dir != "" {
-		workerPath = filepath.Join(dir, workerPath)
-	}
+	workerPath := appBinaryPath(dir)
 
 	// 3. Construct Args
 	// We need to point the child to the PROXY, not the Host.
@@ -337,17 +335,32 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 		log.Fatalf("Failed to start child worker: %v", err)
 	}
 
+	// Monitor child process: if the child dies, exit the proxy with the
+	// same exit code so the host detects it immediately via Process.Exited
+	// and restarts us (at which point the exec bypass kicks in).
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				log.Printf("Child process exited with code %d, propagating", exitErr.ExitCode())
+				os.Exit(exitErr.ExitCode())
+			}
+			log.Printf("Child process failed: %v, exiting", err)
+			os.Exit(1)
+		}
+		log.Println("Child process exited cleanly, exiting proxy")
+		os.Exit(0)
+	}()
+
 	// 5. Wait for Connection
 	log.Println("Waiting for child to connect...")
 	<-p.childConnected
 	log.Println("Child Connected! Starting Bridge...")
 
 	// 6. Bridge: Handshake
-	// We must send the Saved WorkerInitRequest to the Child
-	if p.savedInitRequest != nil {
-		log.Println("Replaying WorkerInitRequest to Child")
-		p.childStream.Send(p.savedInitRequest)
-	}
+	// Replay the saved WorkerInitRequest to the Child so it can initialize
+	log.Println("Replaying WorkerInitRequest to Child")
+	p.childStream.Send(p.savedInitRequest)
 
 	// 7. Bridge: Response Loop (Child -> Host)
 	go func() {
@@ -365,19 +378,14 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 				continue
 			case *pb.StreamingMessage_WorkerInitResponse:
 				initResp := msg.GetWorkerInitResponse()
-				if p.savedInitRequest != nil {
-					// Placeholder mode: capture child's capabilities for the FERR
-					log.Printf("Captured child capabilities: %v", initResp.GetCapabilities())
-					p.mutex.Lock()
-					p.childCapabilities = initResp.GetCapabilities()
-					p.childWorkerMetadata = initResp.GetWorkerMetadata()
-					p.mutex.Unlock()
-					close(p.childInitDone)
-					continue
-				}
-				// Dedicated mode: proxy didn't respond, forward child's response
-				log.Println("Forwarding WorkerInitResponse from Child to Host")
+				// Capture child's capabilities for the FERR response
+				log.Printf("Captured child capabilities: %v", initResp.GetCapabilities())
+				p.mutex.Lock()
+				p.childCapabilities = initResp.GetCapabilities()
+				p.childWorkerMetadata = initResp.GetWorkerMetadata()
+				p.mutex.Unlock()
 				close(p.childInitDone)
+				continue
 			}
 
 			// Forward to Host
@@ -386,27 +394,21 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 	}()
 
 	// 8. Send FunctionEnvironmentReloadResponse after child is initialized
-	if req != nil {
-		<-p.childInitDone
-		p.mutex.Lock()
-		caps := p.childCapabilities
-		meta := p.childWorkerMetadata
-		p.mutex.Unlock()
-		log.Printf("Child initialized - sending FunctionEnvironmentReloadResponse with capabilities: %v", caps)
-		p.hostStream.Send(&pb.StreamingMessage{
-			RequestId: p.savedReloadRequestId,
-			Content: &pb.StreamingMessage_FunctionEnvironmentReloadResponse{
-				FunctionEnvironmentReloadResponse: &pb.FunctionEnvironmentReloadResponse{
-					Result:                      &pb.StatusResult{Status: pb.StatusResult_Success},
-					Capabilities:                 caps,
-					CapabilitiesUpdateStrategy:   pb.FunctionEnvironmentReloadResponse_replace,
-					WorkerMetadata:               meta,
-				},
+	<-p.childInitDone
+	p.mutex.Lock()
+	caps := p.childCapabilities
+	meta := p.childWorkerMetadata
+	p.mutex.Unlock()
+	log.Printf("Child initialized - sending FunctionEnvironmentReloadResponse with capabilities: %v", caps)
+	p.hostStream.Send(&pb.StreamingMessage{
+		RequestId: p.savedReloadRequestId,
+		Content: &pb.StreamingMessage_FunctionEnvironmentReloadResponse{
+			FunctionEnvironmentReloadResponse: &pb.FunctionEnvironmentReloadResponse{
+				Result:                     &pb.StatusResult{Status: pb.StatusResult_Success},
+				Capabilities:               caps,
+				CapabilitiesUpdateStrategy: pb.FunctionEnvironmentReloadResponse_replace,
+				WorkerMetadata:             meta,
 			},
-		})
-	}
-}
-
-func (p *Proxy) sendHeartbeat() {
-	// Simple ticker to keep connection alive if needed
+		},
+	})
 }
