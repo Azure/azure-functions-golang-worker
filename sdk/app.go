@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net/http"
 	"reflect"
 	"runtime"
 	"strings"
@@ -43,7 +44,7 @@ func (app *App) HTTP(name string, f HTTPHandler, opts ...Option) *RegisteredFunc
 		Name:      "req",
 		Route:     name,
 		AuthLevel: "anonymous",
-		Methods:   []string{"GET", "POST"},
+		Methods:   []string{http.MethodGet, http.MethodPost},
 	}
 	return app.registerFunction(name, f, trigger, opts...)
 }
@@ -231,7 +232,11 @@ func (app *App) registerFunction(name string, f any, b bindings.Bind, opts ...Op
 	}
 
 	rf.FuncId = funcId
-	app.registeredFunctions.Store(funcId, rf)
+	if existing, loaded := app.registeredFunctions.LoadOrStore(funcId, rf); loaded {
+		existingFunc := existing.(*RegisteredFunction)
+		panic(fmt.Sprintf("duplicate function registration: %q (trigger type %q) conflicts with existing function %q",
+			rf.FuncName, rf.TriggerType, existingFunc.FuncName))
+	}
 	return rf
 }
 
