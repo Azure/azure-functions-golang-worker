@@ -27,10 +27,11 @@ func EventHubHandler(ctx context.Context, event bindings.EventHubMessage) error 
 func main() {
 	app := sdk.FunctionApp()
 
-	app.EventHub("eventHubTrigger", EventHubHandler).
-		EventHubName("input-hub").
-		Connection("EventHubConnection").
-		ConsumerGroup("watchtower-test")
+	app.EventHub("eventHubTrigger", EventHubHandler,
+		sdk.WithEventHubName("input-hub"),
+		sdk.WithConnection("EventHubConnection"),
+		sdk.WithConsumerGroup("watchtower-test"),
+	)
 
 	worker.Start(app)
 }

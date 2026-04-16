@@ -43,9 +43,10 @@ func BlobHandler(ctx context.Context, client *blob.Client) error {
 func main() {
 	app := sdk.FunctionApp()
 
-	app.Blob("blobTrigger", BlobHandler).
-		Path("test-container/{name}").
-		Connection("AzureWebJobsStorage")
+	app.Blob("blobTrigger", BlobHandler,
+		sdk.WithPath("test-container/{name}"),
+		sdk.WithConnection("AzureWebJobsStorage"),
+	)
 
 	worker.Start(app)
 }

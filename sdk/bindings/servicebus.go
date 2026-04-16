@@ -7,12 +7,12 @@ const ServiceBusTriggerType BindingType = "serviceBusTrigger"
 
 // ServiceBusBinding is the JSON representation for Service Bus bindings.
 type ServiceBusBinding struct {
-	QueueName          string `json:"queueName,omitempty"`
-	TopicName          string `json:"topicName,omitempty"`
-	SubscriptionName   string `json:"subscriptionName,omitempty"`
-	Connection         string `json:"connection"`
-	IsSessionsEnabled  bool   `json:"isSessionsEnabled,omitempty"`
-	Cardinality        string `json:"cardinality,omitempty"`
+	QueueName         string `json:"queueName,omitempty"`
+	TopicName         string `json:"topicName,omitempty"`
+	SubscriptionName  string `json:"subscriptionName,omitempty"`
+	Connection        string `json:"connection"`
+	IsSessionsEnabled bool   `json:"isSessionsEnabled,omitempty"`
+	Cardinality       string `json:"cardinality,omitempty"`
 }
 
 // ServiceBusMessage represents a message received from Azure Service Bus.
@@ -43,7 +43,6 @@ type ServiceBusMessage struct {
 	ApplicationProperties   map[string]interface{} `json:"applicationProperties"`
 	UserProperties          map[string]interface{} `json:"userProperties"`
 }
-
 
 // ServiceBusQueueTrigger is the user-facing configuration for a Service Bus queue trigger.
 type ServiceBusQueueTrigger struct {

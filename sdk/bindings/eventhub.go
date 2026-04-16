@@ -53,5 +53,3 @@ func (e *EventHubTrigger) ToBinding() Binding {
 		},
 	}
 }
-
-

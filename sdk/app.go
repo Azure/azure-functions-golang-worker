@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net/http"
 	"reflect"
 	"runtime"
 	"strings"
@@ -13,6 +14,9 @@ import (
 
 	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
 )
+
+// Option is a functional option applied to a RegisteredFunction during registration.
+type Option func(*RegisteredFunction)
 
 // App represents the function application and its registered functions.
 type App struct {
@@ -32,355 +36,69 @@ func (app *App) GetRegisteredFunctions() *sync.Map {
 	return app.registeredFunctions
 }
 
-// =============================================================================
-// Core Triggers — Data Passthrough
-//
-// These triggers receive their payload inline in the gRPC InvocationRequest.
-// The host serializes trigger data (JSON documents, messages, timer metadata)
-// into the protobuf message and the worker deserializes it into typed Go structs.
-//
-// Core triggers have:
-//   - Typed handler aliases (e.g., CosmosDBHandler, TimerHandler) for compile-time safety
-//   - Zero external Azure SDK dependencies — only encoding/json is needed
-//   - Bounded payloads — change feed docs, queue messages, events are discrete objects
-//
-// Triggers in this tier: HTTP, Timer, CosmosDB, ServiceBus, EventHub, EventGrid
-// =============================================================================
-
-// --- HTTP Trigger ---
-
-// HTTPFunctionBuilder is a builder for creating HTTP triggered functions.
-type HTTPFunctionBuilder struct {
-	trigger *bindings.HTTPTrigger
-	rf      *RegisteredFunction
-}
+// --- Trigger Registration ---
 
 // HTTP creates a new HTTP triggered function.
-func (app *App) HTTP(name string, f HTTPHandler) *HTTPFunctionBuilder {
+func (app *App) HTTP(name string, f HTTPHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.HTTPTrigger{
 		Name:      "req",
 		Route:     name,
 		AuthLevel: "anonymous",
-		Methods:   []string{"GET", "POST"},
+		Methods:   []string{http.MethodGet, http.MethodPost},
 	}
-
-	rf := app.registerFunction(name, f, trigger)
-
-	return &HTTPFunctionBuilder{
-		trigger: trigger,
-		rf:      rf,
-	}
+	return app.registerFunction(name, f, trigger, opts...)
 }
 
-// Methods sets the allowed HTTP methods.
-func (b *HTTPFunctionBuilder) Methods(methods ...string) *HTTPFunctionBuilder {
-	b.trigger.Methods = methods
-	b.updateBinding()
-	return b
-}
-
-// Auth sets the authorization level.
-func (b *HTTPFunctionBuilder) Auth(level string) *HTTPFunctionBuilder {
-	b.trigger.AuthLevel = level
-	b.updateBinding()
-	return b
-}
-
-func (b *HTTPFunctionBuilder) updateBinding() {
-	if len(b.rf.RawBindings) > 0 {
-		b.rf.RawBindings[0] = b.trigger.ToBinding()
-	}
-}
-
-// --- Timer Trigger ---
-
-// TimerFunctionBuilder provides a fluent API for configuring timer-triggered functions.
-type TimerFunctionBuilder struct {
-	trigger *bindings.TimerTrigger
-	rf      *RegisteredFunction
-}
-
-// Timer creates a new timer-triggered function with the given name.
-func (app *App) Timer(name string, f TimerHandler) *TimerFunctionBuilder {
+// Timer creates a new timer-triggered function.
+func (app *App) Timer(name string, f TimerHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.TimerTrigger{
 		Name: "timer",
 	}
-
-	rf := app.registerFunction(name, f, trigger)
-
-	return &TimerFunctionBuilder{
-		trigger: trigger,
-		rf:      rf,
-	}
-}
-
-// Schedule sets the NCrontab CRON expression for the timer trigger.
-func (b *TimerFunctionBuilder) Schedule(schedule string) *TimerFunctionBuilder {
-	b.trigger.Schedule = schedule
-	b.updateBinding()
-	return b
-}
-
-func (b *TimerFunctionBuilder) updateBinding() {
-	if len(b.rf.RawBindings) > 0 {
-		b.rf.RawBindings[0] = b.trigger.ToBinding()
-	}
-}
-
-// --- CosmosDB Trigger ---
-
-// CosmosDBFunctionBuilder is a builder for creating CosmosDB triggered functions.
-type CosmosDBFunctionBuilder struct {
-	trigger *bindings.CosmosDBTrigger
-	rf      *RegisteredFunction
+	return app.registerFunction(name, f, trigger, opts...)
 }
 
 // CosmosDB creates a new CosmosDB triggered function.
-func (app *App) CosmosDB(name string, f CosmosDBHandler) *CosmosDBFunctionBuilder {
+func (app *App) CosmosDB(name string, f CosmosDBHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.CosmosDBTrigger{
 		Name: "docs",
 	}
-
-	rf := app.registerFunction(name, f, trigger)
-
-	return &CosmosDBFunctionBuilder{
-		trigger: trigger,
-		rf:      rf,
-	}
-}
-
-// Database sets the CosmosDB database name.
-func (b *CosmosDBFunctionBuilder) Database(dbName string) *CosmosDBFunctionBuilder {
-	b.trigger.DatabaseName = dbName
-	b.updateBinding()
-	return b
-}
-
-// Container sets the CosmosDB container name.
-func (b *CosmosDBFunctionBuilder) Container(containerName string) *CosmosDBFunctionBuilder {
-	b.trigger.ContainerName = containerName
-	b.updateBinding()
-	return b
-}
-
-// Connection sets the CosmosDB connection string setting.
-func (b *CosmosDBFunctionBuilder) Connection(connection string) *CosmosDBFunctionBuilder {
-	b.trigger.Connection = connection
-	b.updateBinding()
-	return b
-}
-
-func (b *CosmosDBFunctionBuilder) updateBinding() {
-	if len(b.rf.RawBindings) > 0 {
-		b.rf.RawBindings[0] = b.trigger.ToBinding()
-	}
-}
-
-// --- EventGrid Trigger ---
-
-// EventGridFunctionBuilder is a builder for creating EventGrid triggered functions.
-type EventGridFunctionBuilder struct {
-	trigger *bindings.EventGridTrigger
-	rf      *RegisteredFunction
+	return app.registerFunction(name, f, trigger, opts...)
 }
 
 // EventGrid creates a new EventGrid triggered function.
-func (app *App) EventGrid(name string, f EventGridHandler) *EventGridFunctionBuilder {
+func (app *App) EventGrid(name string, f EventGridHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.EventGridTrigger{
 		Name: "event",
 	}
-
-	rf := app.registerFunction(name, f, trigger)
-
-	return &EventGridFunctionBuilder{
-		trigger: trigger,
-		rf:      rf,
-	}
-}
-
-func (b *EventGridFunctionBuilder) updateBinding() {
-	if len(b.rf.RawBindings) > 0 {
-		b.rf.RawBindings[0] = b.trigger.ToBinding()
-	}
-}
-
-// --- EventHub Trigger ---
-
-// EventHubFunctionBuilder is a builder for creating EventHub triggered functions.
-type EventHubFunctionBuilder struct {
-	trigger *bindings.EventHubTrigger
-	rf      *RegisteredFunction
+	return app.registerFunction(name, f, trigger, opts...)
 }
 
 // EventHub creates a new EventHub triggered function.
-func (app *App) EventHub(name string, f EventHubHandler) *EventHubFunctionBuilder {
+func (app *App) EventHub(name string, f EventHubHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.EventHubTrigger{
 		Name:          "message",
 		ConsumerGroup: "$Default",
 		Cardinality:   "one",
 	}
-
-	rf := app.registerFunction(name, f, trigger)
-
-	return &EventHubFunctionBuilder{
-		trigger: trigger,
-		rf:      rf,
-	}
-}
-
-// EventHubName sets the EventHub name.
-func (b *EventHubFunctionBuilder) EventHubName(name string) *EventHubFunctionBuilder {
-	b.trigger.EventHubName = name
-	b.updateBinding()
-	return b
-}
-
-// Connection sets the EventHub connection string setting name.
-func (b *EventHubFunctionBuilder) Connection(connection string) *EventHubFunctionBuilder {
-	b.trigger.Connection = connection
-	b.updateBinding()
-	return b
-}
-
-// ConsumerGroup sets the EventHub consumer group.
-func (b *EventHubFunctionBuilder) ConsumerGroup(group string) *EventHubFunctionBuilder {
-	b.trigger.ConsumerGroup = group
-	b.updateBinding()
-	return b
-}
-
-// Cardinality sets the EventHub trigger cardinality ("one" or "many").
-func (b *EventHubFunctionBuilder) Cardinality(cardinality string) *EventHubFunctionBuilder {
-	b.trigger.Cardinality = cardinality
-	b.updateBinding()
-	return b
-}
-
-func (b *EventHubFunctionBuilder) updateBinding() {
-	if len(b.rf.RawBindings) > 0 {
-		b.rf.RawBindings[0] = b.trigger.ToBinding()
-	}
-}
-
-// --- Service Bus Queue Trigger ---
-
-// ServiceBusQueueFunctionBuilder is a builder for creating Service Bus queue triggered functions.
-type ServiceBusQueueFunctionBuilder struct {
-	trigger *bindings.ServiceBusQueueTrigger
-	rf      *RegisteredFunction
+	return app.registerFunction(name, f, trigger, opts...)
 }
 
 // ServiceBusQueue creates a new Service Bus queue triggered function.
-func (app *App) ServiceBusQueue(name string, f ServiceBusHandler) *ServiceBusQueueFunctionBuilder {
+func (app *App) ServiceBusQueue(name string, f ServiceBusHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.ServiceBusQueueTrigger{
 		Name:        "message",
 		Cardinality: "one",
 	}
-
-	rf := app.registerFunction(name, f, trigger)
-
-	return &ServiceBusQueueFunctionBuilder{
-		trigger: trigger,
-		rf:      rf,
-	}
-}
-
-// QueueName sets the Service Bus queue name.
-func (b *ServiceBusQueueFunctionBuilder) QueueName(queueName string) *ServiceBusQueueFunctionBuilder {
-	b.trigger.QueueName = queueName
-	b.updateBinding()
-	return b
-}
-
-// Connection sets the Service Bus connection string setting name.
-func (b *ServiceBusQueueFunctionBuilder) Connection(connection string) *ServiceBusQueueFunctionBuilder {
-	b.trigger.Connection = connection
-	b.updateBinding()
-	return b
-}
-
-// IsSessionsEnabled sets whether sessions are enabled on the queue.
-func (b *ServiceBusQueueFunctionBuilder) IsSessionsEnabled(enabled bool) *ServiceBusQueueFunctionBuilder {
-	b.trigger.IsSessionsEnabled = enabled
-	b.updateBinding()
-	return b
-}
-
-// Cardinality sets the Service Bus trigger cardinality ("one" or "many").
-func (b *ServiceBusQueueFunctionBuilder) Cardinality(cardinality string) *ServiceBusQueueFunctionBuilder {
-	b.trigger.Cardinality = cardinality
-	b.updateBinding()
-	return b
-}
-
-func (b *ServiceBusQueueFunctionBuilder) updateBinding() {
-	if len(b.rf.RawBindings) > 0 {
-		b.rf.RawBindings[0] = b.trigger.ToBinding()
-	}
-}
-
-// --- Service Bus Topic Trigger ---
-
-// ServiceBusTopicFunctionBuilder is a builder for creating Service Bus topic triggered functions.
-type ServiceBusTopicFunctionBuilder struct {
-	trigger *bindings.ServiceBusTopicTrigger
-	rf      *RegisteredFunction
+	return app.registerFunction(name, f, trigger, opts...)
 }
 
 // ServiceBusTopic creates a new Service Bus topic triggered function.
-func (app *App) ServiceBusTopic(name string, f ServiceBusHandler) *ServiceBusTopicFunctionBuilder {
+func (app *App) ServiceBusTopic(name string, f ServiceBusHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.ServiceBusTopicTrigger{
 		Name:        "message",
 		Cardinality: "one",
 	}
-
-	rf := app.registerFunction(name, f, trigger)
-
-	return &ServiceBusTopicFunctionBuilder{
-		trigger: trigger,
-		rf:      rf,
-	}
-}
-
-// TopicName sets the Service Bus topic name.
-func (b *ServiceBusTopicFunctionBuilder) TopicName(topicName string) *ServiceBusTopicFunctionBuilder {
-	b.trigger.TopicName = topicName
-	b.updateBinding()
-	return b
-}
-
-// SubscriptionName sets the Service Bus subscription name.
-func (b *ServiceBusTopicFunctionBuilder) SubscriptionName(subscriptionName string) *ServiceBusTopicFunctionBuilder {
-	b.trigger.SubscriptionName = subscriptionName
-	b.updateBinding()
-	return b
-}
-
-// Connection sets the Service Bus connection string setting name.
-func (b *ServiceBusTopicFunctionBuilder) Connection(connection string) *ServiceBusTopicFunctionBuilder {
-	b.trigger.Connection = connection
-	b.updateBinding()
-	return b
-}
-
-// IsSessionsEnabled sets whether sessions are enabled on the subscription.
-func (b *ServiceBusTopicFunctionBuilder) IsSessionsEnabled(enabled bool) *ServiceBusTopicFunctionBuilder {
-	b.trigger.IsSessionsEnabled = enabled
-	b.updateBinding()
-	return b
-}
-
-// Cardinality sets the Service Bus trigger cardinality ("one" or "many").
-func (b *ServiceBusTopicFunctionBuilder) Cardinality(cardinality string) *ServiceBusTopicFunctionBuilder {
-	b.trigger.Cardinality = cardinality
-	b.updateBinding()
-	return b
-}
-
-func (b *ServiceBusTopicFunctionBuilder) updateBinding() {
-	if len(b.rf.RawBindings) > 0 {
-		b.rf.RawBindings[0] = b.trigger.ToBinding()
-	}
+	return app.registerFunction(name, f, trigger, opts...)
 }
 
 // =============================================================================
@@ -407,22 +125,12 @@ func (b *ServiceBusTopicFunctionBuilder) updateBinding() {
 
 // --- Blob Trigger ---
 
-// BlobFunctionBuilder is a builder for creating blob triggered functions.
-// The handler receives a trigger-specific client (e.g., *blob.Client) created
-// by the registered ClientFactory. Import the triggers/blob package to enable:
-//
-//	import _ "github.com/azure/azure-functions-golang-worker/triggers/blob"
-type BlobFunctionBuilder struct {
-	trigger *bindings.BlobTrigger
-	rf      *RegisteredFunction
-}
-
 // Blob creates a new blob-triggered function.
 // The handler argument type depends on the registered blob trigger extension.
 // Import the triggers/blob package to enable *blob.Client support:
 //
-//	import _ "github.com/azure/azure-functions-golang-worker/triggers/blob"
-func (app *App) Blob(name string, f any) *BlobFunctionBuilder {
+// import _ "github.com/azure/azure-functions-golang-worker/triggers/blob"
+func (app *App) Blob(name string, f any, opts ...Option) *RegisteredFunction {
 	// Validate handler signature: must be a function
 	ft := reflect.TypeOf(f)
 	if ft == nil || ft.Kind() != reflect.Func {
@@ -450,39 +158,16 @@ func (app *App) Blob(name string, f any) *BlobFunctionBuilder {
 		Name: "blob",
 	}
 
-	rf := app.registerFunction(name, f, trigger)
+	rf := app.registerFunction(name, f, trigger, opts...)
 
 	// Look up the globally registered factory for blob triggers
 	if factory, ok := GetClientFactory(string(bindings.BlobTriggerType)); ok {
 		rf.ClientFactory = factory
 	} else {
-		log.Printf("WARNING: no ClientFactory registered for %s \u2014 did you forget to import triggers/blob?", bindings.BlobTriggerType)
+		log.Printf("WARNING: no ClientFactory registered for %s — did you forget to import triggers/blob?", bindings.BlobTriggerType)
 	}
 
-	return &BlobFunctionBuilder{
-		trigger: trigger,
-		rf:      rf,
-	}
-}
-
-// Path sets the blob path pattern (e.g., "container/{name}").
-func (b *BlobFunctionBuilder) Path(path string) *BlobFunctionBuilder {
-	b.trigger.Path = path
-	b.updateBinding()
-	return b
-}
-
-// Connection sets the blob connection string setting name.
-func (b *BlobFunctionBuilder) Connection(connection string) *BlobFunctionBuilder {
-	b.trigger.Connection = connection
-	b.updateBinding()
-	return b
-}
-
-func (b *BlobFunctionBuilder) updateBinding() {
-	if len(b.rf.RawBindings) > 0 {
-		b.rf.RawBindings[0] = b.trigger.ToBinding()
-	}
+	return rf
 }
 
 // --- Registration ---
@@ -501,11 +186,11 @@ type RegisteredFunction struct {
 
 // RegisterFunction registers a function with an explicit name and a trigger binding.
 // This is exported for use by external trigger modules (e.g., triggers/blob).
-func (app *App) RegisterFunction(name string, f any, b bindings.Bind) *RegisteredFunction {
-	return app.registerFunction(name, f, b)
+func (app *App) RegisterFunction(name string, f any, b bindings.Bind, opts ...Option) *RegisteredFunction {
+	return app.registerFunction(name, f, b, opts...)
 }
 
-func (app *App) registerFunction(name string, f any, b bindings.Bind) *RegisteredFunction {
+func (app *App) registerFunction(name string, f any, b bindings.Bind, opts ...Option) *RegisteredFunction {
 	triggerBinding := b.ToBinding()
 	rawBindings := []bindings.Binding{triggerBinding}
 
@@ -536,19 +221,22 @@ func (app *App) registerFunction(name string, f any, b bindings.Bind) *Registere
 		TriggerType: string(b.GetBindingType()),
 	}
 
+	// Apply all options before storing
+	for _, opt := range opts {
+		opt(rf)
+	}
+
 	funcId, err := HashFunctionID(*rf)
 	if err != nil {
 		panic(err)
 	}
 
 	rf.FuncId = funcId
-	app.registeredFunctions.Store(funcId, rf)
-	return rf
-}
-
-// WithRetry adds a retry policy to a registered function.
-func (rf *RegisteredFunction) WithRetry(retry *RetryOptions) *RegisteredFunction {
-	rf.Retry = retry
+	if existing, loaded := app.registeredFunctions.LoadOrStore(funcId, rf); loaded {
+		existingFunc := existing.(*RegisteredFunction)
+		panic(fmt.Sprintf("duplicate function registration: %q (trigger type %q) conflicts with existing function %q",
+			rf.FuncName, rf.TriggerType, existingFunc.FuncName))
+	}
 	return rf
 }
 

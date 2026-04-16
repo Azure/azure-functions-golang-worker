@@ -30,5 +30,3 @@ func (e *EventGridTrigger) ToBinding() Binding {
 		Direction: "in",
 	}
 }
-
-

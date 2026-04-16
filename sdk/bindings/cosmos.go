@@ -48,4 +48,3 @@ func (c *CosmosDBTrigger) ToBinding() Binding {
 		},
 	}
 }
-

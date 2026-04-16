@@ -58,7 +58,13 @@ func ensureCosmosContainers(t *testing.T) {
 		t.Fatalf("failed to create Items container: %v", err)
 	}
 
-	// Create leases container
+	// Delete stale leases so the trigger re-reads the change feed from scratch
+	leaseContainer, err := db.NewContainer("leases")
+	if err == nil {
+		_, _ = leaseContainer.Delete(ctx, nil)
+	}
+
+	// Re-create leases container
 	_, err = db.CreateContainer(ctx, azcosmos.ContainerProperties{
 		ID: "leases",
 		PartitionKeyDefinition: azcosmos.PartitionKeyDefinition{

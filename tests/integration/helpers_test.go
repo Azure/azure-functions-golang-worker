@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 )
 
 // repoRoot returns the absolute path to the repository root.
@@ -43,10 +46,36 @@ func requireEmulator(t *testing.T, name, addr string) {
 	conn.Close()
 }
 
-func requireAzurite(t *testing.T)    { t.Helper(); requireEmulator(t, "azurite", "127.0.0.1:10000") }
-func requireCosmosDB(t *testing.T)   { t.Helper(); requireEmulator(t, "cosmosdb-emulator", "127.0.0.1:8081") }
-func requireServiceBus(t *testing.T) { t.Helper(); requireEmulator(t, "servicebus-emulator", "127.0.0.1:5672") }
-func requireEventHub(t *testing.T)   { t.Helper(); requireEmulator(t, "eventhub-emulator", "127.0.0.2:5672") }
+func requireAzurite(t *testing.T) { t.Helper(); requireEmulator(t, "azurite", "127.0.0.1:10000") }
+func requireCosmosDB(t *testing.T) {
+	t.Helper()
+	requireEmulator(t, "cosmosdb-emulator", "127.0.0.1:8081")
+}
+func requireServiceBus(t *testing.T) {
+	t.Helper()
+	requireEmulator(t, "servicebus-emulator", "127.0.0.1:5672")
+}
+func requireEventHub(t *testing.T) {
+	t.Helper()
+	requireEmulator(t, "eventhub-emulator", "127.0.0.2:5672")
+}
+
+// cleanAzuriteCheckpoints deletes stale checkpoint and receipt containers from
+// Azurite. The Azure Functions host stores trigger state (blob receipts,
+// Event Hub partition checkpoints) in well-known containers. If these persist
+// between test runs, triggers may skip events they consider already-processed.
+func cleanAzuriteCheckpoints(t *testing.T) {
+	t.Helper()
+	client, err := azblob.NewClientFromConnectionString(azuriteConnStr, nil)
+	if err != nil {
+		t.Logf("skipping azurite checkpoint cleanup: %v", err)
+		return
+	}
+	ctx := context.Background()
+	for _, name := range []string{"azure-webjobs-hosts", "azure-webjobs-eventhub"} {
+		_, _ = client.DeleteContainer(ctx, name, nil)
+	}
+}
 
 // FuncHostProcess manages a func.exe process for a sample directory.
 type FuncHostProcess struct {
@@ -63,6 +92,8 @@ type FuncHostProcess struct {
 // It waits for the worker to initialize before returning.
 func StartFuncHost(t *testing.T, sampleName string, port int, env map[string]string, initTimeout time.Duration) *FuncHostProcess {
 	t.Helper()
+
+	cleanAzuriteCheckpoints(t)
 
 	sampleDir := filepath.Join(samplesDir(), sampleName)
 	if _, err := os.Stat(sampleDir); os.IsNotExist(err) {
@@ -136,10 +167,18 @@ func StartFuncHost(t *testing.T, sampleName string, port int, env map[string]str
 	return proc
 }
 
-// Stop kills the func host process.
+// Stop kills the func host process and its entire process tree.
 func (p *FuncHostProcess) Stop() {
 	if p.cmd != nil && p.cmd.Process != nil {
-		p.cmd.Process.Kill()
+		if runtime.GOOS == "windows" {
+			// On Windows, Process.Kill() only kills the parent process.
+			// Child workers (app.exe) survive and hold the port.
+			// Use taskkill /T to kill the full process tree.
+			exec.Command("taskkill", "/F", "/T", "/PID",
+				fmt.Sprintf("%d", p.cmd.Process.Pid)).Run()
+		} else {
+			p.cmd.Process.Kill()
+		}
 		p.cmd.Wait()
 	}
 	if p.logFH != nil {

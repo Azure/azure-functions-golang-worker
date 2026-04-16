@@ -23,10 +23,11 @@ func CosmosDBTriggerHandler(ctx context.Context, docs []bindings.CosmosDocument)
 
 func main() {
 	app := sdk.FunctionApp()
-	app.CosmosDB("docs", CosmosDBTriggerHandler).
-		Database("ToDoList").
-		Container("Items").
-		Connection("CosmosDBConnection")
+	app.CosmosDB("docs", CosmosDBTriggerHandler,
+		sdk.WithDatabase("ToDoList"),
+		sdk.WithContainer("Items"),
+		sdk.WithConnection("CosmosDBConnection"),
+	)
 
 	worker.Start(app)
 }
