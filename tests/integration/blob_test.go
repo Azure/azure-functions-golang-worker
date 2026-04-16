@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +49,12 @@ func TestBlobTriggerFires(t *testing.T) {
 	// Blob trigger uses polling — can take up to 60 seconds
 	proc.AssertLogContains("Blob Trigger Executed for:", 90*time.Second)
 	proc.AssertLogContains("Executing 'Functions.blobTrigger'", 5*time.Second)
+
+	// Verify the ClientFactory created a real *blob.Client with a valid endpoint
+	log := proc.ReadLog()
+	if !strings.Contains(log, "Blob Trigger Executed for: http") {
+		t.Fatal("Expected blob client URL to start with 'http', indicating ClientFactory created a real client")
+	}
 }
 
 func isContainerAlreadyExists(err error) bool {
