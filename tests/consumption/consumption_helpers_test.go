@@ -55,6 +55,18 @@ func requireDocker(t testing.TB) {
 // buildAndStartFlex builds a Docker image from the given Dockerfile name and
 // starts a flex consumption container in placeholder mode.
 func buildAndStartFlex(t testing.TB, dockerfileName, imageName string) *flexContainer {
+	return buildAndStartFlexWithOpts(t, dockerfileName, imageName, true, nil)
+}
+
+// buildAndStartFlexSpecialized builds and starts a container that is already
+// past specialization (WEBSITE_PLACEHOLDER_MODE=0). This matches the production
+// scenario where the host restarts after a previous specialization.
+func buildAndStartFlexSpecialized(t testing.TB, dockerfileName, imageName string, extraEnv map[string]string) *flexContainer {
+	return buildAndStartFlexWithOpts(t, dockerfileName, imageName, false, extraEnv)
+}
+
+// buildAndStartFlexWithOpts is the shared implementation for starting containers.
+func buildAndStartFlexWithOpts(t testing.TB, dockerfileName, imageName string, placeholderMode bool, extraEnv map[string]string) *flexContainer {
 	t.Helper()
 
 	dockerfile := filepath.Join(repoRoot(), "tests", "consumption", dockerfileName)
@@ -73,12 +85,19 @@ func buildAndStartFlex(t testing.TB, dockerfileName, imageName string) *flexCont
 		"--cap-add", "SYS_ADMIN",
 		"--device", "/dev/fuse",
 		"-e", fmt.Sprintf("CONTAINER_ENCRYPTION_KEY=%s", dummyContKey),
-		"-e", "WEBSITE_PLACEHOLDER_MODE=1",
 		"-e", fmt.Sprintf("WEBSITE_SITE_NAME=%s", id),
 		"-e", fmt.Sprintf("WEBSITE_POD_NAME=%s", id),
 		"-e", "WEBSITE_SKU=FlexConsumption",
-		imageName,
 	}
+	if placeholderMode {
+		args = append(args, "-e", "WEBSITE_PLACEHOLDER_MODE=1")
+	} else {
+		args = append(args, "-e", "WEBSITE_PLACEHOLDER_MODE=0")
+	}
+	for k, v := range extraEnv {
+		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
+	}
+	args = append(args, imageName)
 
 	out, err = exec.Command("docker", args...).CombinedOutput()
 	if err != nil {
@@ -139,6 +158,23 @@ func (fc *flexContainer) killWorkerProcess() {
 	// death and exits, or killing the proxy directly kills both.
 	// On restart, the proxy finds /home/site/wwwroot/app and execs into it.
 	exec.Command("docker", "exec", fc.id, "pkill", "-9", "-f", "workers/native/proxy").Run()
+}
+
+// restartHost calls POST /admin/host/restart to trigger a script host rebuild.
+// This causes the host to create new worker channels, which in turn starts
+// a new proxy process that can pick up a newly deployed app binary.
+func (fc *flexContainer) restartHost() {
+	fc.t.Helper()
+	req, _ := http.NewRequest("POST", fc.url()+"/admin/host/restart", nil)
+	fc.addAuthHeaders(req)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fc.t.Logf("restart request failed (may be expected if host is rebuilding): %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	fc.t.Logf("restart returned %d", resp.StatusCode)
 }
 
 // deployApp extracts a zip and copies its contents into /home/site/wwwroot/.
@@ -208,10 +244,16 @@ func (fc *flexContainer) specialize(env map[string]string) {
 
 // sendRequest sends an HTTP request with auth headers, retrying until 200.
 func (fc *flexContainer) sendRequest(method, path string) (int, []byte) {
+	return fc.sendRequestWithTimeout(method, path, 60*time.Second)
+}
+
+// sendRequestWithTimeout sends an HTTP request with auth headers, retrying
+// until 200 or the given timeout expires.
+func (fc *flexContainer) sendRequestWithTimeout(method, path string, timeout time.Duration) (int, []byte) {
 	fc.t.Helper()
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequest(method, fc.url()+path, nil)
 		fc.addAuthHeaders(req)
@@ -227,7 +269,7 @@ func (fc *flexContainer) sendRequest(method, path string) (int, []byte) {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	fc.t.Fatalf("request %s %s did not return 200 within timeout\nlogs:\n%s", method, path, fc.logs())
+	fc.t.Fatalf("request %s %s did not return 200 within %v\nlogs:\n%s", method, path, timeout, fc.logs())
 	return 0, nil
 }
 

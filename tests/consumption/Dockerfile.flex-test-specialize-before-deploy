@@ -1,0 +1,25 @@
+# Tests the production flow where the proxy starts post-specialization
+# without an app binary deployed.
+# Uses the MCR native1.0 image as base but replaces the proxy with a local build
+# so we can test proxy changes against the real host image.
+FROM golang:1.24 AS proxy-builder
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY sdk/ sdk/
+COPY worker/ worker/
+COPY proxy/ proxy/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /proxy ./proxy/
+
+FROM mcr.microsoft.com/azure-functions/noble/flexconsumption:4.1049.100-1-native1.0 AS runtime
+
+# Replace the released proxy with the locally-built one
+COPY --from=proxy-builder /proxy /azure-functions-host/workers/native/proxy
+RUN chmod +x /azure-functions-host/workers/native/proxy
+
+ENV AzureFunctionsJobHost__Logging__Console__IsEnabled=true
+
+# Install unzip for runtime app deployment
+RUN apt-get update && apt-get install -y -qq unzip
+
+# No app pre-baked — the test reproduces the case where the container is
+# already specialized but no app binary has been deployed yet.

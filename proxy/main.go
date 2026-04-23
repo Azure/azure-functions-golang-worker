@@ -79,12 +79,14 @@ func main() {
 		log.Fatalf("exec failed: %v", err)
 	}
 
-	// The proxy only serves a purpose in flex consumption placeholder mode.
-	// If the app binary exists, the exec bypass above handles it.
-	// If we reach here without placeholder mode, it's a misconfiguration.
+	// If no app binary and not in placeholder mode, the container was
+	// specialized before the user deployed code (e.g. newly created app).
+	// Run as a lightweight no-op worker: respond to host messages with
+	// empty results so the host stays healthy until pods are recycled
+	// with deployed content.
 	if os.Getenv("WEBSITE_PLACEHOLDER_MODE") != "1" {
-		log.Fatalf("Proxy requires WEBSITE_PLACEHOLDER_MODE=1. "+
-			"App binary not found at %s and not in placeholder mode.", appPath)
+		log.Printf("No app binary at %s and not in placeholder mode. "+
+			"Running as no-op worker until pod is recycled with deployed content.", appPath)
 	}
 
 	// 1. Parse Args (same as Worker)
@@ -315,6 +317,29 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 
 	// 2. Determine App Path
 	workerPath := appBinaryPath(dir)
+
+	// If the app binary doesn't exist yet, the container was specialized
+	// before the user deployed code (e.g. newly created function app).
+	// Respond to the FERR with success and stay alive as a no-op worker.
+	// The platform will recycle pods with deployed content later.
+	if _, err := os.Stat(workerPath); err != nil {
+		log.Printf("App binary not found at %s during specialization. "+
+			"Responding with success and running as no-op worker.", workerPath)
+		p.sendToHost(&pb.StreamingMessage{
+			RequestId: p.savedReloadRequestId,
+			Content: &pb.StreamingMessage_FunctionEnvironmentReloadResponse{
+				FunctionEnvironmentReloadResponse: &pb.FunctionEnvironmentReloadResponse{
+					Result: &pb.StatusResult{Status: pb.StatusResult_Success},
+				},
+			},
+		})
+		// Clear isSpecializing so subsequent messages (FunctionsMetadataRequest,
+		// heartbeats, etc.) are handled by the placeholder mode switch.
+		p.mutex.Lock()
+		p.isSpecializing = false
+		p.mutex.Unlock()
+		return
+	}
 
 	// 3. Construct Args
 	// Point the child to the proxy's local gRPC server, not the host.
