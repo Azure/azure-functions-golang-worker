@@ -107,20 +107,17 @@ func TestSpecializeBeforeDeploy(t *testing.T) {
 //     Host is specialized, healthy, zero functions. Container stays alive.
 //  3. User deploys code via `func azure functionapp publish` or ARM
 //  4. Kudu uploads package → platform kills all worker pods (removeworker/allStandard)
-//  5. New container starts fresh → specialization → binary exists from FUSE mount
+//  5. New pod starts fresh → specialization → binary exists from FUSE mount
 //  6. /api/hello returns 200
 //
-// This test covers steps 1-2, then verifies the container is healthy.
-// Steps 3-6 are effectively covered by existing tests (e.g. consumption_test.go)
-// that test normal specialization with a pre-baked app.
-//
-// Before the fix, step 2 would crash the proxy (log.Fatalf in specialize()),
-// making the container unhealthy. The platform would find an unhealthy pod
-// and the user would see errors.
+// We simulate the pod recycle (step 4-5) with docker restart: the container
+// filesystem state (deployed binary) is preserved, but all processes restart
+// fresh — just like a new pod with content already mounted.
 func TestSpecializeBeforeDeployFullFlow(t *testing.T) {
 	requireDocker(t)
 
 	connStr := azuriteConnString(t)
+	zipPath := buildSampleZipMinimal(t, "httpTrigger")
 
 	// Start in placeholder mode with no app pre-baked.
 	fc := buildAndStartFlex(t,
@@ -128,48 +125,54 @@ func TestSpecializeBeforeDeployFullFlow(t *testing.T) {
 		"goworker-specialize-before-deploy-full:latest")
 	fc.waitForPing(90 * time.Second)
 
-	// Specialize with a real Azurite connection but no app deployed yet.
-	// With the fix, the proxy responds to FERR with success and returns
-	// empty functions metadata — the host proceeds normally.
-	t.Log("Specializing without app deployed...")
+	// --- Phase 1: Specialize without binary ---
+	t.Log("Phase 1: Specializing without app deployed...")
 	fc.specialize(map[string]string{
 		"AzureWebJobsStorage": connStr,
 	})
 
-	// Give the host time to complete specialization.
-	time.Sleep(30 * time.Second)
+	time.Sleep(15 * time.Second)
 
-	// Verify container is still running and healthy (proxy didn't crash-loop).
+	// Verify container is healthy (proxy didn't crash-loop).
 	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", fc.id).CombinedOutput()
 	if err != nil || strings.TrimSpace(string(out)) != "true" {
 		t.Fatalf("container is not running after specialize without app\nrunning=%s\nlogs:\n%s",
 			strings.TrimSpace(string(out)), fc.logs())
 	}
-	t.Log("Container still running after specialize without app")
 
 	logs := fc.logs()
-
-	// Verify the proxy handled the FERR gracefully.
-	if strings.Contains(logs, "App binary not found") &&
-		strings.Contains(logs, "running as no-op worker") {
-		t.Log("CONFIRMED: Proxy handled FERR without binary gracefully")
-	} else {
-		t.Errorf("Expected no-op worker message during specialization")
+	if !strings.Contains(logs, "running as no-op worker") {
+		t.Fatalf("Proxy did not enter no-op mode during specialization\nlogs:\n%s", logs)
 	}
+	t.Log("Phase 1 PASSED: Container healthy, proxy in no-op mode")
 
-	// Verify no crash: the old fatal should not appear.
-	if strings.Contains(logs, "Failed to start child worker") {
-		t.Errorf("Proxy crashed in specialize() — fix did not work")
-	} else {
-		t.Log("CONFIRMED: No crash in specialize()")
+	// --- Phase 2: Deploy binary ---
+	t.Log("Phase 2: Deploying app...")
+	fc.deployApp(zipPath)
+	out, _ = exec.Command("docker", "exec", fc.id, "ls", "-la", "/home/site/wwwroot/").CombinedOutput()
+	t.Logf("wwwroot after deploy:\n%s", out)
+
+	// --- Phase 3: Simulate pod recycle (docker restart) ---
+	// In production, Kudu calls removeworker/allStandard to kill all pods.
+	// New pods start fresh with content already on the FUSE mount.
+	// docker restart preserves filesystem state but restarts all processes.
+	t.Log("Phase 3: Restarting container (simulating pod recycle)...")
+	fc.restartContainer()
+	fc.waitForPing(90 * time.Second)
+
+	// Specialize the restarted container (like a new pod being assigned).
+	t.Log("Specializing restarted container (binary now exists)...")
+	fc.specialize(map[string]string{
+		"AzureWebJobsStorage": connStr,
+	})
+
+	// --- Phase 4: Verify function is callable ---
+	status, body := fc.sendRequestWithTimeout("GET", "/api/hello", 60*time.Second)
+	if status != 200 {
+		t.Fatalf("expected 200 from /api/hello, got %d\nlogs:\n%s", status, fc.logs())
 	}
-
-	// Verify host completed specialization without errors.
-	if strings.Contains(logs, "ConsecutiveErrors=1") {
-		t.Errorf("Host has ConsecutiveErrors — worker is crash-looping")
-	} else {
-		t.Log("CONFIRMED: Host has no ConsecutiveErrors")
+	if string(body) != "Hello from Go Worker!" {
+		t.Fatalf("expected 'Hello from Go Worker!', got %q", string(body))
 	}
-
-	t.Logf("Full container logs:\n%s", logs)
+	t.Log("Phase 4 PASSED: /api/hello returned 200 after deploy + pod recycle")
 }

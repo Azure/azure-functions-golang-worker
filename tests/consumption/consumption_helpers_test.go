@@ -177,6 +177,25 @@ func (fc *flexContainer) restartHost() {
 	fc.t.Logf("restart returned %d", resp.StatusCode)
 }
 
+// restartContainer does a docker restart, simulating a pod recycle.
+// The container filesystem state (deployed binaries) is preserved, but
+// all processes restart fresh. The port mapping is preserved.
+func (fc *flexContainer) restartContainer() {
+	fc.t.Helper()
+	out, err := exec.Command("docker", "restart", fc.id).CombinedOutput()
+	if err != nil {
+		fc.t.Fatalf("docker restart failed: %v\n%s", err, out)
+	}
+	// Re-read the port in case it changed (shouldn't with docker restart, but safe)
+	time.Sleep(3 * time.Second)
+	portOut, err := exec.Command("docker", "port", fc.id).CombinedOutput()
+	if err != nil {
+		fc.t.Fatalf("failed to get port after restart: %v\n%s", err, portOut)
+	}
+	parts := strings.Split(strings.TrimSpace(string(portOut)), ":")
+	fc.port = parts[len(parts)-1]
+}
+
 // deployApp extracts a zip and copies its contents into /home/site/wwwroot/.
 func (fc *flexContainer) deployApp(zipPath string) {
 	fc.t.Helper()
