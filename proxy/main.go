@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/azure/azure-functions-golang-worker/worker"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
@@ -363,26 +365,40 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 		cmd.Dir, _ = os.Getwd()
 	}
 
-	// Forward stdout/stderr for debugging
+	// Forward child stdout to proxy stdout so the host captures it.
+	// Capture child stderr in a buffer so we can log it explicitly
+	// before exiting if the child crashes. Without this, stderr output
+	// from a Go panic is lost because the proxy calls os.Exit() before
+	// the host finishes reading the stderr pipe.
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
 	log.Printf("Starting Child Worker: %s %v in %s", workerPath, args, cmd.Dir)
 	if err := cmd.Start(); err != nil {
 		log.Fatalf("Failed to start child worker: %v", err)
 	}
 
-	// Monitor child process: if the child dies, exit the proxy with the
-	// same exit code so the host detects it immediately via Process.Exited
+	// Monitor child process: if the child dies, log any captured stderr
+	// then exit with the same code so the host detects it via Process.Exited
 	// and restarts us (at which point the exec bypass kicks in).
 	go func() {
 		err := cmd.Wait()
 		if err != nil {
+			// Log captured stderr so it appears in FunctionAppLogs via the
+			// host's OnOutputDataReceived handler. This makes Go panic
+			// stack traces and error messages visible in App Insights.
+			if captured := stderrBuf.String(); len(captured) > 0 {
+				log.Printf("Child worker stderr output:\n%s", captured)
+			}
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				log.Printf("Child process exited with code %d, propagating", exitErr.ExitCode())
+				// Give the host a moment to read our log output before we exit.
+				time.Sleep(100 * time.Millisecond)
 				os.Exit(exitErr.ExitCode())
 			}
 			log.Printf("Child process failed: %v, exiting", err)
+			time.Sleep(100 * time.Millisecond)
 			os.Exit(1)
 		}
 		log.Println("Child process exited cleanly, exiting proxy")
