@@ -176,3 +176,66 @@ func TestSpecializeBeforeDeployFullFlow(t *testing.T) {
 	}
 	t.Log("Phase 4 PASSED: /api/hello returned 200 after deploy + pod recycle")
 }
+
+// TestSpecializeWithNonExecutableBinary verifies that the proxy catches a
+// missing execute permission on the app binary and reports a clear error
+// instead of a bare "exited with code 1" in App Insights.
+//
+// This covers the case where a user deploys a binary built on Windows or
+// uploads a zip that doesn't preserve Unix permissions.
+func TestSpecializeWithNonExecutableBinary(t *testing.T) {
+	requireDocker(t)
+
+	connStr := azuriteConnString(t)
+	zipPath := buildSampleZipMinimal(t, "httpTrigger")
+
+	// Start in placeholder mode with no app pre-baked.
+	fc := buildAndStartFlex(t,
+		"Dockerfile.flex-test-specialize-before-deploy",
+		"goworker-non-executable-test:latest")
+	fc.waitForPing(90 * time.Second)
+
+	// Deploy the app but WITHOUT execute permissions.
+	// Use deployApp (which does chmod +x), then remove the execute bit.
+	fc.deployApp(zipPath)
+	out, err := exec.Command("docker", "exec", fc.id, "chmod", "-x", "/home/site/wwwroot/app").CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to remove execute permission: %v\n%s", err, out)
+	}
+	out, _ = exec.Command("docker", "exec", fc.id, "ls", "-la", "/home/site/wwwroot/app").CombinedOutput()
+	t.Logf("Binary permissions after chmod -x: %s", strings.TrimSpace(string(out)))
+
+	// Specialize — the proxy should detect the non-executable binary and
+	// report a clear error via FERR response instead of crashing.
+	t.Log("Specializing with non-executable binary...")
+	fc.specialize(map[string]string{
+		"AzureWebJobsStorage": connStr,
+	})
+
+	// Wait for the host to process the specialization.
+	time.Sleep(15 * time.Second)
+
+	logs := fc.logs()
+
+	// Verify the proxy caught the permission issue.
+	if strings.Contains(logs, "not executable") && strings.Contains(logs, "chmod +x") {
+		t.Log("CONFIRMED: Proxy detected non-executable binary and reported clear error")
+	} else {
+		t.Errorf("Expected 'not executable' and 'chmod +x' in logs but not found")
+	}
+
+	// Verify the proxy did NOT crash with a bare error.
+	if strings.Contains(logs, "Failed to start child worker") {
+		t.Errorf("Proxy crashed instead of reporting permission error")
+	} else {
+		t.Log("CONFIRMED: No crash — error reported through FERR response")
+	}
+
+	// Container should still be running (proxy stayed alive).
+	out, err = exec.Command("docker", "inspect", "-f", "{{.State.Running}}", fc.id).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "true" {
+		t.Fatalf("container is not running\nrunning=%s\nlogs:\n%s",
+			strings.TrimSpace(string(out)), logs)
+	}
+	t.Log("CONFIRMED: Container still running after permission error")
+}

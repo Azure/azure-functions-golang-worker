@@ -74,7 +74,12 @@ func main() {
 	// (since defaultExecutablePath points here). Instead of running as a proxy,
 	// we replace ourselves with the real app. Zero overhead.
 	appPath := appBinaryPath(defaultAppDir)
-	if _, err := os.Stat(appPath); err == nil {
+	if info, err := os.Stat(appPath); err == nil {
+		// Check executable permission before attempting exec.
+		if info.Mode()&0111 == 0 {
+			log.Fatalf("App binary at %s is not executable (mode %s). "+
+				"Ensure the binary has execute permissions (chmod +x).", appPath, info.Mode())
+		}
 		log.Printf("Real app found at %s, exec into it", appPath)
 		args := append([]string{appPath}, os.Args[1:]...)
 		err := syscall.Exec(appPath, args, os.Environ())
@@ -324,7 +329,7 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 	// before the user deployed code (e.g. newly created function app).
 	// Respond to the FERR with success and stay alive as a no-op worker.
 	// The platform will recycle pods with deployed content later.
-	if _, err := os.Stat(workerPath); err != nil {
+	if info, err := os.Stat(workerPath); err != nil {
 		log.Printf("App binary not found at %s during specialization. "+
 			"Responding with success and running as no-op worker.", workerPath)
 		p.sendToHost(&pb.StreamingMessage{
@@ -337,6 +342,25 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 		})
 		// Clear isSpecializing so subsequent messages (FunctionsMetadataRequest,
 		// heartbeats, etc.) are handled by the placeholder mode switch.
+		p.mutex.Lock()
+		p.isSpecializing = false
+		p.mutex.Unlock()
+		return
+	} else if info.Mode()&0111 == 0 {
+		errMsg := fmt.Sprintf("App binary at %s is not executable (mode %s). "+
+			"Ensure the binary has execute permissions (chmod +x).", workerPath, info.Mode())
+		log.Print(errMsg)
+		p.sendToHost(&pb.StreamingMessage{
+			RequestId: p.savedReloadRequestId,
+			Content: &pb.StreamingMessage_FunctionEnvironmentReloadResponse{
+				FunctionEnvironmentReloadResponse: &pb.FunctionEnvironmentReloadResponse{
+					Result: &pb.StatusResult{
+						Status:    pb.StatusResult_Failure,
+						Exception: &pb.RpcException{Message: errMsg},
+					},
+				},
+			},
+		})
 		p.mutex.Lock()
 		p.isSpecializing = false
 		p.mutex.Unlock()
