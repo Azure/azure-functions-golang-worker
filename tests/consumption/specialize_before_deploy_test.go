@@ -51,7 +51,7 @@ func TestSpecializeBeforeDeploy(t *testing.T) {
 		"Dockerfile.flex-test-specialize-before-deploy",
 		"goworker-specialize-before-deploy:latest",
 		map[string]string{
-			"AzureWebJobsStorage":        connStr,
+			"AzureWebJobsStorage":         connStr,
 			"FUNCTIONS_EXTENSION_VERSION": "~4",
 			"FUNCTIONS_WORKER_RUNTIME":    "native",
 		},

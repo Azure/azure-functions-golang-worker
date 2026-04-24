@@ -42,6 +42,7 @@ type Proxy struct {
 	childStream    pb.FunctionRpc_EventStreamServer
 	childConnected chan struct{}
 	childInitDone  chan struct{}
+	noChildMode    chan struct{} // closed when specialize completes without starting a child
 
 	config   *worker.WorkerStartupConfig
 	server   *grpc.Server
@@ -106,6 +107,7 @@ func main() {
 		config:         config,
 		childConnected: make(chan struct{}),
 		childInitDone:  make(chan struct{}),
+		noChildMode:    make(chan struct{}),
 	}
 
 	// 2. Connect to Host
@@ -226,11 +228,17 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 	// before any host messages (like FunctionsMetadataRequest) reach it.
 	if specializing {
 		log.Printf("Specializing - waiting for child init before forwarding: %T", msg.Content)
-		<-p.childInitDone
-		if err := p.childStream.Send(msg); err != nil {
-			log.Printf("Error forwarding to child during specialization: %v", err)
+		select {
+		case <-p.childInitDone:
+			// Child started and initialized — forward to child
+			if err := p.childStream.Send(msg); err != nil {
+				log.Printf("Error forwarding to child during specialization: %v", err)
+			}
+			return
+		case <-p.noChildMode:
+			// No binary or not executable — fall through to placeholder switch
+			log.Printf("No child started during specialization, handling as placeholder: %T", msg.Content)
 		}
-		return
 	}
 
 	// Placeholder Mode Logic
@@ -340,8 +348,7 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 				},
 			},
 		})
-		// Clear isSpecializing so subsequent messages (FunctionsMetadataRequest,
-		// heartbeats, etc.) are handled by the placeholder mode switch.
+		close(p.noChildMode)
 		p.mutex.Lock()
 		p.isSpecializing = false
 		p.mutex.Unlock()
@@ -361,6 +368,7 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 				},
 			},
 		})
+		close(p.noChildMode)
 		p.mutex.Lock()
 		p.isSpecializing = false
 		p.mutex.Unlock()
