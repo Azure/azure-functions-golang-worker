@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/azure/azure-functions-golang-worker/worker"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
@@ -40,6 +42,7 @@ type Proxy struct {
 	childStream    pb.FunctionRpc_EventStreamServer
 	childConnected chan struct{}
 	childInitDone  chan struct{}
+	noChildMode    chan struct{} // closed when specialize completes without starting a child
 
 	config   *worker.WorkerStartupConfig
 	server   *grpc.Server
@@ -72,19 +75,26 @@ func main() {
 	// (since defaultExecutablePath points here). Instead of running as a proxy,
 	// we replace ourselves with the real app. Zero overhead.
 	appPath := appBinaryPath(defaultAppDir)
-	if _, err := os.Stat(appPath); err == nil {
+	if info, err := os.Stat(appPath); err == nil {
+		// Check executable permission before attempting exec.
+		if info.Mode()&0111 == 0 {
+			log.Fatalf("App binary at %s is not executable (mode %s). "+
+				"Ensure the binary has execute permissions (chmod +x).", appPath, info.Mode())
+		}
 		log.Printf("Real app found at %s, exec into it", appPath)
 		args := append([]string{appPath}, os.Args[1:]...)
 		err := syscall.Exec(appPath, args, os.Environ())
 		log.Fatalf("exec failed: %v", err)
 	}
 
-	// The proxy only serves a purpose in flex consumption placeholder mode.
-	// If the app binary exists, the exec bypass above handles it.
-	// If we reach here without placeholder mode, it's a misconfiguration.
+	// If no app binary and not in placeholder mode, the container was
+	// specialized before the user deployed code (e.g. newly created app).
+	// Run as a lightweight no-op worker: respond to host messages with
+	// empty results so the host stays healthy until pods are recycled
+	// with deployed content.
 	if os.Getenv("WEBSITE_PLACEHOLDER_MODE") != "1" {
-		log.Fatalf("Proxy requires WEBSITE_PLACEHOLDER_MODE=1. "+
-			"App binary not found at %s and not in placeholder mode.", appPath)
+		log.Printf("No app binary at %s and not in placeholder mode. "+
+			"Running as no-op worker until pod is recycled with deployed content.", appPath)
 	}
 
 	// 1. Parse Args (same as Worker)
@@ -97,6 +107,7 @@ func main() {
 		config:         config,
 		childConnected: make(chan struct{}),
 		childInitDone:  make(chan struct{}),
+		noChildMode:    make(chan struct{}),
 	}
 
 	// 2. Connect to Host
@@ -217,11 +228,17 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 	// before any host messages (like FunctionsMetadataRequest) reach it.
 	if specializing {
 		log.Printf("Specializing - waiting for child init before forwarding: %T", msg.Content)
-		<-p.childInitDone
-		if err := p.childStream.Send(msg); err != nil {
-			log.Printf("Error forwarding to child during specialization: %v", err)
+		select {
+		case <-p.childInitDone:
+			// Child started and initialized — forward to child
+			if err := p.childStream.Send(msg); err != nil {
+				log.Printf("Error forwarding to child during specialization: %v", err)
+			}
+			return
+		case <-p.noChildMode:
+			// No binary or not executable — fall through to placeholder switch
+			log.Printf("No child started during specialization, handling as placeholder: %T", msg.Content)
 		}
-		return
 	}
 
 	// Placeholder Mode Logic
@@ -316,6 +333,48 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 	// 2. Determine App Path
 	workerPath := appBinaryPath(dir)
 
+	// If the app binary doesn't exist yet, the container was specialized
+	// before the user deployed code (e.g. newly created function app).
+	// Respond to the FERR with success and stay alive as a no-op worker.
+	// The platform will recycle pods with deployed content later.
+	if info, err := os.Stat(workerPath); err != nil {
+		log.Printf("App binary not found at %s during specialization. "+
+			"Responding with success and running as no-op worker.", workerPath)
+		p.sendToHost(&pb.StreamingMessage{
+			RequestId: p.savedReloadRequestId,
+			Content: &pb.StreamingMessage_FunctionEnvironmentReloadResponse{
+				FunctionEnvironmentReloadResponse: &pb.FunctionEnvironmentReloadResponse{
+					Result: &pb.StatusResult{Status: pb.StatusResult_Success},
+				},
+			},
+		})
+		close(p.noChildMode)
+		p.mutex.Lock()
+		p.isSpecializing = false
+		p.mutex.Unlock()
+		return
+	} else if info.Mode()&0111 == 0 {
+		errMsg := fmt.Sprintf("App binary at %s is not executable (mode %s). "+
+			"Ensure the binary has execute permissions (chmod +x).", workerPath, info.Mode())
+		log.Print(errMsg)
+		p.sendToHost(&pb.StreamingMessage{
+			RequestId: p.savedReloadRequestId,
+			Content: &pb.StreamingMessage_FunctionEnvironmentReloadResponse{
+				FunctionEnvironmentReloadResponse: &pb.FunctionEnvironmentReloadResponse{
+					Result: &pb.StatusResult{
+						Status:    pb.StatusResult_Failure,
+						Exception: &pb.RpcException{Message: errMsg},
+					},
+				},
+			},
+		})
+		close(p.noChildMode)
+		p.mutex.Lock()
+		p.isSpecializing = false
+		p.mutex.Unlock()
+		return
+	}
+
 	// 3. Construct Args
 	// Point the child to the proxy's local gRPC server, not the host.
 	// We reuse the host-assigned worker ID and request ID since the child
@@ -338,26 +397,40 @@ func (p *Proxy) specialize(req *pb.FunctionEnvironmentReloadRequest) {
 		cmd.Dir, _ = os.Getwd()
 	}
 
-	// Forward stdout/stderr for debugging
+	// Forward child stdout to proxy stdout so the host captures it.
+	// Capture child stderr in a buffer so we can log it explicitly
+	// before exiting if the child crashes. Without this, stderr output
+	// from a Go panic is lost because the proxy calls os.Exit() before
+	// the host finishes reading the stderr pipe.
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
 	log.Printf("Starting Child Worker: %s %v in %s", workerPath, args, cmd.Dir)
 	if err := cmd.Start(); err != nil {
 		log.Fatalf("Failed to start child worker: %v", err)
 	}
 
-	// Monitor child process: if the child dies, exit the proxy with the
-	// same exit code so the host detects it immediately via Process.Exited
+	// Monitor child process: if the child dies, log any captured stderr
+	// then exit with the same code so the host detects it via Process.Exited
 	// and restarts us (at which point the exec bypass kicks in).
 	go func() {
 		err := cmd.Wait()
 		if err != nil {
+			// Log captured stderr so it appears in FunctionAppLogs via the
+			// host's OnOutputDataReceived handler. This makes Go panic
+			// stack traces and error messages visible in App Insights.
+			if captured := stderrBuf.String(); len(captured) > 0 {
+				log.Printf("Child worker stderr output:\n%s", captured)
+			}
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				log.Printf("Child process exited with code %d, propagating", exitErr.ExitCode())
+				// Give the host a moment to read our log output before we exit.
+				time.Sleep(100 * time.Millisecond)
 				os.Exit(exitErr.ExitCode())
 			}
 			log.Printf("Child process failed: %v, exiting", err)
+			time.Sleep(100 * time.Millisecond)
 			os.Exit(1)
 		}
 		log.Println("Child process exited cleanly, exiting proxy")
