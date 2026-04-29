@@ -124,6 +124,16 @@ func WithPath(path string) Option {
 	}
 }
 
+// WithSource sets the event source for a Blob trigger.
+// Use "EventGrid" for Flex Consumption (required) or "LogsAndContainerScan" for polling.
+func WithSource(source string) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.BlobBinding != nil {
+			b.BlobBinding.Source = source
+		}
+	}
+}
+
 // --- Shared options (work across multiple trigger types) ---
 
 // WithConnection sets the connection string setting name.

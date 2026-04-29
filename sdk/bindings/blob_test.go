@@ -10,6 +10,7 @@ func TestBlobTrigger_ToBinding(t *testing.T) {
 		Name:       "blob",
 		Path:       "container/{name}",
 		Connection: "AzureWebJobsStorage",
+		Source:     "EventGrid",
 	}
 
 	binding := trigger.ToBinding()
@@ -28,6 +29,9 @@ func TestBlobTrigger_ToBinding(t *testing.T) {
 	}
 	if binding.BlobBinding.Connection != "AzureWebJobsStorage" {
 		t.Errorf("expected connection %q, got %q", "AzureWebJobsStorage", binding.BlobBinding.Connection)
+	}
+	if binding.BlobBinding.Source != "EventGrid" {
+		t.Errorf("expected source %q, got %q", "EventGrid", binding.BlobBinding.Source)
 	}
 }
 
