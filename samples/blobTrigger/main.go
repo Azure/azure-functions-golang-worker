@@ -46,6 +46,7 @@ func main() {
 	app.Blob("blobTrigger", BlobHandler,
 		sdk.WithPath("test-container/{name}"),
 		sdk.WithConnection("AzureWebJobsStorage"),
+		sdk.WithSource("EventGrid"),
 	)
 
 	worker.Start(app)
