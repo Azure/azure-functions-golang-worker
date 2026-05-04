@@ -54,23 +54,8 @@ const httpInvocationWaitTimeout = 4 * time.Minute
 // Buffered channels of size 1 mean that whichever side arrives first never
 // blocks on the send, so order of arrival is irrelevant.
 type pendingHTTPInvocation struct {
-	grpc chan *grpcInvocationSide // delivered by gRPC dispatcher
-	done chan *grpcInvocationResult // delivered by HTTP handler when finished
-}
-
-// grpcInvocationSide is what the gRPC dispatcher contributes to the
-// rendezvous: the function identity and any host-supplied trigger metadata.
-type grpcInvocationSide struct {
-	functionID  string
-	loadedFunc  *LoadedFunction
-	triggerMeta map[string]*pb.TypedData
-	inputData   []*pb.ParameterBinding
-}
-
-// grpcInvocationResult is what the HTTP side reports back so the gRPC
-// dispatcher can produce a minimal InvocationResponse.
-type grpcInvocationResult struct {
-	status *pb.StatusResult
+	grpc chan *LoadedFunction  // gRPC side delivers the function to invoke
+	done chan *pb.StatusResult // HTTP side delivers the final invocation status
 }
 
 // httpProxy is the in-process HTTP server that the host forwards trigger
@@ -123,11 +108,11 @@ func startHTTPProxy(app *sdk.App) *httpProxy {
 		url:      fmt.Sprintf("http://%s", lis.Addr().String()),
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", p.handle)
-
 	p.server = &http.Server{
-		Handler: mux,
+		// Catch-all handler — every host-forwarded request lands here
+		// regardless of the original URL path; routing happens inside the
+		// rendezvous coordinator.
+		Handler: http.HandlerFunc(p.handle),
 		// No global read/write timeouts — streaming handlers may run for a
 		// long time. The host enforces its own ActivityTimeout.
 		ReadHeaderTimeout: 30 * time.Second,
@@ -189,8 +174,8 @@ func (p *httpProxy) getOrCreatePending(invocationID string) *pendingHTTPInvocati
 		return pi
 	}
 	pi := &pendingHTTPInvocation{
-		grpc: make(chan *grpcInvocationSide, 1),
-		done: make(chan *grpcInvocationResult, 1),
+		grpc: make(chan *LoadedFunction, 1),
+		done: make(chan *pb.StatusResult, 1),
 	}
 	p.pending[invocationID] = pi
 	return pi
@@ -215,14 +200,27 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 
 	// Wait for the gRPC side to identify the function. The gRPC side fires
 	// closely in time to the HTTP forward, but ordering is not guaranteed.
-	var grpcSide *grpcInvocationSide
+	var loadedFunc *LoadedFunction
 	select {
-	case grpcSide = <-pending.grpc:
+	case loadedFunc = <-pending.grpc:
 	case <-r.Context().Done():
-		// Client disconnected before the gRPC trigger arrived.
+		// Client disconnected (or YARP timed out) before the gRPC trigger
+		// arrived. If gRPC arrives later it will block on <-pending.done
+		// until the 4-minute hard timeout, so push a Failure status now to
+		// unblock it immediately. The buffered channel absorbs the send
+		// even if no goroutine is currently receiving.
+		log.Printf("HTTP proxy: client disconnected before gRPC trigger arrived for invocation %s", invocationID)
+		pending.done <- &pb.StatusResult{
+			Status: pb.StatusResult_Failure,
+			Exception: &pb.RpcException{
+				Message: "client disconnected before invocation could start",
+				Source:  "HTTP proxy",
+			},
+		}
 		p.deletePending(invocationID)
 		return
 	case <-time.After(httpInvocationWaitTimeout):
+		log.Printf("HTTP proxy: invocation %s timed out after %v waiting for gRPC trigger", invocationID, httpInvocationWaitTimeout)
 		p.deletePending(invocationID)
 		http.Error(w, "timed out waiting for gRPC trigger", http.StatusGatewayTimeout)
 		return
@@ -252,10 +250,10 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 
-		invokeHTTPHandler(grpcSide.loadedFunc, w, r)
+		invokeHTTPHandler(loadedFunc, w, r)
 	}()
 
-	pending.done <- &grpcInvocationResult{status: status}
+	pending.done <- status
 	p.deletePending(invocationID)
 }
 
@@ -285,34 +283,37 @@ func tryWriteError(w http.ResponseWriter, msg string) {
 }
 
 // notifyGRPCArrival is called from the gRPC dispatcher when an HTTP-trigger
-// InvocationRequest is received. It hands the function metadata to the
-// HTTP handler goroutine and blocks until the handler reports completion.
+// InvocationRequest is received. It hands the loaded function to the HTTP
+// handler goroutine and blocks until the handler reports completion.
 //
 // Returns the final status to send back in the InvocationResponse.
 func (p *httpProxy) notifyGRPCArrival(req *pb.InvocationRequest, lf *LoadedFunction) (*pb.StatusResult, error) {
-	pending := p.getOrCreatePending(req.GetInvocationId())
+	invocationID := req.GetInvocationId()
+	pending := p.getOrCreatePending(invocationID)
 
-	pending.grpc <- &grpcInvocationSide{
-		functionID:  req.GetFunctionId(),
-		loadedFunc:  lf,
-		triggerMeta: req.GetTriggerMetadata(),
-		inputData:   req.GetInputData(),
-	}
+	pending.grpc <- lf
 
 	select {
-	case res := <-pending.done:
-		return res.status, nil
+	case status := <-pending.done:
+		return status, nil
 	case <-time.After(httpInvocationWaitTimeout):
-		p.deletePending(req.GetInvocationId())
-		return nil, fmt.Errorf("timed out waiting for HTTP request for invocation %s", req.GetInvocationId())
+		log.Printf("HTTP proxy: invocation %s timed out after %v waiting for HTTP request", invocationID, httpInvocationWaitTimeout)
+		p.deletePending(invocationID)
+		return nil, fmt.Errorf("timed out waiting for HTTP request for invocation %s", invocationID)
 	}
 }
 
-// shutdown gracefully stops the HTTP server. Currently called from no-one;
-// reserved for clean termination paths.
+// shutdown gracefully stops the HTTP server. Used by tests for cleanup;
+// production termination is handled by process exit.
+//
+// Passes context.Background() if ctx is nil — http.Server.Shutdown panics
+// on a nil context, and tests typically don't have a meaningful ctx to use.
 func (p *httpProxy) shutdown(ctx context.Context) error {
 	if p == nil || p.server == nil {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	return p.server.Shutdown(ctx)
 }

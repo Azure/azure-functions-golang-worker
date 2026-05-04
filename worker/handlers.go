@@ -233,7 +233,20 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	if disp.HTTPProxy != nil && isHTTPHandler(loadedFunc) && isHTTPProxiedInvocation(req) {
 		status, err := disp.HTTPProxy.notifyGRPCArrival(req, loadedFunc)
 		if err != nil {
-			return nil, err
+			// Don't return a Go error — handleBidiStream treats those as
+			// fatal. A rendezvous failure (timeout, cancelled HTTP request)
+			// is a transient per-invocation problem, not a worker-level
+			// crash. Surface it to the host as a Failure InvocationResponse
+			// so this invocation reports an error and the worker stays up
+			// to serve the next one.
+			log.Printf("HTTP proxy: rendezvous failed for invocation %s: %v", req.GetInvocationId(), err)
+			status = &pb.StatusResult{
+				Status: pb.StatusResult_Failure,
+				Exception: &pb.RpcException{
+					Message: err.Error(),
+					Source:  "HTTP proxy rendezvous",
+				},
+			}
 		}
 		return &pb.StreamingMessage{
 			RequestId: requestId,
