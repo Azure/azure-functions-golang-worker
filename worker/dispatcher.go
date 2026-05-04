@@ -12,6 +12,10 @@ type Dispatcher struct {
 	WorkerStartupConfig *WorkerStartupConfig
 	App                 *sdk.App
 	LoadedFunctions     *sync.Map
+	// HTTPProxy is the in-process HTTP server used for HTTP streaming. It is
+	// nil when the user app has no HTTP triggers, or when the loopback
+	// listener could not be opened (worker falls back to gRPC body).
+	HTTPProxy *httpProxy
 }
 
 func NewDispatcher(workerStartupConfig *WorkerStartupConfig, app *sdk.App) *Dispatcher {
@@ -28,7 +32,7 @@ func (disp *Dispatcher) processRequestMessage(reqMsg *pb.StreamingMessage) (*pb.
 	switch content := reqMsg.GetContent().(type) {
 	case *pb.StreamingMessage_WorkerInitRequest:
 		log.Println("Handling WorkerInitRequest")
-		return handleWorkerInitRequest(content.WorkerInitRequest, requestId), nil
+		return handleWorkerInitRequest(content.WorkerInitRequest, requestId, disp), nil
 	case *pb.StreamingMessage_FunctionsMetadataRequest:
 		log.Println("Handling FunctionsMetadataRequest")
 		return handleFunctionsMetadataRequest(content.FunctionsMetadataRequest, disp.App, requestId), nil
