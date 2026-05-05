@@ -21,6 +21,10 @@ type Option func(*RegisteredFunction)
 // App represents the function application and its registered functions.
 type App struct {
 	registeredFunctions *sync.Map
+	// middlewares are appended in registration order. Composed by the worker
+	// dispatcher into the per-invocation chain. See [App.Use] for ordering
+	// semantics.
+	middlewares []Middleware
 }
 
 // FunctionApp creates a new App instance.

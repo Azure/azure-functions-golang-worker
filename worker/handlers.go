@@ -259,14 +259,23 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 		}, nil
 	}
 
+	// Build the per-invocation context that user handlers and middleware will
+	// see. Stash it on context.Context — every handler that takes a
+	// context.Context can retrieve it via sdk.FromContext.
+	ic := buildInvocationContext(req, &loadedFunc.Function)
+	ctx := sdk.NewContext(context.Background(), ic)
+
 	ft := reflect.TypeOf(loadedFunc.Function.Func)
 	args := make([]reflect.Value, ft.NumIn())
 
-	// 1. Pre-allocate arguments
+	// 1. Pre-allocate arguments. context.Context arguments are seeded with
+	//    the per-invocation ctx; middleware running between this point and
+	//    the actual user-function call can swap in an enriched ctx via the
+	//    inner handler below.
 	for i := 0; i < ft.NumIn(); i++ {
 		t := ft.In(i)
 		if t.Implements(contextType) {
-			args[i] = reflect.ValueOf(context.Background())
+			args[i] = reflect.ValueOf(ctx)
 			continue
 		}
 
@@ -298,15 +307,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 			}
 		}
 
-		// Extract trigger metadata as strings
-		triggerMeta := make(map[string]string)
-		for k, v := range req.GetTriggerMetadata() {
-			if s := v.GetString_(); s != "" {
-				triggerMeta[k] = s
-			}
-		}
-
-		clientVal, err := loadedFunc.Function.ClientFactory(config, triggerMeta)
+		clientVal, err := loadedFunc.Function.ClientFactory(config, ic.TriggerMetadata)
 		if err != nil {
 			return nil, fmt.Errorf("client factory error: %v", err)
 		}
@@ -323,31 +324,42 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 		}
 	}
 
-	// 3. Invoke handler
-	fv := reflect.ValueOf(loadedFunc.Function.Func)
-	results := fv.Call(args)
+	// 3. Build the innermost Handler — this is what every Middleware
+	//    registered via App.Use ultimately wraps. It receives the (possibly
+	//    enriched) ctx from the outer chain, propagates it into the user
+	//    function's arguments, performs the reflective call, and returns
+	//    any error result. See sdk.ComposeMiddleware for ordering.
+	inner := func(ctx context.Context, _ *sdk.InvocationContext) error {
+		injectInvocationContext(ft, args, ctx)
+		fv := reflect.ValueOf(loadedFunc.Function.Func)
+		results := fv.Call(args)
+		for _, r := range results {
+			if r.Type().Implements(errorType) && !r.IsNil() {
+				return r.Interface().(error)
+			}
+		}
+		return nil
+	}
 
-	// 4. Build response
+	// 4. Compose the middleware chain around the inner handler and run it.
+	chain := sdk.ComposeMiddleware(disp.App.Middlewares(), inner)
+	invokeErr := chain(ctx, ic)
+
+	// 5. Build response status from any error returned by the chain.
 	status := &pb.StatusResult{
 		Status: pb.StatusResult_Success,
 	}
-
-	// Check for error return
-	for _, r := range results {
-		if r.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) && !r.IsNil() {
-			e := r.Interface().(error)
-			status = &pb.StatusResult{
-				Status: pb.StatusResult_Failure,
-				Exception: &pb.RpcException{
-					Message: e.Error(),
-					Source:  "User function",
-				},
-			}
-			break
+	if invokeErr != nil {
+		status = &pb.StatusResult{
+			Status: pb.StatusResult_Failure,
+			Exception: &pb.RpcException{
+				Message: invokeErr.Error(),
+				Source:  "User function",
+			},
 		}
 	}
 
-	// 5. Extract HTTP response if applicable
+	// 6. Extract HTTP response if applicable
 	var returnValue *pb.TypedData
 	for _, field := range loadedFunc.Fields {
 		if field.Direction == "out" && field.IsWriter && field.Name == "$return" {
@@ -369,6 +381,107 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 			},
 		},
 	}, nil
+}
+
+// errorType is the reflected type of the standard error interface, cached
+// for use in the reflective invocation path.
+var errorType = reflect.TypeOf((*error)(nil)).Elem()
+
+// httpRequestPtrType is the reflected type of *http.Request, cached for
+// use when injecting an enriched context.Context into HTTP handler args.
+var httpRequestPtrType = reflect.TypeOf((*http.Request)(nil))
+
+// buildInvocationContext converts a gRPC InvocationRequest plus the
+// resolved RegisteredFunction into the public sdk.InvocationContext that
+// user handlers and middleware see. Centralized so the HTTP-streaming
+// path (which receives invocations via the embedded loopback HTTP server
+// instead of the gRPC body) can construct the same value.
+//
+// HTTP-streaming integration: the streaming code in http_proxy.go must
+// build an InvocationContext via this helper, stash it on r.Context() via
+// sdk.NewContext, and run the user http.HandlerFunc inside an inner
+// Handler wrapped by sdk.ComposeMiddleware(disp.App.Middlewares(), ...).
+// This ensures middleware (notably otelfunc.Middleware) wraps both the
+// gRPC-body and HttpUri-proxied invocation paths uniformly.
+func buildInvocationContext(req *pb.InvocationRequest, fn *sdk.RegisteredFunction) *sdk.InvocationContext {
+	return &sdk.InvocationContext{
+		InvocationID:    req.GetInvocationId(),
+		FunctionID:      req.GetFunctionId(),
+		FunctionName:    fn.FuncName,
+		TriggerType:     fn.TriggerType,
+		TraceContext:    convertTraceContext(req.GetTraceContext()),
+		RetryContext:    convertRetryContext(req.GetRetryContext()),
+		TriggerMetadata: flattenTriggerMetadata(req.GetTriggerMetadata()),
+	}
+}
+
+// injectInvocationContext propagates ctx into all argument slots that need it
+// before the user function is called. This runs after middleware has had a
+// chance to enrich ctx (for example, by attaching an OpenTelemetry span via
+// otelfunc.Middleware).
+//
+// Two slot kinds receive ctx:
+//   - context.Context arguments (covers all non-HTTP triggers): the slot is
+//     overwritten with the latest ctx.
+//   - *http.Request arguments (HTTP triggers, which take http.HandlerFunc and
+//     have no separate context.Context arg): the existing request is replaced
+//     with req.WithContext(ctx) so that downstream code calling r.Context()
+//     observes the enriched context.
+func injectInvocationContext(ft reflect.Type, args []reflect.Value, ctx context.Context) {
+	for i := 0; i < ft.NumIn(); i++ {
+		t := ft.In(i)
+		switch {
+		case t.Implements(contextType):
+			args[i] = reflect.ValueOf(ctx)
+		case t == httpRequestPtrType:
+			if r, ok := args[i].Interface().(*http.Request); ok && r != nil {
+				args[i] = reflect.ValueOf(r.WithContext(ctx))
+			}
+		}
+	}
+}
+
+// flattenTriggerMetadata reduces the host's TypedData metadata map to a
+// simple string→string map for ergonomic consumption by user code and
+// middleware. Non-string values are skipped (they are rare in practice;
+// most trigger metadata fields are already strings).
+func flattenTriggerMetadata(in map[string]*pb.TypedData) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if s := v.GetString_(); s != "" {
+			out[k] = s
+		}
+	}
+	return out
+}
+
+// convertTraceContext maps the host's RpcTraceContext to the SDK's
+// public TraceContext type. A nil input produces a zero-valued result so
+// callers (and middleware) can safely read the fields without nil checks.
+func convertTraceContext(tc *pb.RpcTraceContext) sdk.TraceContext {
+	if tc == nil {
+		return sdk.TraceContext{}
+	}
+	return sdk.TraceContext{
+		TraceParent: tc.GetTraceParent(),
+		TraceState:  tc.GetTraceState(),
+		Attributes:  tc.GetAttributes(),
+	}
+}
+
+// convertRetryContext maps the host's RetryContext to the SDK's public
+// RetryContext type. A nil input produces a zero-valued result.
+func convertRetryContext(rc *pb.RetryContext) sdk.RetryContext {
+	if rc == nil {
+		return sdk.RetryContext{}
+	}
+	return sdk.RetryContext{
+		RetryCount:    rc.GetRetryCount(),
+		MaxRetryCount: rc.GetMaxRetryCount(),
+	}
 }
 
 func handleWorkerStatusRequest(requestId string, req *pb.WorkerStatusRequest) (*pb.StreamingMessage, error) {
