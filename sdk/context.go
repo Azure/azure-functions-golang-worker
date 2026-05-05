@@ -34,7 +34,7 @@ type InvocationContext struct {
 	// TraceContext carries the W3C trace context the host attached to the
 	// invocation. It is the bridge for distributed-tracing correlation
 	// between the Functions host span and any spans produced inside the Go
-	// worker (see sdk/otelfunc.Middleware for the integration point).
+	// worker (see middleware/otelfunc.Middleware for the integration point).
 	TraceContext TraceContext
 
 	// RetryContext describes the retry state of the invocation, populated

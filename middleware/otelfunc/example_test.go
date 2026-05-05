@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
-	"github.com/azure/azure-functions-golang-worker/sdk/otelfunc"
+	"github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"

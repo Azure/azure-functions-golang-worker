@@ -6,7 +6,7 @@
 //
 //	import (
 //	    "github.com/azure/azure-functions-golang-worker/sdk"
-//	    "github.com/azure/azure-functions-golang-worker/sdk/otelfunc"
+//	    "github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
 //	)
 //
 //	func main() {
@@ -52,7 +52,7 @@ import (
 
 // ScopeName is the OpenTelemetry instrumentation scope used by the Middleware
 // when obtaining a Tracer from the configured TracerProvider.
-const ScopeName = "github.com/azure/azure-functions-golang-worker/sdk/otelfunc"
+const ScopeName = "github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
 
 // Flusher is the optional contract the Middleware uses to push pending
 // telemetry to the configured exporter at the end of each invocation.
