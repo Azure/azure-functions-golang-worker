@@ -1,3 +1,29 @@
+// Package sdk provides the core function-app and middleware abstractions for
+// the Azure Functions Go worker. This file documents the middleware design
+// intent.
+//
+// # Middleware extensibility
+//
+// The Middleware shape (next Handler -> Handler) is deliberately minimal,
+// matching the patterns established by net/http, gRPC interceptors, and
+// aws-lambda-go's otellambda. It supports the full range of cross-cutting
+// concerns: distributed tracing, structured logging, authentication, retry
+// policies, panic recovery, and request/response validation.
+//
+// Middleware that needs to *replace* function execution entirely (for
+// example, a hypothetical Durable Functions runtime that performs
+// orchestration replay rather than direct invocation) is not supported by
+// a typed extension point today. Such middleware can either:
+//
+//   - Short-circuit the chain (skip next()) and reimplement reflective
+//     handler dispatch internally, or
+//   - Wait for a future framework-side feature mechanism, designed when
+//     a concrete need emerges.
+//
+// We deliberately defer adding such a mechanism (analogous to
+// IInvocationFeatures in the .NET isolated worker) until a real consumer
+// appears, to avoid committing to an API shape that may not match the
+// actual requirements.
 package sdk
 
 import "context"
@@ -26,6 +52,10 @@ type Handler func(ctx context.Context, ic *InvocationContext) error
 // returns a new Handler that may run code before/after calling next, may
 // transform ctx (for example, by attaching an OpenTelemetry span), or may
 // short-circuit by returning without calling next.
+//
+// Third-party modules can author and ship Middleware implementations against
+// this shape without any coordination with the worker; the bundled
+// middleware/otelfunc package is itself a regular consumer of this API.
 type Middleware func(next Handler) Handler
 
 // Use registers a Middleware. Middleware run in registration order: the
@@ -44,22 +74,21 @@ func (app *App) Use(mw Middleware) {
 	app.middlewares = append(app.middlewares, mw)
 }
 
-// Middlewares returns the registered middleware slice. The returned slice
-// shares storage with the App; callers must not mutate it. Used by the
-// worker dispatcher to compose the per-invocation chain.
-func (app *App) Middlewares() []Middleware {
-	return app.middlewares
-}
-
-// ComposeMiddleware wraps inner with mws in registration order: mws[0] is
-// outermost. Returns inner unchanged if mws is empty.
+// Compose wraps inner with all registered Middleware and returns the resulting
+// Handler. Middleware order matches Use's contract: the first registered
+// Middleware is outermost and runs first/last around the chain.
 //
-// Exposed for the worker dispatcher (and any equivalent integration point,
-// e.g. the HTTP-streaming proxy) to build the per-invocation chain. User
-// code does not normally call ComposeMiddleware directly.
-func ComposeMiddleware(mws []Middleware, inner Handler) Handler {
-	for i := len(mws) - 1; i >= 0; i-- {
-		inner = mws[i](inner)
+// Compose is the only sanctioned way for code outside the sdk package (notably
+// the worker dispatcher and the HTTP-streaming bridge) to obtain the
+// per-invocation chain. The raw middleware slice is intentionally not
+// exported; this keeps the registration list internal so it can evolve
+// (for example, to introduce a separate framework-middleware pool) without
+// breaking external consumers.
+//
+// Compose returns inner unchanged when no Middleware are registered.
+func (app *App) Compose(inner Handler) Handler {
+	for i := len(app.middlewares) - 1; i >= 0; i-- {
+		inner = app.middlewares[i](inner)
 	}
 	return inner
 }

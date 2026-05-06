@@ -328,7 +328,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	//    registered via App.Use ultimately wraps. It receives the (possibly
 	//    enriched) ctx from the outer chain, propagates it into the user
 	//    function's arguments, performs the reflective call, and returns
-	//    any error result. See sdk.ComposeMiddleware for ordering.
+	//    any error result. See [sdk.App.Compose] for ordering.
 	inner := func(ctx context.Context, _ *sdk.InvocationContext) error {
 		injectInvocationContext(ft, args, ctx)
 		fv := reflect.ValueOf(loadedFunc.Function.Func)
@@ -342,7 +342,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	}
 
 	// 4. Compose the middleware chain around the inner handler and run it.
-	chain := sdk.ComposeMiddleware(disp.App.Middlewares(), inner)
+	chain := disp.App.Compose(inner)
 	invokeErr := chain(ctx, ic)
 
 	// 5. Build response status from any error returned by the chain.
@@ -400,7 +400,7 @@ var httpRequestPtrType = reflect.TypeOf((*http.Request)(nil))
 // HTTP-streaming integration: the streaming code in http_proxy.go must
 // build an InvocationContext via this helper, stash it on r.Context() via
 // sdk.NewContext, and run the user http.HandlerFunc inside an inner
-// Handler wrapped by sdk.ComposeMiddleware(disp.App.Middlewares(), ...).
+// Handler wrapped by disp.App.Compose(inner).
 // This ensures middleware (notably otelfunc.Middleware) wraps both the
 // gRPC-body and HttpUri-proxied invocation paths uniformly.
 func buildInvocationContext(req *pb.InvocationRequest, fn *sdk.RegisteredFunction) *sdk.InvocationContext {
