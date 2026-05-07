@@ -134,6 +134,7 @@ message WorkerInitResponse {
   string worker_version = 1;
 
   // A map of worker supported features/capabilities
+  // These values are used internally for host-worker interactions
   map<string, string> capabilities = 2;
 
   // Status of the response
@@ -141,6 +142,10 @@ message WorkerInitResponse {
 
   // Worker metadata captured for telemetry purposes
   WorkerMetadata worker_metadata = 4;
+
+  // A map of application-level capabilities
+  // These features/capabilities are queried from admin endpoints in the host by third parties
+  map<string, string> app_capabilities = 5;
 }
 
 message WorkerMetadata {
@@ -407,6 +412,9 @@ message RpcTraceContext {
 
   // This corresponds to Activity.Current?.Tags
   map<string, string> attributes = 3;
+
+  // This is populated from OpenTelemetry.Baggage.Current
+  map<string, string> baggage = 4;
 }
 
 // Host sends retry context for a function invocation
@@ -438,11 +446,15 @@ message InvocationResponse {
   // Output binding data
   repeated ParameterBinding output_data = 2;
 
+  // Status of the invocation (success/failure/canceled)
+  StatusResult result = 3;
+
   // data returned from Function (for $return and triggers with return support)
   TypedData return_value = 4;
 
-  // Status of the invocation (success/failure/canceled)
-  StatusResult result = 3;
+  // Enables propagation of tags from worker -> host.
+  map<string, string> trace_context_attributes = 5;
+
 }
 
 message WorkerWarmupRequest {
