@@ -29,7 +29,7 @@ func TestMiddleware_StartsServerSpan(t *testing.T) {
 	mw := Middleware(WithTracerProvider(tp))
 
 	called := false
-	chain := mw(func(ctx context.Context, ic *sdk.InvocationContext) error {
+	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error {
 		called = true
 		// The user handler must observe a ctx that carries the just-started span.
 		if !trace.SpanFromContext(ctx).SpanContext().IsValid() {
@@ -86,7 +86,7 @@ func TestMiddleware_RecordsErrorOnFailure(t *testing.T) {
 	mw := Middleware(WithTracerProvider(tp))
 
 	wantErr := errors.New("boom")
-	chain := mw(func(ctx context.Context, ic *sdk.InvocationContext) error {
+	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error {
 		return wantErr
 	})
 
@@ -117,7 +117,7 @@ func TestMiddleware_ExtractsParentTraceContext(t *testing.T) {
 	// W3C trace parent: version 00, trace id 0123..., span id ab12..., flags 01.
 	const traceParent = "00-0123456789abcdef0123456789abcdef-abcdef0123456789-01"
 
-	chain := mw(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
+	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
 
 	ic := &sdk.InvocationContext{
 		InvocationID: "inv-tp",
@@ -149,7 +149,7 @@ func TestMiddleware_ForceFlushAfterEachInvocation(t *testing.T) {
 	flusher := &countingFlusher{}
 	mw := Middleware(WithTracerProvider(tp), WithFlusher(flusher))
 
-	chain := mw(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
+	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
 
 	for i := 0; i < 3; i++ {
 		if err := chain(context.Background(), &sdk.InvocationContext{InvocationID: "i", FunctionName: "F"}); err != nil {
@@ -168,7 +168,7 @@ func TestMiddleware_DefaultFlusherIsTracerProvider(t *testing.T) {
 	// consumption plans without having to read the godoc carefully.
 	tp := &spyTracerProvider{TracerProvider: mustNewTestProvider(t)}
 	mw := Middleware(WithTracerProvider(tp))
-	chain := mw(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
+	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
 
 	if err := chain(context.Background(), &sdk.InvocationContext{FunctionName: "F"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -182,7 +182,7 @@ func TestMiddleware_WithoutFlusher(t *testing.T) {
 	// WithoutFlusher must override the auto-flush default.
 	tp := &spyTracerProvider{TracerProvider: mustNewTestProvider(t)}
 	mw := Middleware(WithTracerProvider(tp), WithoutFlusher())
-	chain := mw(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
+	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
 
 	if err := chain(context.Background(), &sdk.InvocationContext{FunctionName: "F"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -198,7 +198,7 @@ func TestMiddleware_FlusherErrorDoesNotMaskUserError(t *testing.T) {
 	mw := Middleware(WithTracerProvider(tp), WithFlusher(flusher))
 
 	wantErr := errors.New("user")
-	chain := mw(func(ctx context.Context, ic *sdk.InvocationContext) error { return wantErr })
+	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error { return wantErr })
 
 	gotErr := chain(context.Background(), &sdk.InvocationContext{FunctionName: "F"})
 	if !errors.Is(gotErr, wantErr) {
@@ -214,7 +214,7 @@ func TestMiddleware_CustomSpanNameFormatter(t *testing.T) {
 			return "fn:" + ic.FunctionName
 		}),
 	)
-	chain := mw(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
+	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
 
 	if err := chain(context.Background(), &sdk.InvocationContext{FunctionName: "Hello"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -231,7 +231,7 @@ func TestMiddleware_ExtraAttributes(t *testing.T) {
 		WithTracerProvider(tp),
 		WithAttributes(attribute.String("deployment.slot", "prod")),
 	)
-	chain := mw(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
+	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
 
 	if err := chain(context.Background(), &sdk.InvocationContext{FunctionName: "F"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)

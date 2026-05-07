@@ -25,6 +25,11 @@ type App struct {
 	// dispatcher into the per-invocation chain. See [App.Use] for ordering
 	// semantics.
 	middlewares []Middleware
+	// capabilities is the merged capability map collected from every
+	// [Middleware] that implements [CapabilityProvider] at registration
+	// time. The worker dispatcher copies this into
+	// WorkerInitResponse.Capabilities. See [App.Capabilities].
+	capabilities map[string]string
 }
 
 // FunctionApp creates a new App instance.

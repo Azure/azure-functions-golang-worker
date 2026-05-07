@@ -70,6 +70,42 @@ func TestProcessRequestMessage_WorkerInit(t *testing.T) {
 	}
 }
 
+// capProviderMW is a stub Middleware implementation that satisfies both
+// [sdk.Middleware] and [sdk.CapabilityProvider]. Used to validate that the
+// dispatcher copies App.Capabilities into WorkerInitResponse.
+type capProviderMW struct{ caps map[string]string }
+
+func (m *capProviderMW) Wrap(next sdk.Handler) sdk.Handler { return next }
+func (m *capProviderMW) Capabilities() map[string]string   { return m.caps }
+
+func TestProcessRequestMessage_WorkerInit_PropagatesCapabilities(t *testing.T) {
+	// A CapabilityProvider middleware registered on the App must have its
+	// capability map echoed in WorkerInitResponse so the host knows what
+	// the worker supports (e.g. native OpenTelemetry emission).
+	disp := newTestDispatcher("req-caps")
+	disp.App.Use(&capProviderMW{caps: map[string]string{
+		"WorkerOpenTelemetryEnabled": "true",
+		"AnotherFlag":                "yes",
+	}})
+
+	msg := &pb.StreamingMessage{
+		Content: &pb.StreamingMessage_WorkerInitRequest{
+			WorkerInitRequest: &pb.WorkerInitRequest{},
+		},
+	}
+	resp, err := disp.processRequestMessage(msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	caps := resp.GetWorkerInitResponse().GetCapabilities()
+	if caps["WorkerOpenTelemetryEnabled"] != "true" {
+		t.Errorf("WorkerOpenTelemetryEnabled = %q, want %q", caps["WorkerOpenTelemetryEnabled"], "true")
+	}
+	if caps["AnotherFlag"] != "yes" {
+		t.Errorf("AnotherFlag = %q, want %q", caps["AnotherFlag"], "yes")
+	}
+}
+
 func TestProcessRequestMessage_FunctionsMetadata(t *testing.T) {
 	disp := newTestDispatcher("req-meta")
 

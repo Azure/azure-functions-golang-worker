@@ -16,12 +16,12 @@ func TestApp_Use_RegistersMiddleware(t *testing.T) {
 	app := FunctionApp()
 
 	var calls int
-	mw := func(next Handler) Handler {
+	mw := MiddlewareFunc(func(next Handler) Handler {
 		return func(ctx context.Context, ic *InvocationContext) error {
 			calls++
 			return next(ctx, ic)
 		}
-	}
+	})
 	app.Use(mw)
 	app.Use(mw)
 
@@ -61,22 +61,22 @@ func TestApp_Compose_ExecutionOrder(t *testing.T) {
 	app := FunctionApp()
 	var trace []string
 
-	app.Use(func(next Handler) Handler {
+	app.Use(MiddlewareFunc(func(next Handler) Handler {
 		return func(ctx context.Context, ic *InvocationContext) error {
 			trace = append(trace, "A:before")
 			err := next(ctx, ic)
 			trace = append(trace, "A:after")
 			return err
 		}
-	})
-	app.Use(func(next Handler) Handler {
+	}))
+	app.Use(MiddlewareFunc(func(next Handler) Handler {
 		return func(ctx context.Context, ic *InvocationContext) error {
 			trace = append(trace, "B:before")
 			err := next(ctx, ic)
 			trace = append(trace, "B:after")
 			return err
 		}
-	})
+	}))
 
 	chain := app.Compose(func(ctx context.Context, ic *InvocationContext) error {
 		trace = append(trace, "inner")
@@ -113,12 +113,12 @@ func TestApp_Compose_NoMiddleware(t *testing.T) {
 func TestApp_Compose_ErrorPropagation(t *testing.T) {
 	app := FunctionApp()
 	wantErr := errors.New("boom")
-	app.Use(func(next Handler) Handler {
+	app.Use(MiddlewareFunc(func(next Handler) Handler {
 		return func(ctx context.Context, ic *InvocationContext) error {
 			// Middleware passes the error through unchanged.
 			return next(ctx, ic)
 		}
-	})
+	}))
 
 	chain := app.Compose(func(ctx context.Context, ic *InvocationContext) error { return wantErr })
 	if gotErr := chain(context.Background(), &InvocationContext{}); !errors.Is(gotErr, wantErr) {
@@ -131,9 +131,9 @@ func TestApp_Compose_ShortCircuit(t *testing.T) {
 	// inner handler is not invoked.
 	app := FunctionApp()
 	gate := errors.New("gated")
-	app.Use(func(next Handler) Handler {
+	app.Use(MiddlewareFunc(func(next Handler) Handler {
 		return func(ctx context.Context, ic *InvocationContext) error { return gate }
-	})
+	}))
 
 	innerCalled := false
 	chain := app.Compose(func(ctx context.Context, ic *InvocationContext) error {
@@ -153,12 +153,12 @@ func TestApp_Compose_ContextEnrichment(t *testing.T) {
 	// ctx, not the original.
 	app := FunctionApp()
 	type ctxKey struct{}
-	app.Use(func(next Handler) Handler {
+	app.Use(MiddlewareFunc(func(next Handler) Handler {
 		return func(ctx context.Context, ic *InvocationContext) error {
 			ctx = context.WithValue(ctx, ctxKey{}, "enriched")
 			return next(ctx, ic)
 		}
-	})
+	}))
 
 	var observed string
 	chain := app.Compose(func(ctx context.Context, ic *InvocationContext) error {
@@ -172,5 +172,88 @@ func TestApp_Compose_ContextEnrichment(t *testing.T) {
 	}
 	if observed != "enriched" {
 		t.Errorf("inner handler did not observe middleware-enriched ctx; got %q", observed)
+	}
+}
+
+// capProviderMW is a stub Middleware implementation that also implements
+// [CapabilityProvider] for use by App.Use capability tests.
+type capProviderMW struct {
+	caps map[string]string
+}
+
+func (m *capProviderMW) Wrap(next Handler) Handler { return next }
+
+func (m *capProviderMW) Capabilities() map[string]string { return m.caps }
+
+func TestApp_Use_MergesCapabilitiesFromCapabilityProvider(t *testing.T) {
+	// A Middleware that implements CapabilityProvider has its capability map
+	// merged into App.Capabilities at registration time.
+	app := FunctionApp()
+
+	app.Use(&capProviderMW{caps: map[string]string{"WorkerOpenTelemetryEnabled": "true"}})
+	app.Use(&capProviderMW{caps: map[string]string{"OtherCap": "yes"}})
+
+	got := app.Capabilities()
+	want := map[string]string{
+		"WorkerOpenTelemetryEnabled": "true",
+		"OtherCap":                   "yes",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("merged capabilities mismatch:\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestApp_Use_LaterCapabilityProviderWins(t *testing.T) {
+	// Later registrations overwrite earlier values for the same key. This
+	// matches the documented contract on App.Use.
+	app := FunctionApp()
+	app.Use(&capProviderMW{caps: map[string]string{"k": "first"}})
+	app.Use(&capProviderMW{caps: map[string]string{"k": "second"}})
+
+	if got := app.Capabilities()["k"]; got != "second" {
+		t.Errorf("k = %q, want %q (later registration must win)", got, "second")
+	}
+}
+
+func TestApp_Use_NonCapabilityProviderIgnored(t *testing.T) {
+	// Plain MiddlewareFunc Middleware does not implement CapabilityProvider
+	// and must not contribute to App.Capabilities.
+	app := FunctionApp()
+	app.Use(MiddlewareFunc(func(next Handler) Handler { return next }))
+
+	if got := app.Capabilities(); len(got) != 0 {
+		t.Errorf("plain middleware must not produce capabilities; got %v", got)
+	}
+}
+
+func TestApp_Capabilities_ReturnsCopy(t *testing.T) {
+	// App.Capabilities returns a copy callers may mutate without affecting
+	// the App's internal map.
+	app := FunctionApp()
+	app.Use(&capProviderMW{caps: map[string]string{"k": "v"}})
+
+	first := app.Capabilities()
+	first["k"] = "mutated"
+	first["new"] = "added"
+
+	second := app.Capabilities()
+	if second["k"] != "v" {
+		t.Errorf("App's internal capabilities were mutated through the returned map: got %q, want %q", second["k"], "v")
+	}
+	if _, ok := second["new"]; ok {
+		t.Errorf("App's internal capabilities gained a key through the returned map")
+	}
+}
+
+func TestApp_Capabilities_EmptyMapWhenNone(t *testing.T) {
+	// Returns a non-nil empty map when no CapabilityProvider middleware is
+	// registered, so callers can range/len safely without nil checks.
+	app := FunctionApp()
+	got := app.Capabilities()
+	if got == nil {
+		t.Error("Capabilities returned nil; want empty map")
+	}
+	if len(got) != 0 {
+		t.Errorf("Capabilities = %v, want empty map", got)
 	}
 }

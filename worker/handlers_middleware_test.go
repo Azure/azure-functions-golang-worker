@@ -110,22 +110,22 @@ func TestHandleInvocationRequest_RunsMiddlewareInOrder(t *testing.T) {
 		traceMu.Unlock()
 	}
 
-	disp.App.Use(func(next sdk.Handler) sdk.Handler {
+	disp.App.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
 		return func(ctx context.Context, ic *sdk.InvocationContext) error {
 			add("A:before")
 			err := next(ctx, ic)
 			add("A:after")
 			return err
 		}
-	})
-	disp.App.Use(func(next sdk.Handler) sdk.Handler {
+	}))
+	disp.App.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
 		return func(ctx context.Context, ic *sdk.InvocationContext) error {
 			add("B:before")
 			err := next(ctx, ic)
 			add("B:after")
 			return err
 		}
-	})
+	}))
 
 	rf := loadFunc(t, disp, "Ordered", func(ctx context.Context, _ bindings.TimerInfo) error {
 		add("user")
@@ -146,11 +146,11 @@ func TestHandleInvocationRequest_MiddlewareCanShortCircuit(t *testing.T) {
 	disp := newTestDispatcher("req-sc")
 
 	gateErr := errors.New("not authorized")
-	disp.App.Use(func(next sdk.Handler) sdk.Handler {
+	disp.App.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
 		return func(ctx context.Context, ic *sdk.InvocationContext) error {
 			return gateErr
 		}
-	})
+	}))
 
 	var userCalls atomic.Int32
 	rf := loadFunc(t, disp, "ShortCircuit", func(ctx context.Context, _ bindings.TimerInfo) error {
@@ -178,12 +178,12 @@ func TestHandleInvocationRequest_MiddlewareCanEnrichContext(t *testing.T) {
 	disp := newTestDispatcher("req-enrich")
 
 	type ctxKey struct{}
-	disp.App.Use(func(next sdk.Handler) sdk.Handler {
+	disp.App.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
 		return func(ctx context.Context, ic *sdk.InvocationContext) error {
 			ctx = context.WithValue(ctx, ctxKey{}, "from-middleware")
 			return next(ctx, ic)
 		}
-	})
+	}))
 
 	var observed string
 	rf := loadFunc(t, disp, "Enriched", func(ctx context.Context, _ bindings.TimerInfo) error {

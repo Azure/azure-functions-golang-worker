@@ -212,7 +212,7 @@ func Middleware(opts ...Option) sdk.Middleware {
 	}
 	tracer := cfg.tp.Tracer(ScopeName)
 
-	return func(next sdk.Handler) sdk.Handler {
+	return sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
 		return func(ctx context.Context, ic *sdk.InvocationContext) error {
 			ctx = cfg.propagator.Extract(ctx, traceContextCarrier(ic))
 
@@ -247,7 +247,7 @@ func Middleware(opts ...Option) sdk.Middleware {
 			}
 			return err
 		}
-	}
+	})
 }
 
 // defaultSpanName is the default WithSpanNameFormatter — it returns the

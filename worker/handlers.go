@@ -36,6 +36,16 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *
 		"HandlesWorkerTerminateMessage":     "true",
 	}
 
+	// Merge in capabilities advertised by the user app (e.g. middleware that
+	// implements sdk.CapabilityProvider). Middleware-supplied keys win over
+	// the static base on collision so users can opt out of a default if they
+	// have a reason to.
+	if disp != nil && disp.App != nil {
+		for k, v := range disp.App.Capabilities() {
+			capabilities[k] = v
+		}
+	}
+
 	if disp != nil && disp.HTTPProxy != nil {
 		capabilities["HttpUri"] = disp.HTTPProxy.url
 		// Required so route parameters still flow via gRPC trigger metadata

@@ -4,11 +4,12 @@
 //
 // # Middleware extensibility
 //
-// The Middleware shape (next Handler -> Handler) is deliberately minimal,
-// matching the patterns established by net/http, gRPC interceptors, and
-// aws-lambda-go's otellambda. It supports the full range of cross-cutting
-// concerns: distributed tracing, structured logging, authentication, retry
-// policies, panic recovery, and request/response validation.
+// The Middleware interface (Wrap(next Handler) -> Handler) is deliberately
+// minimal, matching the shape established by net/http (Handler/HandlerFunc),
+// gRPC interceptors, and aws-lambda-go's otellambda. It supports the full
+// range of cross-cutting concerns: distributed tracing, structured logging,
+// authentication, retry policies, panic recovery, and request/response
+// validation.
 //
 // Middleware that needs to *replace* function execution entirely (for
 // example, a hypothetical Durable Functions runtime that performs
@@ -48,30 +49,122 @@ type Handler func(ctx context.Context, ic *InvocationContext) error
 // distributed tracing, structured logging, exception capture, or short-circuit
 // authorization.
 //
-// Idiomatic Go shape: a Middleware receives the next Handler in the chain and
-// returns a new Handler that may run code before/after calling next, may
-// transform ctx (for example, by attaching an OpenTelemetry span), or may
-// short-circuit by returning without calling next.
+// Wrap receives the next Handler in the chain and returns a new Handler that
+// may run code before/after calling next, may transform ctx (for example, by
+// attaching an OpenTelemetry span), or may short-circuit by returning without
+// calling next.
+//
+// The interface shape (rather than a function type) is intentional: it lets
+// implementations carry per-instance state (e.g. a TracerProvider, an
+// authentication policy) and lets them participate in optional contracts such
+// as [CapabilityProvider] without forcing every middleware to be the same
+// concrete type. Plain function middleware can wrap itself in [MiddlewareFunc]
+// to satisfy the interface — exactly the net/http Handler/HandlerFunc pattern.
 //
 // Third-party modules can author and ship Middleware implementations against
-// this shape without any coordination with the worker; the bundled
+// this interface without any coordination with the worker; the bundled
 // middleware/otelfunc package is itself a regular consumer of this API.
-type Middleware func(next Handler) Handler
+type Middleware interface {
+	// Wrap returns a Handler that decorates next.
+	Wrap(next Handler) Handler
+}
 
-// Use registers a Middleware. Middleware run in registration order: the
+// MiddlewareFunc adapts a plain function of the shape
+// `func(next Handler) Handler` to the [Middleware] interface. Use it when
+// no per-instance state is needed:
+//
+//	app.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
+//	    return func(ctx context.Context, ic *sdk.InvocationContext) error {
+//	        log.Printf("invocation %s", ic.InvocationID)
+//	        return next(ctx, ic)
+//	    }
+//	}))
+//
+// Mirrors the net/http Handler/HandlerFunc pairing.
+type MiddlewareFunc func(next Handler) Handler
+
+// Wrap implements [Middleware].
+func (f MiddlewareFunc) Wrap(next Handler) Handler {
+	return f(next)
+}
+
+// CapabilityProvider is an optional contract a [Middleware] can implement to
+// advertise worker-level capability flags to the Functions host.
+//
+// When a Middleware is registered via [App.Use], the App checks whether it
+// satisfies CapabilityProvider; if so, the returned capability map is merged
+// into the App's capability map, which the worker dispatcher copies into the
+// WorkerInitResponse.Capabilities field so the host knows what the worker
+// supports.
+//
+// The standard use case is a tracing middleware advertising
+// "WorkerOpenTelemetryEnabled": "true" so the host knows the worker is
+// emitting OTel telemetry directly and shouldn't double-emit to Application
+// Insights for the same invocation.
+//
+// Implementations should return a stable, side-effect-free map. The App reads
+// it once at registration time.
+type CapabilityProvider interface {
+	Capabilities() map[string]string
+}
+
+// Use registers a [Middleware]. Middleware run in registration order: the
 // first registered is the outermost — i.e. it observes the invocation first
 // and last. This matches the convention used by net/http middleware libraries
 // (chi, gin, echo), gRPC interceptors, and Go's broader ecosystem.
 //
-// Registering the same Middleware multiple times runs it multiple times.
+// If mw also implements [CapabilityProvider], its capability map is merged
+// into the App's capability map at registration time. Later registrations
+// overwrite earlier values for the same key; deterministic behavior is the
+// registrant's responsibility.
+//
+// Registering the same Middleware multiple times runs its Wrap multiple times.
 // Use must be called before worker.Start; registering middleware after the
 // worker has begun handling invocations is undefined and not safe for
 // concurrent use.
+//
+// A nil mw is silently dropped, so callers can register conditional
+// middleware without an explicit guard:
+//
+//	app.Use(maybeMiddleware()) // safe even when maybeMiddleware returns nil
 func (app *App) Use(mw Middleware) {
 	if mw == nil {
 		return
 	}
 	app.middlewares = append(app.middlewares, mw)
+
+	cp, ok := mw.(CapabilityProvider)
+	if !ok {
+		return
+	}
+	caps := cp.Capabilities()
+	if len(caps) == 0 {
+		return
+	}
+	if app.capabilities == nil {
+		app.capabilities = make(map[string]string, len(caps))
+	}
+	for k, v := range caps {
+		app.capabilities[k] = v
+	}
+}
+
+// Capabilities returns the merged capability map advertised by every
+// registered [Middleware] that implements [CapabilityProvider]. The worker
+// dispatcher copies the result into WorkerInitResponse.Capabilities so the
+// host is informed of worker-level features (e.g. native OpenTelemetry
+// emission).
+//
+// The returned map is a shallow copy and is safe for the caller to mutate
+// or retain. An empty map (rather than nil) is returned when no capabilities
+// are registered, simplifying caller code that wants to range over the
+// result.
+func (app *App) Capabilities() map[string]string {
+	out := make(map[string]string, len(app.capabilities))
+	for k, v := range app.capabilities {
+		out[k] = v
+	}
+	return out
 }
 
 // Compose wraps inner with all registered Middleware and returns the resulting
@@ -88,7 +181,7 @@ func (app *App) Use(mw Middleware) {
 // Compose returns inner unchanged when no Middleware are registered.
 func (app *App) Compose(inner Handler) Handler {
 	for i := len(app.middlewares) - 1; i >= 0; i-- {
-		inner = app.middlewares[i](inner)
+		inner = app.middlewares[i].Wrap(inner)
 	}
 	return inner
 }
