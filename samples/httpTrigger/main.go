@@ -55,8 +55,6 @@ func timingMiddleware(next sdk.Handler) sdk.Handler {
 }
 
 func main() {
-	slog.SetDefault(sdk.NewLogger())
-
 	app := sdk.FunctionApp()
 	app.Use(sdk.MiddlewareFunc(timingMiddleware))
 

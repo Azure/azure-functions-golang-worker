@@ -4,14 +4,19 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
-	"sync"
+	"log/slog"
 
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+// outboundQueueSize is the buffered size of the channel used by the gRPC
+// sender goroutine. Sized for typical Functions workloads where a single
+// invocation might emit a handful of logs plus the response message; the
+// host drains messages quickly enough that backpressure is rare.
+const outboundQueueSize = 256
 
 func connectToHost(hostAddress string, maxMsgSize int, workerId string) (
 	grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error) {
@@ -20,8 +25,7 @@ func connectToHost(hostAddress string, maxMsgSize int, workerId string) (
 		return nil, fmt.Errorf("failed to connect to gRPC stream: %v", err)
 	}
 
-	err = sendStartStreamMessage(client, workerId)
-	if err != nil {
+	if err := sendStartStreamMessage(client, workerId); err != nil {
 		return nil, fmt.Errorf("failed to send start stream message: %v", err)
 	}
 
@@ -39,11 +43,11 @@ func getBidiStreamClient(address string, maxMsgSize int) (grpc.BidiStreamingClie
 	}
 
 	client := pb.NewFunctionRpcClient(conn)
-
 	return client.EventStream(context.Background())
 }
 
-// If successful, host is ready to start sending messages to the worker (starting with InitWorkerRequest)
+// sendStartStreamMessage establishes the worker -> host handshake. After
+// it returns, the host sends WorkerInitRequest.
 func sendStartStreamMessage(client grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], workerId string) error {
 	startStreamMsg := &pb.StreamingMessage{
 		Content: &pb.StreamingMessage_StartStream{
@@ -52,56 +56,61 @@ func sendStartStreamMessage(client grpc.BidiStreamingClient[pb.StreamingMessage,
 			},
 		},
 	}
-
 	return client.Send(startStreamMsg)
 }
 
-func handleBidiStream(client grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], disp *Dispatcher) {
-	// gRPC ClientStream.SendMsg is not safe for concurrent use; sendMu
-	// serializes Send calls across the per-message dispatch goroutines.
-	var sendMu sync.Mutex
-	sendResp := func(respMsg *pb.StreamingMessage) {
-		sendMu.Lock()
-		defer sendMu.Unlock()
-		if err := client.Send(respMsg); err != nil {
-			log.Printf("Error sending response: %v", err)
-		}
-	}
+// startSender owns the gRPC ClientStream's Send call. gRPC's Send is not
+// safe for concurrent use, so we serialize all writes through a single
+// goroutine that drains a buffered channel.
+//
+// Returns:
+//   - send: a goroutine-safe enqueue function. Pass it to LogWriter and
+//     anywhere a response message needs to be emitted.
+//   - stop: shuts the sender goroutine down. Safe to call exactly once.
+//   - done: closed when the sender goroutine has exited (either because
+//     stop was called or because Send returned an error). Callers may
+//     wait on it to know the gRPC stream is no longer usable.
+//
+// When client.Send returns an error the sender logs it through the
+// supplied bootstrap handler (so we don't deadlock by recursing through
+// the LogWriter) and exits. Subsequent enqueues become no-ops returning
+// the captured error.
+func startSender(client grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], errLogger *slog.Logger) (send streamSender, stop func(), done <-chan struct{}) {
+	queue := make(chan *pb.StreamingMessage, outboundQueueSize)
+	finished := make(chan struct{})
 
-	for {
-		reqMsg, err := client.Recv()
-		if err == io.EOF {
-			fmt.Println("Stream closed by server")
+	go func() {
+		defer close(finished)
+		for msg := range queue {
+			if err := client.Send(msg); err != nil {
+				errLogger.Error("gRPC send failed; sender exiting", "err", err)
+				// Drain remaining messages to unblock producers; they
+				// will see send returning the closed-stream error
+				// once we close the queue below.
+				for range queue {
+				}
+				return
+			}
+		}
+	}()
+
+	closeOnce := false
+	stopFn := func() {
+		if closeOnce {
 			return
 		}
-		if err != nil {
-			log.Fatalf("Error receiving from stream: %v", err)
-		}
-
-		// Dispatch every message on its own goroutine. The host correlates
-		// responses by function_id / invocation_id / request_id, not by
-		// arrival order, so worker-side ordering is irrelevant; control-
-		// plane sequencing (init before load, load before invocation,
-		// terminate last) is enforced by the host already. Matches the
-		// concurrency model used by the Python and .NET-isolated workers.
-		//
-		// Critically, this keeps the receive loop draining the stream
-		// while long-running streaming invocations are in flight, so
-		// health pings, env reloads, terminate, and concurrent invocations
-		// don't queue behind an SSE / LLM / long-poll handler.
-		go func(msg *pb.StreamingMessage) {
-			respMsg, err := disp.processRequestMessage(msg)
-			if err != nil {
-				// Per-message errors must not crash the worker. The host
-				// will retry or time out the affected request; other
-				// in-flight messages keep flowing.
-				log.Printf("Error processing %T: %v", msg.GetContent(), err)
-				return
-			}
-			if respMsg == nil {
-				return
-			}
-			sendResp(respMsg)
-		}(reqMsg)
+		closeOnce = true
+		close(queue)
 	}
+
+	sendFn := func(m *pb.StreamingMessage) error {
+		select {
+		case queue <- m:
+			return nil
+		case <-finished:
+			return io.ErrClosedPipe
+		}
+	}
+
+	return sendFn, stopFn, finished
 }

@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"runtime"
@@ -173,7 +173,10 @@ func (app *App) Blob(name string, f any, opts ...Option) *RegisteredFunction {
 	if factory, ok := GetClientFactory(string(bindings.BlobTriggerType)); ok {
 		rf.ClientFactory = factory
 	} else {
-		log.Printf("WARNING: no ClientFactory registered for %s — did you forget to import triggers/blob?", bindings.BlobTriggerType)
+		slog.Warn("no ClientFactory registered for blob trigger; did you forget to import triggers/blob?",
+			"trigger_type", string(bindings.BlobTriggerType),
+			"function_name", name,
+		)
 	}
 
 	return rf

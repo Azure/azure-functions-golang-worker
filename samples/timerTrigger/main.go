@@ -33,11 +33,11 @@ func TimerHandler(ctx context.Context, timer bindings.TimerInfo) error {
 }
 
 func main() {
-	// Install the SDK's slog handler as the default. Every record emitted
-	// from inside an invocation will carry invocation_id / function_name /
-	// trigger_type alongside any user-supplied attributes.
-	slog.SetDefault(sdk.NewLogger())
-
+	// The SDK's slog handler is auto-installed as the default at package
+	// init time, so every record emitted from inside an invocation
+	// carries invocation_id / function_name / trigger_type alongside any
+	// user-supplied attributes — no setup required. Call slog.SetDefault
+	// yourself if you need full control over the slog backend.
 	app := sdk.FunctionApp()
 	app.Timer("scheduledTask", TimerHandler,
 		sdk.WithSchedule("*/10 * * * * *"),

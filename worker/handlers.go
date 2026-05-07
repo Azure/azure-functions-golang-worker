@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"reflect"
 
@@ -18,7 +17,8 @@ type LoadedFunction struct {
 }
 
 func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *Dispatcher) *pb.StreamingMessage {
-	log.Printf("Received WorkerInitRequest: RequestId=%s", requestId)
+	logger := disp.SystemLogger()
+	logger.Info("Received WorkerInitRequest", "request_id", requestId)
 
 	// Capabilities the Go worker advertises. These mirror what the Functions
 	// host expects from a modern out-of-proc worker (Python / dotnet-isolated
@@ -51,7 +51,7 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *
 		// Required so route parameters still flow via gRPC trigger metadata
 		// when the body is being proxied over HTTP.
 		capabilities["RequiresRouteParameters"] = "true"
-		log.Printf("Advertising HttpUri=%s for streaming HTTP triggers", disp.HTTPProxy.url)
+		logger.Info("Advertising HttpUri for streaming HTTP triggers", "http_uri", disp.HTTPProxy.url)
 	}
 
 	return &pb.StreamingMessage{
@@ -70,7 +70,6 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *
 }
 
 func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.App, requestId string) *pb.StreamingMessage {
-	log.Printf("Received FunctionsMetadataRequest: RequestId=%s", requestId)
 	var functions []*pb.RpcFunctionMetadata
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*sdk.RegisteredFunction)
@@ -128,7 +127,6 @@ func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.A
 }
 
 func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, requestId string) *pb.StreamingMessage {
-	log.Printf("Received FunctionLoadRequest: RequestId=%s, FunctionId=%s", requestId, req.FunctionId)
 	funcID := req.FunctionId
 	val, ok := disp.App.GetRegisteredFunctions().Load(funcID)
 	if !ok {
@@ -204,8 +202,16 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, re
 		argIndex++
 	}
 
+	logger := disp.SystemLogger()
 	for k, v := range fields {
-		log.Printf("Debug: Field Mapping - Name: %s, Pos: %d, Type: %v, Dir: %s, Arg: %v", k, v.Position, v.Type, v.Direction, v.IsArgument)
+		logger.Debug("FunctionLoad field mapping",
+			"function_id", funcID,
+			"name", k,
+			"position", v.Position,
+			"type", v.Type.String(),
+			"direction", v.Direction,
+			"is_argument", v.IsArgument,
+		)
 	}
 
 	disp.LoadedFunctions.Store(funcID, &LoadedFunction{
@@ -228,7 +234,6 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, re
 }
 
 func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, requestId string) (*pb.StreamingMessage, error) {
-	log.Printf("Received InvocationRequest: RequestId=%s, InvocationId=%s, FunctionId=%s", requestId, req.InvocationId, req.FunctionId)
 	funcID := req.FunctionId
 	val, ok := disp.LoadedFunctions.Load(funcID)
 	if !ok {
@@ -249,7 +254,8 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 			// crash. Surface it to the host as a Failure InvocationResponse
 			// so this invocation reports an error and the worker stays up
 			// to serve the next one.
-			log.Printf("HTTP proxy: rendezvous failed for invocation %s: %v", req.GetInvocationId(), err)
+			disp.SystemLogger().Error("HTTP proxy rendezvous failed",
+				"invocation_id", req.GetInvocationId(), "err", err)
 			status = &pb.StatusResult{
 				Status: pb.StatusResult_Failure,
 				Exception: &pb.RpcException{

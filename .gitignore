@@ -411,3 +411,7 @@ bin
 # Go module files for samples
 samples/*/go.mod
 samples/*/go.sum
+# Local deployment staging
+.deploy-stage/
+test-int*.log
+test-race.log
