@@ -304,3 +304,175 @@ func (s *spyTracerProvider) ForceFlush(ctx context.Context) error {
 	s.flushCalls++
 	return s.TracerProvider.ForceFlush(ctx)
 }
+
+// =============================================================================
+// Capability provider, env-var disable, and noop detection
+// =============================================================================
+
+// invocationContextForTest builds a minimal InvocationContext that lets us
+// run the middleware once for assertion.
+func invocationContextForTest() *sdk.InvocationContext {
+	return &sdk.InvocationContext{
+		InvocationID: "inv-cap",
+		FunctionName: "Sample",
+		TriggerType:  "httpTrigger",
+	}
+}
+
+func TestMiddleware_AdvertisesCapabilities_WhenActive(t *testing.T) {
+	// With a real exporter wired in, the middleware advertises both
+	// OTel capability flags so the host can stop double-emitting telemetry.
+	tp, _ := newTestProvider()
+	mw := Middleware(WithTracerProvider(tp))
+
+	cp, ok := mw.(sdk.CapabilityProvider)
+	if !ok {
+		t.Fatal("Middleware return value should implement sdk.CapabilityProvider")
+	}
+	caps := cp.Capabilities()
+	if caps[CapabilityWorkerOpenTelemetryEnabled] != "true" {
+		t.Errorf("%s = %q, want true", CapabilityWorkerOpenTelemetryEnabled, caps[CapabilityWorkerOpenTelemetryEnabled])
+	}
+	if caps[CapabilityWorkerOpenTelemetrySchemaVersion] != SchemaVersion {
+		t.Errorf("%s = %q, want %q", CapabilityWorkerOpenTelemetrySchemaVersion,
+			caps[CapabilityWorkerOpenTelemetrySchemaVersion], SchemaVersion)
+	}
+}
+
+func TestMiddleware_DisabledByEnv_PassThroughAndNoCapabilities(t *testing.T) {
+	t.Setenv(EnvDisable, "true")
+
+	tp, exp := newTestProvider()
+	mw := Middleware(WithTracerProvider(tp))
+
+	// No capabilities advertised when disabled.
+	cp, _ := mw.(sdk.CapabilityProvider)
+	if cp != nil {
+		if got := cp.Capabilities(); len(got) != 0 {
+			t.Errorf("expected no capabilities when env-disabled; got %v", got)
+		}
+	}
+
+	// Wrap and run; assert no spans were produced.
+	called := false
+	chain := mw.Wrap(func(ctx context.Context, _ *sdk.InvocationContext) error {
+		called = true
+		return nil
+	})
+	if err := chain(context.Background(), invocationContextForTest()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("inner handler must still be called when middleware is env-disabled")
+	}
+	if got := exp.GetSpans(); len(got) != 0 {
+		t.Errorf("expected no spans when env-disabled; got %d", len(got))
+	}
+}
+
+func TestMiddleware_NoopTracerProvider_PassThroughAndNoCapabilities(t *testing.T) {
+	// Without an exporter or explicit TracerProvider, the middleware
+	// should detect the noop default, become a pass-through, and skip
+	// capability advertising. We isolate from any global state by not
+	// touching otel.SetTracerProvider.
+	mw := Middleware() // no options -> falls back to otel.GetTracerProvider() which is noop by default
+
+	cp, _ := mw.(sdk.CapabilityProvider)
+	if cp != nil {
+		if got := cp.Capabilities(); len(got) != 0 {
+			t.Errorf("expected no capabilities with noop TP; got %v", got)
+		}
+	}
+
+	called := false
+	chain := mw.Wrap(func(ctx context.Context, _ *sdk.InvocationContext) error {
+		called = true
+		return nil
+	})
+	if err := chain(context.Background(), invocationContextForTest()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("inner handler must still be called when TP is noop")
+	}
+}
+
+func TestMiddleware_WithExporter_BuildsTPAndAdvertises(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	mw := Middleware(WithExporter(exp))
+
+	cp, ok := mw.(sdk.CapabilityProvider)
+	if !ok {
+		t.Fatal("Middleware should implement sdk.CapabilityProvider")
+	}
+	if got := cp.Capabilities()[CapabilityWorkerOpenTelemetryEnabled]; got != "true" {
+		t.Errorf("expected capability when WithExporter is used; got %q", got)
+	}
+
+	chain := mw.Wrap(func(ctx context.Context, _ *sdk.InvocationContext) error { return nil })
+	if err := chain(context.Background(), invocationContextForTest()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Force flush is the middleware's responsibility on consumption plans;
+	// we get it via the TP we built.
+	// The InMemoryExporter is sync, so spans should already be present.
+	if got := exp.GetSpans(); len(got) != 1 {
+		t.Errorf("expected 1 span via WithExporter-built TP; got %d", len(got))
+	}
+}
+
+func TestIsDisabledByEnv_TruthyValues(t *testing.T) {
+	cases := map[string]bool{
+		"":      false,
+		"false": false,
+		"0":     false,
+		"no":    false,
+		"1":     true,
+		"true":  true,
+		"True":  true,
+		"YES":   true,
+		"on":    true,
+	}
+	for v, want := range cases {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv(EnvDisable, v)
+			if got := isDisabledByEnv(); got != want {
+				t.Errorf("isDisabledByEnv(%q) = %v, want %v", v, got, want)
+			}
+		})
+	}
+}
+
+func TestServiceNameFromEnv_FallsBackToWebsiteSiteName(t *testing.T) {
+	t.Setenv(EnvServiceName, "")
+	t.Setenv("WEBSITE_SITE_NAME", "my-site")
+	if got := serviceNameFromEnv(); got != "my-site" {
+		t.Errorf("serviceNameFromEnv() = %q, want %q", got, "my-site")
+	}
+}
+
+func TestServiceNameFromEnv_OtelServiceNameWins(t *testing.T) {
+	t.Setenv(EnvServiceName, "otel-name")
+	t.Setenv("WEBSITE_SITE_NAME", "site-name")
+	if got := serviceNameFromEnv(); got != "otel-name" {
+		t.Errorf("serviceNameFromEnv() = %q, want %q (OTEL_SERVICE_NAME must win)", got, "otel-name")
+	}
+}
+
+func TestIsNoopTracerProvider(t *testing.T) {
+	// The default global TP (before any SetTracerProvider) is the
+	// internal noop and must be detected.
+	// (Note: tests share global state with otel; we assume nobody set a
+	// global before this point — which is true in unit tests because
+	// nothing imports a TP installer.)
+	if !isNoopTracerProvider(nil) {
+		t.Error("nil TracerProvider should be classified as noop")
+	}
+
+	// A real sdk/trace TracerProvider is not noop.
+	tp, _ := newTestProvider()
+	if isNoopTracerProvider(tp) {
+		t.Error("real sdk/trace.TracerProvider should not be classified as noop")
+	}
+}
+

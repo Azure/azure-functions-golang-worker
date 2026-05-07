@@ -10,35 +10,53 @@
 //	)
 //
 //	func main() {
-//	    tp := buildTracerProvider() // user-supplied
-//	    otel.SetTracerProvider(tp)
-//	    otel.SetTextMapPropagator(propagation.TraceContext{})
-//
 //	    app := sdk.FunctionApp()
-//	    app.Use(otelfunc.Middleware())
+//	    app.Use(otelfunc.Middleware(otelfunc.WithExporter(myExporter)))
 //
 //	    app.HTTP("hello", helloHandler)
-//	    app.Timer("nightly", timerHandler)
 //	    worker.Start(app)
 //	}
 //
-// Design follows aws-lambda-go's otellambda package: a thin Middleware that
-// (a) extracts the host's W3C trace context from sdk.InvocationContext,
-// (b) starts a server-kind span around the user handler, and (c) force-flushes
-// telemetry after each invocation because the Functions runtime may freeze
-// the worker process between invocations on consumption SKUs (Flex
-// Consumption, Linux Consumption).
+// The middleware honors three setup paths in priority order:
 //
-// Force-flushing is on by default when the configured TracerProvider
-// implements the [Flusher] interface (which the standard
-// go.opentelemetry.io/otel/sdk/trace TracerProvider does). Override with
-// [WithFlusher] or disable with [WithoutFlusher].
+//  1. [WithTracerProvider] — caller hands us a TracerProvider. We use it as-is.
+//  2. [WithExporter] — caller hands us a SpanExporter. We build a TracerProvider
+//     around it with a default Resource carrying cloud.provider=azure /
+//     cloud.platform=azure_functions / service.name (from WEBSITE_SITE_NAME or
+//     OTEL_SERVICE_NAME).
+//  3. Otherwise — we fall back to otel.GetTracerProvider().
+//
+// Capability advertising:
+//
+// When a non-noop TracerProvider is in play and the
+// AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED env var is not truthy, the
+// middleware reports the worker-level capabilities WorkerOpenTelemetryEnabled
+// and WorkerOpenTelemetrySchemaVersion via the [sdk.CapabilityProvider]
+// contract. The worker copies those flags into WorkerInitResponse.Capabilities
+// so the host knows the worker is emitting OpenTelemetry telemetry directly
+// and should not double-emit to Application Insights for the same invocation.
+//
+// Force-flushing:
+//
+// On consumption-style plans (Flex Consumption, Linux Consumption) the host
+// may freeze the worker process between invocations and lose any telemetry
+// the exporter has buffered. The middleware therefore force-flushes after
+// every invocation when the configured TracerProvider implements [Flusher]
+// (which the standard go.opentelemetry.io/otel/sdk/trace TracerProvider
+// does). Override with [WithFlusher] or disable with [WithoutFlusher].
+//
+// Design follows aws-lambda-go's otellambda package: a thin Middleware
+// that (a) extracts the host's W3C trace context from
+// sdk.InvocationContext, (b) starts a server-kind span around the user
+// handler, and (c) force-flushes telemetry after each invocation.
 package otelfunc
 
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
+	"os"
+	"strings"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 
@@ -46,33 +64,69 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// ScopeName is the OpenTelemetry instrumentation scope used by the Middleware
-// when obtaining a Tracer from the configured TracerProvider.
+// ScopeName is the OpenTelemetry instrumentation scope used by the
+// Middleware when obtaining a Tracer from the configured TracerProvider.
 const ScopeName = "github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
+
+// SchemaVersion is the OpenTelemetry semantic conventions schema version
+// the middleware advertises to the host through the
+// WorkerOpenTelemetrySchemaVersion capability. It must match the version
+// of the imported semconv package — currently v1.27.0.
+const SchemaVersion = "1.27.0"
+
+// CapabilityWorkerOpenTelemetryEnabled is the worker-level capability key
+// the middleware advertises when an active (non-noop) TracerProvider is
+// wired up. The host uses it to decide whether to skip its own
+// Application Insights emission for invocations served by this worker.
+const CapabilityWorkerOpenTelemetryEnabled = "WorkerOpenTelemetryEnabled"
+
+// CapabilityWorkerOpenTelemetrySchemaVersion is the worker-level capability
+// key reporting the semantic conventions schema version the worker is
+// emitting. Paired with [CapabilityWorkerOpenTelemetryEnabled].
+const CapabilityWorkerOpenTelemetrySchemaVersion = "WorkerOpenTelemetrySchemaVersion"
+
+// EnvDisable is the environment variable that, when set to a truthy value
+// (true, 1, yes), disables the OpenTelemetry middleware entirely. The
+// middleware becomes a pass-through and advertises no capability.
+//
+// Use case: ops kill switch without redeploying the app, or selective
+// disabling on a single slot for triage.
+const EnvDisable = "AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED"
+
+// EnvServiceName is the OpenTelemetry-standard environment variable for
+// overriding service.name on the default Resource the middleware builds
+// when constructing a TracerProvider via [WithExporter]. If unset, falls
+// back to WEBSITE_SITE_NAME (the App Service / Functions site name) and
+// finally to "azure-functions".
+const EnvServiceName = "OTEL_SERVICE_NAME"
+
+// envWebsiteSiteName is the Functions/App Service environment variable
+// carrying the site name; we use it as a fallback for service.name.
+const envWebsiteSiteName = "WEBSITE_SITE_NAME"
 
 // Flusher is the optional contract the Middleware uses to push pending
 // telemetry to the configured exporter at the end of each invocation.
 //
 // The standard go.opentelemetry.io/otel/sdk/trace.TracerProvider satisfies
-// Flusher via its ForceFlush method, so by default the Middleware uses the
-// configured TracerProvider as the flusher (see [Middleware]). Pass
-// [WithFlusher] to override, or [WithoutFlusher] to disable flushing.
+// Flusher via its ForceFlush method, so by default the Middleware uses
+// the configured TracerProvider as the flusher (see [Middleware]).
 //
-// Force-flushing is not strictly required when running on plans that keep
-// the worker process warm (Premium, Dedicated), but is essential on
-// consumption-style plans (Flex Consumption, Linux Consumption) where the
-// host may freeze the process between invocations and lose any buffered
-// batches that the exporter has not yet shipped.
+// Force-flushing is essential on consumption-style plans (Flex
+// Consumption, Linux Consumption) where the host may freeze the process
+// between invocations and lose buffered batches.
 type Flusher interface {
 	ForceFlush(ctx context.Context) error
 }
 
-// Option configures the Middleware. Pass options into Middleware to customize
-// the TracerProvider, propagator, flusher, span name, or extra attributes.
+// Option configures the Middleware. Pass options into Middleware to
+// customize the TracerProvider, exporter, propagator, flusher, span
+// name, or extra attributes.
 type Option interface {
 	apply(*config)
 }
@@ -81,8 +135,9 @@ type optionFunc func(*config)
 
 func (f optionFunc) apply(c *config) { f(c) }
 
-// WithTracerProvider sets the OpenTelemetry TracerProvider used to obtain the
-// Tracer. Defaults to otel.GetTracerProvider().
+// WithTracerProvider sets the OpenTelemetry TracerProvider used to obtain
+// the Tracer. Highest priority — wins over [WithExporter] and
+// otel.GetTracerProvider().
 func WithTracerProvider(tp trace.TracerProvider) Option {
 	return optionFunc(func(c *config) {
 		if tp != nil {
@@ -91,11 +146,25 @@ func WithTracerProvider(tp trace.TracerProvider) Option {
 	})
 }
 
+// WithExporter wires up a SpanExporter. The middleware will build a
+// TracerProvider around the exporter using a [BatchSpanProcessor] and a
+// default Resource carrying cloud.provider=azure,
+// cloud.platform=azure_functions, and a derived service.name (from
+// OTEL_SERVICE_NAME, then WEBSITE_SITE_NAME, then "azure-functions").
+//
+// Use this when you want sane defaults without constructing a
+// TracerProvider yourself; for full control, use [WithTracerProvider].
+//
+// Ignored when [WithTracerProvider] is also passed.
+func WithExporter(e sdktrace.SpanExporter) Option {
+	return optionFunc(func(c *config) {
+		c.exporter = e
+	})
+}
+
 // WithPropagator sets the TextMapPropagator used to extract incoming W3C
-// trace context from sdk.InvocationContext. Defaults to
-// otel.GetTextMapPropagator(). Most callers should leave this at the default
-// and configure the global propagator once at startup via
-// otel.SetTextMapPropagator(propagation.TraceContext{}).
+// trace context from sdk.InvocationContext. Defaults to the global
+// otel.GetTextMapPropagator() if non-empty, otherwise propagation.TraceContext{}.
 func WithPropagator(p propagation.TextMapPropagator) Option {
 	return optionFunc(func(c *config) {
 		if p != nil {
@@ -108,18 +177,6 @@ func WithPropagator(p propagation.TextMapPropagator) Option {
 // the default behavior of using the configured TracerProvider when it
 // satisfies the [Flusher] interface (which the standard
 // go.opentelemetry.io/otel/sdk/trace.TracerProvider does).
-//
-// Pass a custom Flusher when you need to flush more than just trace
-// telemetry — for example, to flush a batched MeterProvider or LogProvider
-// alongside the TracerProvider:
-//
-//	app.Use(otelfunc.Middleware(
-//	    otelfunc.WithFlusher(otelfunc.MultiFlusher(tracerProvider, meterProvider, loggerProvider)),
-//	))
-//
-// To disable flushing entirely (for example, when running on a plan where
-// the worker is never frozen and a synchronous exporter is in use), use
-// [WithoutFlusher] instead of constructing a no-op Flusher manually.
 func WithFlusher(f Flusher) Option {
 	return optionFunc(func(c *config) {
 		c.flusher = f
@@ -131,11 +188,6 @@ func WithFlusher(f Flusher) Option {
 // callers running on always-warm plans (Premium, Dedicated) with a
 // synchronous span processor where flushing is unnecessary, or for unit
 // tests that want to assert no flush happens.
-//
-// Most callers should leave the default Flusher in place — losing
-// telemetry to a frozen container is a nasty failure mode that takes
-// hours to diagnose, and the cost of an unnecessary ForceFlush against a
-// SyncSpanProcessor or empty batch is negligible.
 func WithoutFlusher() Option {
 	return optionFunc(func(c *config) {
 		c.flusher = nil
@@ -165,6 +217,7 @@ func WithAttributes(attrs ...attribute.KeyValue) Option {
 
 type config struct {
 	tp         trace.TracerProvider
+	exporter   sdktrace.SpanExporter
 	propagator propagation.TextMapPropagator
 	flusher    Flusher
 	flusherSet bool // tracks whether the user explicitly set a flusher (or disabled it)
@@ -172,8 +225,74 @@ type config struct {
 	extraAttrs []attribute.KeyValue
 }
 
+// otelMiddleware is the [sdk.Middleware] implementation Middleware
+// returns. It also satisfies [sdk.CapabilityProvider] so the worker
+// dispatcher can pick up the OpenTelemetry capability flags at App.Use
+// time.
+type otelMiddleware struct {
+	tracer       trace.Tracer
+	cfg          *config
+	enabled      bool
+	capabilities map[string]string
+}
+
+// Wrap implements [sdk.Middleware].
+func (m *otelMiddleware) Wrap(next sdk.Handler) sdk.Handler {
+	if !m.enabled {
+		// Pass-through: env disable or noop TP. User code that calls
+		// otel.Tracer(...).Start(...) on its own still works; we just
+		// stay out of the way.
+		return next
+	}
+	return func(ctx context.Context, ic *sdk.InvocationContext) error {
+		ctx = m.cfg.propagator.Extract(ctx, traceContextCarrier(ic))
+
+		attrs := []attribute.KeyValue{
+			semconv.FaaSInvocationID(ic.InvocationID),
+			semconv.FaaSName(ic.FunctionName),
+			attribute.String("faas.trigger", classifyTrigger(ic.TriggerType)),
+		}
+		attrs = append(attrs, m.cfg.extraAttrs...)
+
+		ctx, span := m.tracer.Start(ctx, m.cfg.spanName(ic),
+			trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(attrs...),
+		)
+
+		err := next(ctx, ic)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+
+		// Force-flush before the worker may be frozen. Done after
+		// span.End so the just-completed span is included in the
+		// flush batch.
+		if m.cfg.flusher != nil {
+			if flushErr := m.cfg.flusher.ForceFlush(ctx); flushErr != nil && !errors.Is(flushErr, context.Canceled) {
+				slog.WarnContext(ctx, "otelfunc: ForceFlush failed", "err", flushErr)
+			}
+		}
+		return err
+	}
+}
+
+// Capabilities implements [sdk.CapabilityProvider]. Returns the OTel
+// capability flags only when the middleware is active (see [Middleware]).
+func (m *otelMiddleware) Capabilities() map[string]string {
+	out := make(map[string]string, len(m.capabilities))
+	for k, v := range m.capabilities {
+		out[k] = v
+	}
+	return out
+}
+
 // Middleware returns an [sdk.Middleware] that traces every function
-// invocation as an OpenTelemetry server-kind span.
+// invocation as an OpenTelemetry server-kind span. The returned value also
+// implements [sdk.CapabilityProvider]; the worker dispatcher reads the
+// capability map at App.Use time and forwards it to the host via
+// WorkerInitResponse.Capabilities.
 //
 // On each invocation the Middleware:
 //
@@ -188,66 +307,79 @@ type config struct {
 //     the span status to Error.
 //  4. Calls Flusher.ForceFlush before returning, so telemetry is pushed
 //     before the host may freeze the worker on consumption-style plans.
-//     The default Flusher is the configured TracerProvider when it
-//     implements the [Flusher] interface (which the standard
-//     go.opentelemetry.io/otel/sdk/trace TracerProvider does); use
-//     [WithFlusher] to override or [WithoutFlusher] to disable.
+//
+// The middleware becomes a pass-through (no spans, no capability
+// advertising) when:
+//
+//   - The AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED env var is set
+//     to a truthy value, or
+//   - The configured TracerProvider is the OpenTelemetry noop (i.e. no
+//     real exporter is wired up).
+//
+// In pass-through mode, user-side OpenTelemetry calls still work — the
+// middleware just does not contribute spans of its own.
 func Middleware(opts ...Option) sdk.Middleware {
 	cfg := &config{
-		tp:         otel.GetTracerProvider(),
-		propagator: otel.GetTextMapPropagator(),
-		spanName:   defaultSpanName,
+		spanName: defaultSpanName,
 	}
 	for _, o := range opts {
 		o.apply(cfg)
 	}
+	if cfg.propagator == nil {
+		cfg.propagator = defaultPropagator()
+	}
+
+	m := &otelMiddleware{cfg: cfg}
+
+	if isDisabledByEnv() {
+		// Pass-through: user explicitly disabled OTel via env var.
+		return m
+	}
+
+	// Resolve TracerProvider in priority order:
+	//   1. WithTracerProvider — explicitly given, use as-is.
+	//   2. WithExporter — build a TracerProvider with a default Resource.
+	//   3. otel.GetTracerProvider() — honor the global, may be a noop.
+	//
+	// We only run the (relatively expensive) noop detection in case 3,
+	// where we cannot otherwise tell whether the global has been wired
+	// up. If the user explicitly handed us a TracerProvider or exporter,
+	// we trust their configuration and advertise the capability.
+	usedFallback := false
+	if cfg.tp == nil && cfg.exporter != nil {
+		cfg.tp = sdktrace.NewTracerProvider(
+			sdktrace.WithBatcher(cfg.exporter),
+			sdktrace.WithResource(buildDefaultResource()),
+		)
+	}
+	if cfg.tp == nil {
+		cfg.tp = otel.GetTracerProvider()
+		usedFallback = true
+	}
+
+	if usedFallback && isNoopTracerProvider(cfg.tp) {
+		// Pass-through: no real exporter is wired up. The user has not
+		// asked for OpenTelemetry, so we should not advertise the
+		// capability or override the host's telemetry path.
+		return m
+	}
+
 	// Auto-flush via the TracerProvider when the user hasn't configured a
-	// flusher explicitly. This is the safe default on Functions consumption
-	// plans where the worker process can be frozen between invocations and
-	// any buffered batches in a BatchSpanProcessor would be lost.
+	// flusher explicitly. The standard sdk/trace.TracerProvider satisfies
+	// Flusher; user-supplied custom TPs may not.
 	if !cfg.flusherSet {
 		if f, ok := cfg.tp.(Flusher); ok {
 			cfg.flusher = f
 		}
 	}
-	tracer := cfg.tp.Tracer(ScopeName)
 
-	return sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
-		return func(ctx context.Context, ic *sdk.InvocationContext) error {
-			ctx = cfg.propagator.Extract(ctx, traceContextCarrier(ic))
-
-			attrs := []attribute.KeyValue{
-				semconv.FaaSInvocationID(ic.InvocationID),
-				semconv.FaaSName(ic.FunctionName),
-				attribute.String("faas.trigger", classifyTrigger(ic.TriggerType)),
-			}
-			attrs = append(attrs, cfg.extraAttrs...)
-
-			ctx, span := tracer.Start(ctx, cfg.spanName(ic),
-				trace.WithSpanKind(trace.SpanKindServer),
-				trace.WithAttributes(attrs...),
-			)
-
-			err := next(ctx, ic)
-			if err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
-			}
-			span.End()
-
-			// Force-flush before the worker may be frozen. Done after
-			// span.End so the just-completed span is included in the
-			// flush batch.
-			if cfg.flusher != nil {
-				if flushErr := cfg.flusher.ForceFlush(ctx); flushErr != nil && !errors.Is(flushErr, context.Canceled) {
-					// Don't fail the invocation on a flush error;
-					// telemetry is auxiliary, not essential.
-					log.Printf("otelfunc: ForceFlush failed: %v", flushErr)
-				}
-			}
-			return err
-		}
-	})
+	m.tracer = cfg.tp.Tracer(ScopeName)
+	m.enabled = true
+	m.capabilities = map[string]string{
+		CapabilityWorkerOpenTelemetryEnabled:       "true",
+		CapabilityWorkerOpenTelemetrySchemaVersion: SchemaVersion,
+	}
+	return m
 }
 
 // defaultSpanName is the default WithSpanNameFormatter — it returns the
@@ -260,11 +392,21 @@ func defaultSpanName(ic *sdk.InvocationContext) string {
 	return ic.FunctionName
 }
 
+// defaultPropagator returns the global propagator if configured, otherwise
+// the standard W3C TraceContext propagator. The Functions host emits W3C
+// trace context, so this is the right default.
+func defaultPropagator() propagation.TextMapPropagator {
+	p := otel.GetTextMapPropagator()
+	if p == nil {
+		return propagation.TraceContext{}
+	}
+	return p
+}
+
 // traceContextCarrier adapts the incoming sdk.TraceContext to the
-// TextMapCarrier shape that propagation.TraceContext expects. Only the W3C
-// keys (traceparent, tracestate) are surfaced; the host's Attributes map is
-// not part of the standard W3C extraction contract and is left available on
-// ic.TraceContext.Attributes for users that want to read it directly.
+// TextMapCarrier shape that propagation.TraceContext expects. Only the
+// W3C keys (traceparent, tracestate) are surfaced here; baggage handling
+// lives in commit 5.
 func traceContextCarrier(ic *sdk.InvocationContext) propagation.MapCarrier {
 	mc := propagation.MapCarrier{}
 	if ic.TraceContext.TraceParent != "" {
@@ -297,4 +439,88 @@ func classifyTrigger(t string) string {
 	default:
 		return "other"
 	}
+}
+
+// buildDefaultResource constructs the OpenTelemetry Resource used when
+// the middleware builds its own TracerProvider via [WithExporter]. The
+// Resource carries:
+//
+//   - cloud.provider = azure
+//   - cloud.platform = azure_functions
+//   - service.name   = OTEL_SERVICE_NAME / WEBSITE_SITE_NAME / "azure-functions"
+//
+// resource.Default() already incorporates the standard environment
+// detector (OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES) so callers can
+// override any of the above with the standard OTel env vars.
+func buildDefaultResource() *resource.Resource {
+	attrs := []attribute.KeyValue{
+		semconv.CloudProviderAzure,
+		semconv.CloudPlatformAzureFunctions,
+	}
+	if name := serviceNameFromEnv(); name != "" {
+		attrs = append(attrs, semconv.ServiceName(name))
+	}
+
+	r, err := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(semconv.SchemaURL, attrs...),
+	)
+	if err != nil {
+		// resource.Merge fails only on schema URL mismatch; build a fresh
+		// Resource as a fallback so we still produce something usable.
+		return resource.NewWithAttributes(semconv.SchemaURL, attrs...)
+	}
+	return r
+}
+
+// serviceNameFromEnv resolves the service.name fallback chain. Returns
+// "" when nothing is set, so the caller can decide whether to add the
+// attribute at all (resource.Default already supplies a generic
+// "unknown_service:..." value).
+func serviceNameFromEnv() string {
+	if v := strings.TrimSpace(os.Getenv(EnvServiceName)); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv(envWebsiteSiteName)); v != "" {
+		return v
+	}
+	return ""
+}
+
+// isDisabledByEnv reports whether the AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED
+// env var is set to a truthy value.
+func isDisabledByEnv() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(EnvDisable)))
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// isNoopTracerProvider reports whether the given TracerProvider produces
+// non-recording spans, which is the OpenTelemetry-API-level signal that
+// no real exporter is wired up.
+//
+// The detection is behavioral: we ask the TracerProvider for a Tracer,
+// start a span, and check span.IsRecording. The OpenTelemetry global
+// default returns a delegating TracerProvider that points at a noop
+// internally — type-name detection of "noop" doesn't catch it, but
+// IsRecording on a span from such a provider returns false.
+//
+// A user who wires up a real TracerProvider but configures an
+// always-reject sampler would also be detected as noop here, and the
+// middleware would not advertise the capability. That is the correct
+// outcome: if no spans are ever recorded, there is no telemetry for the
+// host to defer on, so leaving the host's Application Insights emission
+// in place is the safer default.
+func isNoopTracerProvider(tp trace.TracerProvider) bool {
+	if tp == nil {
+		return true
+	}
+	tracer := tp.Tracer("otelfunc/noop-detect")
+	_, span := tracer.Start(context.Background(), "noop-detect")
+	defer span.End()
+	return !span.IsRecording()
 }

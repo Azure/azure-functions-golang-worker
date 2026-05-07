@@ -62,8 +62,9 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *
 					Status: pb.StatusResult_Success,
 					Result: "Success",
 				},
-				WorkerVersion: "1.0.0",
-				Capabilities:  capabilities,
+				WorkerVersion:  "1.0.0",
+				Capabilities:   capabilities,
+				WorkerMetadata: buildWorkerMetadata(),
 			},
 		},
 	}
@@ -522,6 +523,7 @@ func handleFunctionEnvironmentReloadRequest(requestId string, req *pb.FunctionEn
 					Status: pb.StatusResult_Success,
 					Result: "Success",
 				},
+				WorkerMetadata: buildWorkerMetadata(),
 			},
 		},
 	}, nil
