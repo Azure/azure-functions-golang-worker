@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
+	"github.com/azure/azure-functions-golang-worker/sdk"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -91,5 +93,84 @@ func ExampleMiddleware_customAttributes() {
 		// attribute.String("deployment.slot", os.Getenv("DEPLOYMENT_SLOT")),
 		),
 	))
+	_ = app
+}
+
+// ExampleMiddleware_inboundBaggage shows the recommended pattern for
+// reading inbound baggage and propagating it onward to downstream calls.
+//
+// otelfunc hydrates ctx with the host-supplied baggage automatically, so
+// user code only needs the standard go.opentelemetry.io/otel/baggage API.
+// Standard instrumentation libraries (otelhttp, otelgrpc) read baggage off
+// ctx at call time and emit the W3C baggage header without extra wiring.
+func ExampleMiddleware_inboundBaggage() {
+	tp := sdktrace.NewTracerProvider()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	otel.SetTracerProvider(tp)
+	// Add Baggage{} so otel.GetTextMapPropagator() also handles baggage.
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+
+	app := sdk.FunctionApp()
+	app.Use(otelfunc.Middleware())
+
+	app.HTTP("hello", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		// 1. Read whatever baggage upstream attached.
+		bag := baggage.FromContext(ctx)
+		if tenant := bag.Member("tenant").Value(); tenant != "" {
+			slog.InfoContext(ctx, "serving tenant", "tenant", tenant)
+		}
+
+		// 2. Add a baggage member of our own. The new value will travel
+		//    on every outbound HTTP/gRPC call we make below.
+		userMember, _ := baggage.NewMemberRaw("user_id", "u-42")
+		newBag, _ := bag.SetMember(userMember)
+		ctx = baggage.ContextWithBaggage(ctx, newBag)
+
+		// 3. Make an outbound call. otelhttp.NewTransport reads baggage
+		//    off ctx at call time.
+		//
+		//    client := &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}
+		//    resp, err := client.Do(req.WithContext(ctx))
+
+		_ = ctx
+		w.WriteHeader(http.StatusOK)
+	})
+	_ = app
+}
+
+// ExampleInvocationContext_outboundTraceAttributes shows the niche use
+// case for ic.OutboundTraceAttributes: tagging the host's parent activity
+// span (the one that becomes a "request" record in App Insights). Most
+// users do not need this — span attributes set via span.SetAttributes are
+// exported by the worker's own TracerProvider and land in the same OTel
+// backend.
+//
+// Use this only when you need a tag to appear on the host's "requests"
+// table specifically (e.g. for a KQL filter like
+// `requests | where customDimensions.tenant == "contoso"`).
+func ExampleInvocationContext_outboundTraceAttributes() {
+	app := sdk.FunctionApp()
+	app.HTTP("hello", func(w http.ResponseWriter, r *http.Request) {
+		ic, _ := sdk.FromContext(r.Context())
+
+		// Standard OTel pattern for span attrs (worker span -> App Insights):
+		span := trace.SpanFromContext(r.Context())
+		span.SetAttributes(attribute.String("user.id", "u-42"))
+
+		// Niche escape hatch for host parent-span tags:
+		if ic != nil {
+			ic.OutboundTraceAttributes = map[string]string{
+				"tenant":      r.Header.Get("X-Tenant"),
+				"result.kind": "ok",
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 	_ = app
 }

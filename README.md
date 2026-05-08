@@ -145,7 +145,37 @@ Historically, Go was only supported on Azure Functions via "Custom Handlers" (an
 ---
 
 ## Telemetry & Observability
-The Azure Functions Go worker contains built-in observability features that integrate automatically with Azure Application Insights. See the [developer manual](TECHNICAL_SPEC.md) for details.
+
+The worker emits structured logs and distributed traces with minimal setup.
+
+### Structured logging
+
+The SDK installs an [`slog`](https://pkg.go.dev/log/slog) handler at package init that routes every record over the gRPC log channel back to the host. Each entry automatically carries `invocation_id`, `function_name`, and `trigger_type`, so logs in Application Insights are correlated to the right invocation without any user wiring:
+
+```go
+slog.InfoContext(ctx, "processing item", "item_id", id, "size_bytes", n)
+```
+
+The default handler honors the host's per-category log levels and the `--verbose` flag. Call `slog.SetDefault` yourself if you need a different backend.
+
+### OpenTelemetry distributed tracing
+
+The [`middleware/otelfunc`](middleware/otelfunc) package provides an `sdk.Middleware` that creates a server-kind span around every invocation, extracts the host's W3C trace context so user spans correlate end-to-end, advertises the `WorkerOpenTelemetryEnabled` capability so the host stops double-emitting telemetry, and force-flushes after each invocation (critical on consumption-style plans where the worker may be frozen).
+
+```go
+import (
+    "github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+)
+
+exp, _ := otlptracehttp.New(ctx)
+app := sdk.FunctionApp()
+app.Use(otelfunc.Middleware(otelfunc.WithExporter(exp)))
+```
+
+Inbound W3C baggage is hydrated onto `ctx` automatically — read with `baggage.FromContext(ctx)`, propagate to your downstream calls with `otelhttp.NewTransport(...)` / `otelgrpc` interceptors. See `package otelfunc` godoc for full options including `WithTracerProvider`, `WithPropagator`, custom span names, and the `AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED` kill switch.
+
+For a deeper architectural overview see the [developer manual](TECHNICAL_SPEC.md).
 
 ## Contributing
 
