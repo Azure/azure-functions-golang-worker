@@ -64,7 +64,13 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	olog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/log/global"
+	lognoop "go.opentelemetry.io/otel/log/noop"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
@@ -163,6 +169,38 @@ func WithExporter(e sdktrace.SpanExporter) Option {
 	})
 }
 
+// WithLoggerProvider sets the OpenTelemetry LoggerProvider the SDK's
+// slog handler will bridge user log records to. Highest priority — wins
+// over [WithLogExporter] and the global [log.LoggerProvider].
+//
+// When a non-noop LoggerProvider is configured (whether explicitly via
+// this option, via [WithLogExporter], via the global, or via the
+// OTEL_EXPORTER_OTLP_ENDPOINT auto-config) the middleware sets it as the
+// global LoggerProvider so the SDK's slog→OTel bridge picks it up.
+func WithLoggerProvider(lp olog.LoggerProvider) Option {
+	return optionFunc(func(c *config) {
+		if lp != nil {
+			c.lp = lp
+		}
+	})
+}
+
+// WithLogExporter wires up a log Exporter. The middleware will build a
+// LoggerProvider around the exporter using a [BatchProcessor] and the
+// same default Resource as [WithExporter], then set it as the global
+// LoggerProvider so user slog records flow through the OTel logs
+// pipeline alongside the host's RpcLog channel.
+//
+// Use this when you want sane defaults without constructing a
+// LoggerProvider yourself; for full control, use [WithLoggerProvider].
+//
+// Ignored when [WithLoggerProvider] is also passed.
+func WithLogExporter(e sdklog.Exporter) Option {
+	return optionFunc(func(c *config) {
+		c.logExporter = e
+	})
+}
+
 // WithPropagator sets the TextMapPropagator used to extract incoming W3C
 // trace context from sdk.InvocationContext. Defaults to the global
 // otel.GetTextMapPropagator() if non-empty, otherwise propagation.TraceContext{}.
@@ -217,24 +255,35 @@ func WithAttributes(attrs ...attribute.KeyValue) Option {
 }
 
 type config struct {
-	tp         trace.TracerProvider
-	exporter   sdktrace.SpanExporter
-	propagator propagation.TextMapPropagator
-	flusher    Flusher
-	flusherSet bool // tracks whether the user explicitly set a flusher (or disabled it)
-	spanName   func(*sdk.InvocationContext) string
-	extraAttrs []attribute.KeyValue
+	tp          trace.TracerProvider
+	exporter    sdktrace.SpanExporter
+	lp          olog.LoggerProvider
+	logExporter sdklog.Exporter
+	propagator  propagation.TextMapPropagator
+	flusher     Flusher
+	flusherSet  bool // tracks whether the user explicitly set a flusher (or disabled it)
+	spanName    func(*sdk.InvocationContext) string
+	extraAttrs  []attribute.KeyValue
 }
 
 // otelMiddleware is the [sdk.Middleware] implementation Middleware
 // returns. It also satisfies [sdk.CapabilityProvider] so the worker
 // dispatcher can pick up the OpenTelemetry capability flags at App.Use
-// time.
+// time, and [sdk.ShutdownProvider] so any TracerProvider/LoggerProvider
+// the middleware built itself gets flushed and released cleanly when the
+// worker exits.
 type otelMiddleware struct {
 	tracer       trace.Tracer
 	cfg          *config
 	enabled      bool
 	capabilities map[string]string
+
+	// ownedTP / ownedLP are set when Middleware constructed the providers
+	// itself (via WithExporter, WithLogExporter, or env-var auto-config).
+	// Only owned providers are shut down by [otelMiddleware.Shutdown];
+	// user-supplied providers are the user's responsibility.
+	ownedTP *sdktrace.TracerProvider
+	ownedLP *sdklog.LoggerProvider
 }
 
 // Wrap implements [sdk.Middleware].
@@ -351,6 +400,9 @@ func Middleware(opts ...Option) sdk.Middleware {
 	//   1. WithTracerProvider — explicitly given, use as-is.
 	//   2. WithExporter — build a TracerProvider with a default Resource.
 	//   3. otel.GetTracerProvider() — honor the global, may be a noop.
+	//   4. OTEL_EXPORTER_OTLP_ENDPOINT env var — auto-build an OTLP HTTP
+	//      TracerProvider so a vanilla `app.Use(otelfunc.Middleware())`
+	//      configures end-to-end tracing with no in-code wiring.
 	//
 	// We only run the (relatively expensive) noop detection in case 3,
 	// where we cannot otherwise tell whether the global has been wired
@@ -358,10 +410,12 @@ func Middleware(opts ...Option) sdk.Middleware {
 	// we trust their configuration and advertise the capability.
 	usedFallback := false
 	if cfg.tp == nil && cfg.exporter != nil {
-		cfg.tp = sdktrace.NewTracerProvider(
+		owned := sdktrace.NewTracerProvider(
 			sdktrace.WithBatcher(cfg.exporter),
 			sdktrace.WithResource(buildDefaultResource()),
 		)
+		cfg.tp = owned
+		m.ownedTP = owned
 	}
 	if cfg.tp == nil {
 		cfg.tp = otel.GetTracerProvider()
@@ -369,10 +423,54 @@ func Middleware(opts ...Option) sdk.Middleware {
 	}
 
 	if usedFallback && isNoopTracerProvider(cfg.tp) {
+		// Try the env-var auto-config path before declaring the
+		// middleware inactive. When OTEL_EXPORTER_OTLP_ENDPOINT is set
+		// users expect OTel to "just work"; building the TP for them
+		// matches the behavior of every other OTel SDK ecosystem.
+		if owned, err := buildOTLPTracerProvider(); err == nil && owned != nil {
+			cfg.tp = owned
+			m.ownedTP = owned
+			otel.SetTracerProvider(owned)
+			usedFallback = false
+		}
+	}
+
+	if usedFallback && isNoopTracerProvider(cfg.tp) {
 		// Pass-through: no real exporter is wired up. The user has not
 		// asked for OpenTelemetry, so we should not advertise the
 		// capability or override the host's telemetry path.
 		return m
+	}
+
+	// Resolve LoggerProvider in the same priority order as the
+	// TracerProvider. The SDK's slog handler bridges to the global
+	// LoggerProvider (set on success by SetLoggerProvider below), so any
+	// user slog records flow through the OTel logs pipeline alongside
+	// the host's RpcLog channel.
+	if cfg.lp == nil && cfg.logExporter != nil {
+		ownedLP := sdklog.NewLoggerProvider(
+			sdklog.WithProcessor(sdklog.NewBatchProcessor(cfg.logExporter)),
+			sdklog.WithResource(buildDefaultResource()),
+		)
+		cfg.lp = ownedLP
+		m.ownedLP = ownedLP
+	}
+	if cfg.lp == nil {
+		if existing := global.GetLoggerProvider(); !isNoopLoggerProvider(existing) {
+			cfg.lp = existing
+		}
+	}
+	if cfg.lp == nil {
+		// Auto-OTLP for logs mirrors the trace path. Builds only when
+		// OTEL_EXPORTER_OTLP_ENDPOINT is set and the user has not wired
+		// a LoggerProvider themselves.
+		if owned, err := buildOTLPLoggerProvider(); err == nil && owned != nil {
+			cfg.lp = owned
+			m.ownedLP = owned
+		}
+	}
+	if cfg.lp != nil {
+		global.SetLoggerProvider(cfg.lp)
 	}
 
 	// Auto-flush via the TracerProvider when the user hasn't configured a
@@ -559,4 +657,94 @@ func buildInboundBaggage(in map[string]string) baggage.Baggage {
 		bag = next
 	}
 	return bag
+}
+
+// Shutdown implements [sdk.ShutdownProvider]. It flushes and releases any
+// TracerProvider or LoggerProvider that the middleware constructed itself
+// (via WithExporter, WithLogExporter, or env-var auto-config). Providers
+// the user supplied via [WithTracerProvider]/[WithLoggerProvider] are NOT
+// shut down here — they remain the user's responsibility.
+//
+// The worker invokes Shutdown after the gRPC stream closes or on
+// SIGTERM/SIGINT, so user code does not need a defer cleanup() line in
+// main(). Errors from each provider are collected and the first non-nil
+// error is returned; the worker logs it and proceeds with process exit.
+func (m *otelMiddleware) Shutdown(ctx context.Context) error {
+	var firstErr error
+	if m.ownedTP != nil {
+		if err := m.ownedTP.Shutdown(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if m.ownedLP != nil {
+		if err := m.ownedLP.Shutdown(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// buildOTLPTracerProvider returns a TracerProvider configured against the
+// OTLP HTTP endpoint specified by the standard OpenTelemetry env vars
+// (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS,
+// OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf). Returns (nil, nil) when no
+// endpoint is set so the caller can leave the global TP untouched.
+func buildOTLPTracerProvider() (*sdktrace.TracerProvider, error) {
+	if !hasOTLPEndpoint() {
+		return nil, nil
+	}
+	exporter, err := otlptracehttp.New(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(buildDefaultResource()),
+	), nil
+}
+
+// buildOTLPLoggerProvider returns a LoggerProvider configured against the
+// OTLP HTTP endpoint specified by the standard OpenTelemetry env vars.
+// Returns (nil, nil) when no endpoint is set so the caller can leave the
+// global LP untouched.
+func buildOTLPLoggerProvider() (*sdklog.LoggerProvider, error) {
+	if !hasOTLPEndpoint() {
+		return nil, nil
+	}
+	exporter, err := otlploghttp.New(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
+		sdklog.WithResource(buildDefaultResource()),
+	), nil
+}
+
+// hasOTLPEndpoint reports whether the standard OpenTelemetry env vars are
+// configured to point at an OTLP collector. We check the generic
+// OTEL_EXPORTER_OTLP_ENDPOINT plus the per-signal overrides, matching
+// the precedence the official otlphttp/otlpgrpc exporters use internally.
+func hasOTLPEndpoint() bool {
+	for _, key := range []string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+	} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// isNoopLoggerProvider reports whether the given LoggerProvider is the
+// canonical noop returned by go.opentelemetry.io/otel/log/noop. Used to
+// decide whether the global is already wired up by the user.
+func isNoopLoggerProvider(lp olog.LoggerProvider) bool {
+	if lp == nil {
+		return true
+	}
+	_, ok := lp.(lognoop.LoggerProvider)
+	return ok
 }

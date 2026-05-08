@@ -1,9 +1,13 @@
 package worker
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
@@ -74,15 +78,63 @@ func Start(app *sdk.App) {
 	// nil and skips advertising HttpUri in WorkerInitResponse.
 	dispatcher.HTTPProxy = startHTTPProxy(app)
 
+	// Trap SIGTERM / SIGINT so middleware-owned resources (e.g. OTel
+	// providers) get a chance to flush and shut down cleanly when the
+	// host or platform asks the worker to terminate. The signal handler
+	// closes the recv loop's context indirectly by stopping the sender
+	// goroutine; the recv loop unblocks and Start falls through to the
+	// shutdown path below.
+	signalCtx, signalStop := signalContext(dispatcher.systemLogger)
+	defer signalStop()
+
 	// Recv loop. handleBidiStream owns the gRPC client.Recv call; it
 	// dispatches every received message and pushes responses through the
 	// outbound sender. Logs flow through logWriter independently.
+	go func() {
+		<-signalCtx.Done()
+		// Cancel reads by closing the gRPC client so handleBidiStream
+		// returns. We rely on the standard io.EOF path below to log
+		// "Stream closed" and proceed to shutdown.
+		_ = client.CloseSend()
+	}()
 	handleBidiStream(client, dispatcher, send)
 
 	// Once Recv exits (host closed the stream or terminated us), shut the
 	// sender down so any final logs drain before we return.
 	stopSender()
 	<-senderDone
+
+	// Run middleware-registered shutdowns. Bounded so a misbehaving
+	// exporter cannot delay process exit indefinitely.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := app.RunShutdowns(shutdownCtx); err != nil {
+		dispatcher.systemLogger.Warn("Middleware shutdown returned error", "err", err)
+	}
+}
+
+// signalContext returns a context that is cancelled when the process
+// receives SIGTERM or SIGINT (Ctrl-C in interactive sessions, host-driven
+// termination in production). The returned stop function should be deferred
+// to release the signal handler when the worker exits via the normal stream
+// close path.
+func signalContext(logger *slog.Logger) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		select {
+		case sig := <-ch:
+			logger.Info("Received termination signal; initiating shutdown", "signal", sig.String())
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	stop := func() {
+		signal.Stop(ch)
+		cancel()
+	}
+	return ctx, stop
 }
 
 // handleBidiStream reads StreamingMessages from the host and dispatches

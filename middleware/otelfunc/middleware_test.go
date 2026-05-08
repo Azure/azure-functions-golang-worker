@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
+	lognoop "go.opentelemetry.io/otel/log/noop"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -545,6 +547,98 @@ func TestBuildInboundBaggage_SkipsInvalidEntries(t *testing.T) {
 	}
 	if bag.Len() != 1 {
 		t.Errorf("expected only 1 valid member kept, got %d", bag.Len())
+	}
+}
+
+func TestMiddleware_OwnsTracerProvider_ShutdownReleasesIt(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	mw := Middleware(WithExporter(exp))
+
+	sp, ok := mw.(sdk.ShutdownProvider)
+	if !ok {
+		t.Fatal("Middleware must implement sdk.ShutdownProvider")
+	}
+	if err := sp.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown returned err: %v", err)
+	}
+}
+
+func TestMiddleware_DoesNotShutdownUserProvidedTracerProvider(t *testing.T) {
+	tp, _ := newTestProvider()
+	mw := Middleware(WithTracerProvider(tp))
+
+	sp, ok := mw.(sdk.ShutdownProvider)
+	if !ok {
+		t.Fatal("Middleware must implement sdk.ShutdownProvider")
+	}
+	// Should be a no-op when the user supplied the TP.
+	if err := sp.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown returned err: %v", err)
+	}
+	// User-supplied TP must still be usable after Shutdown — i.e. we did
+	// not call Shutdown on it.
+	tracer := tp.Tracer("post-shutdown")
+	_, span := tracer.Start(context.Background(), "post-shutdown-span")
+	span.End()
+}
+
+func TestHasOTLPEndpoint(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+	if hasOTLPEndpoint() {
+		t.Error("hasOTLPEndpoint should be false when no env vars set")
+	}
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://example.com:4318")
+	if !hasOTLPEndpoint() {
+		t.Error("hasOTLPEndpoint should be true when generic endpoint is set")
+	}
+}
+
+func TestMiddleware_AutoOTLP_BuildsTPWhenEnvVarSet(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9999") // unreachable but parseable
+
+	mw := Middleware()
+
+	cp, ok := mw.(sdk.CapabilityProvider)
+	if !ok {
+		t.Fatal("Middleware must implement sdk.CapabilityProvider")
+	}
+	if cp.Capabilities()[CapabilityWorkerOpenTelemetryEnabled] != "true" {
+		t.Error("auto-OTLP path should advertise WorkerOpenTelemetryEnabled=true")
+	}
+
+	// Shutdown should succeed (the unreachable endpoint just means no
+	// telemetry is delivered, not that Shutdown errors).
+	sp, _ := mw.(sdk.ShutdownProvider)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_ = sp.Shutdown(ctx)
+}
+
+func TestMiddleware_AutoOTLP_NoEnvVarStaysPassThrough(t *testing.T) {
+	// Keep env explicitly empty so we don't pick up any ambient setting.
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+
+	mw := Middleware()
+
+	cp, ok := mw.(sdk.CapabilityProvider)
+	if !ok {
+		t.Fatal("Middleware must implement sdk.CapabilityProvider")
+	}
+	if got := cp.Capabilities()[CapabilityWorkerOpenTelemetryEnabled]; got != "" {
+		t.Errorf("with no exporter and no env var, capability should be empty; got %q", got)
+	}
+}
+
+func TestIsNoopLoggerProvider(t *testing.T) {
+	if !isNoopLoggerProvider(nil) {
+		t.Error("nil LoggerProvider should be classified as noop")
+	}
+	if !isNoopLoggerProvider(lognoop.NewLoggerProvider()) {
+		t.Error("noop LoggerProvider should be classified as noop")
 	}
 }
 

@@ -30,6 +30,11 @@ type App struct {
 	// time. The worker dispatcher copies this into
 	// WorkerInitResponse.Capabilities. See [App.Capabilities].
 	capabilities map[string]string
+	// shutdowns are cleanup callbacks contributed by middlewares that
+	// implement [ShutdownProvider]. The worker invokes them sequentially
+	// in registration order after the gRPC stream closes; see
+	// [App.RunShutdowns].
+	shutdowns []func(context.Context) error
 }
 
 // FunctionApp creates a new App instance.

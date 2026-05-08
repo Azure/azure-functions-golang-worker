@@ -257,3 +257,69 @@ func TestApp_Capabilities_EmptyMapWhenNone(t *testing.T) {
 		t.Errorf("Capabilities = %v, want empty map", got)
 	}
 }
+
+// shutdownProvider is a test middleware that satisfies both Middleware and
+// ShutdownProvider. It records each Shutdown call so registration order and
+// invocation count can be asserted.
+type shutdownProviderMW struct {
+	id        string
+	shutdowns *[]string
+	err       error
+}
+
+func (m *shutdownProviderMW) Wrap(next Handler) Handler { return next }
+func (m *shutdownProviderMW) Shutdown(ctx context.Context) error {
+	*m.shutdowns = append(*m.shutdowns, m.id)
+	return m.err
+}
+
+func TestApp_Use_RegistersShutdownProvider(t *testing.T) {
+	app := FunctionApp()
+	var calls []string
+	app.Use(&shutdownProviderMW{id: "first", shutdowns: &calls})
+	app.Use(&shutdownProviderMW{id: "second", shutdowns: &calls})
+
+	if err := app.RunShutdowns(context.Background()); err != nil {
+		t.Fatalf("RunShutdowns returned err: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 shutdowns, got %d (%v)", len(calls), calls)
+	}
+	if calls[0] != "first" || calls[1] != "second" {
+		t.Errorf("shutdown order: got %v, want [first second]", calls)
+	}
+}
+
+func TestApp_RunShutdowns_NoMiddleware_NoError(t *testing.T) {
+	app := FunctionApp()
+	if err := app.RunShutdowns(context.Background()); err != nil {
+		t.Errorf("RunShutdowns with no middleware returned err: %v", err)
+	}
+}
+
+func TestApp_RunShutdowns_FirstErrorReturned(t *testing.T) {
+	wantErr := errors.New("flush failed")
+	app := FunctionApp()
+	var calls []string
+	app.Use(&shutdownProviderMW{id: "first", shutdowns: &calls, err: wantErr})
+	app.Use(&shutdownProviderMW{id: "second", shutdowns: &calls})
+
+	err := app.RunShutdowns(context.Background())
+	if !errors.Is(err, wantErr) {
+		t.Errorf("RunShutdowns err = %v, want %v", err, wantErr)
+	}
+	// Second shutdown must still run despite first returning an error.
+	if len(calls) != 2 || calls[1] != "second" {
+		t.Errorf("expected second shutdown to run after first error; got %v", calls)
+	}
+}
+
+func TestApp_Use_NonShutdownProviderIgnored(t *testing.T) {
+	// Plain Middleware values should not interfere with shutdown
+	// registration or RunShutdowns behavior.
+	app := FunctionApp()
+	app.Use(MiddlewareFunc(func(next Handler) Handler { return next }))
+	if err := app.RunShutdowns(context.Background()); err != nil {
+		t.Errorf("RunShutdowns with non-ShutdownProvider middleware returned err: %v", err)
+	}
+}
