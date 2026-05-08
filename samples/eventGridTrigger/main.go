@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
@@ -12,19 +12,20 @@ import (
 
 // EventGridHandler handles Event Grid trigger events.
 func EventGridHandler(ctx context.Context, event bindings.EventGridEvent) error {
-	log.Printf("Event Grid trigger executed")
-	log.Printf("Event ID: %s", event.Id)
-	log.Printf("Event Type: %s", event.EventType)
-	log.Printf("Subject: %s", event.Subject)
-	log.Printf("Event Time: %s", event.EventTime)
+	slog.InfoContext(ctx, "eventgrid trigger executed",
+		"event_id", event.Id,
+		"event_type", event.EventType,
+		"subject", event.Subject,
+		"event_time", event.EventTime,
+	)
 
 	// Unmarshal the event data into a custom struct if needed
 	var data map[string]interface{}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
-		log.Printf("Error unmarshaling event data: %v", err)
+		slog.ErrorContext(ctx, "unmarshal event data failed", "err", err)
 		return err
 	}
-	log.Printf("Event Data: %v", data)
+	slog.InfoContext(ctx, "event data", "data", data)
 	return nil
 }
 

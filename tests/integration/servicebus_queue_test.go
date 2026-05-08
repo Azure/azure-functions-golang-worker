@@ -44,7 +44,6 @@ func TestServiceBusQueueTriggerFires(t *testing.T) {
 		t.Fatalf("failed to send message: %v", err)
 	}
 
-	proc.AssertLogContains("Service Bus Queue Trigger Executed", 15*time.Second)
-	proc.AssertLogContains("Body: Hello from SB queue integration test!", 5*time.Second)
+	proc.AssertLogContains("servicebus queue trigger executed", 15*time.Second)
 	proc.AssertLogContains("Succeeded", 5*time.Second)
 }

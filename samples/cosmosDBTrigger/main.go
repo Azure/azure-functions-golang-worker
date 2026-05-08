@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
@@ -13,10 +13,13 @@ import (
 func CosmosDBTriggerHandler(ctx context.Context, docs []bindings.CosmosDocument) error {
 	if len(docs) > 0 {
 		for _, doc := range docs {
-			log.Printf("Document ID: %s, Data: %s\n", doc.ID, string(doc.Data))
+			slog.InfoContext(ctx, "cosmosdb document received",
+				"document_id", doc.ID,
+				"data", string(doc.Data),
+			)
 		}
 	} else {
-		log.Println("No documents received")
+		slog.InfoContext(ctx, "cosmosdb trigger fired with no documents")
 	}
 	return nil
 }

@@ -74,6 +74,6 @@ func TestEventHubTriggerFires(t *testing.T) {
 		time.Sleep(10 * time.Second)
 	}
 
-	proc.AssertLogContains("EventHub Trigger Executed", 5*time.Second)
+	proc.AssertLogContains("eventhub trigger executed", 5*time.Second)
 	proc.AssertLogContains("Succeeded", 5*time.Second)
 }

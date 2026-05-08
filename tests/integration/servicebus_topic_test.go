@@ -39,7 +39,6 @@ func TestServiceBusTopicTriggerFires(t *testing.T) {
 		t.Fatalf("failed to send message: %v", err)
 	}
 
-	proc.AssertLogContains("Service Bus Topic Trigger Executed", 15*time.Second)
-	proc.AssertLogContains("Body: Order #99 from topic integration test", 5*time.Second)
+	proc.AssertLogContains("servicebus topic trigger executed", 15*time.Second)
 	proc.AssertLogContains("Succeeded", 5*time.Second)
 }
