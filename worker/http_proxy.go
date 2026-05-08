@@ -200,6 +200,14 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 
 	// Wait for the gRPC side to identify the function. The gRPC side fires
 	// closely in time to the HTTP forward, but ordering is not guaranteed.
+	//
+	// Use time.NewTimer + defer t.Stop() rather than time.After so the
+	// timer is reclaimed as soon as we leave the select on the success or
+	// client-cancel paths. time.After's timer would otherwise stay alive
+	// for the full 4-minute timeout even after the invocation completed.
+	timeout := time.NewTimer(httpInvocationWaitTimeout)
+	defer timeout.Stop()
+
 	var loadedFunc *LoadedFunction
 	select {
 	case loadedFunc = <-pending.grpc:
@@ -219,7 +227,7 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		p.deletePending(invocationID)
 		return
-	case <-time.After(httpInvocationWaitTimeout):
+	case <-timeout.C:
 		log.Printf("HTTP proxy: invocation %s timed out after %v waiting for gRPC trigger", invocationID, httpInvocationWaitTimeout)
 		p.deletePending(invocationID)
 		http.Error(w, "timed out waiting for gRPC trigger", http.StatusGatewayTimeout)
@@ -293,10 +301,16 @@ func (p *httpProxy) notifyGRPCArrival(req *pb.InvocationRequest, lf *LoadedFunct
 
 	pending.grpc <- lf
 
+	// time.NewTimer + defer t.Stop() so the timer is reclaimed promptly on
+	// the success path; time.After would keep the timer alive for the full
+	// 4-minute timeout after every invocation completed.
+	timeout := time.NewTimer(httpInvocationWaitTimeout)
+	defer timeout.Stop()
+
 	select {
 	case status := <-pending.done:
 		return status, nil
-	case <-time.After(httpInvocationWaitTimeout):
+	case <-timeout.C:
 		log.Printf("HTTP proxy: invocation %s timed out after %v waiting for HTTP request", invocationID, httpInvocationWaitTimeout)
 		p.deletePending(invocationID)
 		return nil, fmt.Errorf("timed out waiting for HTTP request for invocation %s", invocationID)
