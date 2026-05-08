@@ -17,8 +17,33 @@ type LoadedFunction struct {
 	Fields   map[string]*funcField
 }
 
-func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string) *pb.StreamingMessage {
+func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *Dispatcher) *pb.StreamingMessage {
 	log.Printf("Received WorkerInitRequest: RequestId=%s", requestId)
+
+	// Capabilities the Go worker advertises. These mirror what the Functions
+	// host expects from a modern out-of-proc worker (Python / dotnet-isolated
+	// declare a similar set). When the worker also has HTTP triggers and
+	// successfully started the loopback HTTP proxy, "HttpUri" is added — the
+	// host will then forward HTTP requests to that URL via YARP and skip the
+	// gRPC body for HTTP triggers, enabling true streaming.
+	capabilities := map[string]string{
+		"TypedDataCollection":               "true",
+		"WorkerStatus":                      "true",
+		"RpcHttpBodyOnly":                   "true",
+		"RawHttpBodyBytes":                  "true",
+		"RpcHttpTriggerMetadataRemoved":     "true",
+		"UseNullableValueDictionaryForHttp": "true",
+		"HandlesWorkerTerminateMessage":     "true",
+	}
+
+	if disp != nil && disp.HTTPProxy != nil {
+		capabilities["HttpUri"] = disp.HTTPProxy.url
+		// Required so route parameters still flow via gRPC trigger metadata
+		// when the body is being proxied over HTTP.
+		capabilities["RequiresRouteParameters"] = "true"
+		log.Printf("Advertising HttpUri=%s for streaming HTTP triggers", disp.HTTPProxy.url)
+	}
+
 	return &pb.StreamingMessage{
 		RequestId: requestId,
 		Content: &pb.StreamingMessage_WorkerInitResponse{
@@ -28,6 +53,7 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string) *pb.St
 					Result: "Success",
 				},
 				WorkerVersion: "1.0.0",
+				Capabilities:  capabilities,
 			},
 		},
 	}
@@ -199,6 +225,39 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 		return nil, fmt.Errorf("function with ID %s not loaded", funcID)
 	}
 	loadedFunc := val.(*LoadedFunction)
+
+	// HTTP streaming path: when the host is forwarding HTTP via the
+	// "HttpUri" capability, the user handler runs against the live
+	// http.ResponseWriter inside the embedded HTTP proxy. The gRPC side
+	// just waits for completion and returns a minimal InvocationResponse.
+	if disp.HTTPProxy != nil && isHTTPHandler(loadedFunc) && isHTTPProxiedInvocation(req) {
+		status, err := disp.HTTPProxy.notifyGRPCArrival(req, loadedFunc)
+		if err != nil {
+			// Don't return a Go error — handleBidiStream treats those as
+			// fatal. A rendezvous failure (timeout, cancelled HTTP request)
+			// is a transient per-invocation problem, not a worker-level
+			// crash. Surface it to the host as a Failure InvocationResponse
+			// so this invocation reports an error and the worker stays up
+			// to serve the next one.
+			log.Printf("HTTP proxy: rendezvous failed for invocation %s: %v", req.GetInvocationId(), err)
+			status = &pb.StatusResult{
+				Status: pb.StatusResult_Failure,
+				Exception: &pb.RpcException{
+					Message: err.Error(),
+					Source:  "HTTP proxy rendezvous",
+				},
+			}
+		}
+		return &pb.StreamingMessage{
+			RequestId: requestId,
+			Content: &pb.StreamingMessage_InvocationResponse{
+				InvocationResponse: &pb.InvocationResponse{
+					InvocationId: req.InvocationId,
+					Result:       status,
+				},
+			},
+		}, nil
+	}
 
 	ft := reflect.TypeOf(loadedFunc.Function.Func)
 	args := make([]reflect.Value, ft.NumIn())

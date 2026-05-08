@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync"
 
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 
@@ -56,6 +57,17 @@ func sendStartStreamMessage(client grpc.BidiStreamingClient[pb.StreamingMessage,
 }
 
 func handleBidiStream(client grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], disp *Dispatcher) {
+	// gRPC ClientStream.SendMsg is not safe for concurrent use; sendMu
+	// serializes Send calls across the per-message dispatch goroutines.
+	var sendMu sync.Mutex
+	sendResp := func(respMsg *pb.StreamingMessage) {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		if err := client.Send(respMsg); err != nil {
+			log.Printf("Error sending response: %v", err)
+		}
+	}
+
 	for {
 		reqMsg, err := client.Recv()
 		if err == io.EOF {
@@ -66,17 +78,30 @@ func handleBidiStream(client grpc.BidiStreamingClient[pb.StreamingMessage, pb.St
 			log.Fatalf("Error receiving from stream: %v", err)
 		}
 
-		respMsg, err := disp.processRequestMessage(reqMsg)
-		if err != nil {
-			log.Fatalf("Error processing request: %v", err)
-		} else if respMsg == nil {
-			// fmt.Println("Warning: ProcessRequstMessage returned nil, no response will be sent.")
-			continue
-		}
-
-		// fmt.Printf("Sending response: %v\n", respMsg)
-		if err := client.Send(respMsg); err != nil {
-			log.Fatalf("Error sending response: %v", err)
-		}
+		// Dispatch every message on its own goroutine. The host correlates
+		// responses by function_id / invocation_id / request_id, not by
+		// arrival order, so worker-side ordering is irrelevant; control-
+		// plane sequencing (init before load, load before invocation,
+		// terminate last) is enforced by the host already. Matches the
+		// concurrency model used by the Python and .NET-isolated workers.
+		//
+		// Critically, this keeps the receive loop draining the stream
+		// while long-running streaming invocations are in flight, so
+		// health pings, env reloads, terminate, and concurrent invocations
+		// don't queue behind an SSE / LLM / long-poll handler.
+		go func(msg *pb.StreamingMessage) {
+			respMsg, err := disp.processRequestMessage(msg)
+			if err != nil {
+				// Per-message errors must not crash the worker. The host
+				// will retry or time out the affected request; other
+				// in-flight messages keep flowing.
+				log.Printf("Error processing %T: %v", msg.GetContent(), err)
+				return
+			}
+			if respMsg == nil {
+				return
+			}
+			sendResp(respMsg)
+		}(reqMsg)
 	}
 }

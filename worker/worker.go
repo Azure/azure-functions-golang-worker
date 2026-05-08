@@ -15,6 +15,12 @@ func Start(app *sdk.App) {
 
 	dispatcher := NewDispatcher(config, app)
 
+	// Start the in-process HTTP proxy (used for HTTP streaming via the
+	// "HttpUri" capability). Returns nil if the app has no HTTP triggers
+	// or the loopback listener can't be opened — in either case the worker
+	// falls back to the gRPC-buffered HTTP path.
+	dispatcher.HTTPProxy = startHTTPProxy(app)
+
 	// Log that we are starting
 	log.Printf("Starting Worker for Worker ID: %s", config.FunctionsWorkerId)
 
