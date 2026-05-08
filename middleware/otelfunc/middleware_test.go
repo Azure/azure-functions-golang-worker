@@ -8,6 +8,7 @@ import (
 	"github.com/azure/azure-functions-golang-worker/sdk"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -475,4 +476,76 @@ func TestIsNoopTracerProvider(t *testing.T) {
 		t.Error("real sdk/trace.TracerProvider should not be classified as noop")
 	}
 }
+
+func TestMiddleware_InboundBaggage_VisibleToHandler(t *testing.T) {
+	tp, _ := newTestProvider()
+	mw := Middleware(WithTracerProvider(tp))
+
+	var observed baggage.Baggage
+	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error {
+		observed = baggage.FromContext(ctx)
+		return nil
+	})
+
+	ic := &sdk.InvocationContext{
+		FunctionName: "fn",
+		InvocationID: "id-1",
+		TraceContext: sdk.TraceContext{
+			Baggage: map[string]string{
+				"tenant": "contoso",
+				"region": "westus",
+			},
+		},
+	}
+
+	if err := chain(context.Background(), ic); err != nil {
+		t.Fatalf("chain returned error: %v", err)
+	}
+	if got := observed.Member("tenant").Value(); got != "contoso" {
+		t.Errorf("tenant baggage member: got %q want %q", got, "contoso")
+	}
+	if got := observed.Member("region").Value(); got != "westus" {
+		t.Errorf("region baggage member: got %q want %q", got, "westus")
+	}
+}
+
+func TestMiddleware_DoesNotTouchOutboundTraceAttributes(t *testing.T) {
+	// otelfunc deliberately does not auto-populate OutboundTraceAttributes.
+	// Span attributes the user sets via span.SetAttributes are exported by
+	// the worker's own TracerProvider; the OutboundTraceAttributes channel
+	// is reserved for the niche case where the user wants a tag on the
+	// host's parent activity span and writes to the field directly.
+	tp, _ := newTestProvider()
+	mw := Middleware(WithTracerProvider(tp))
+
+	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error {
+		// User adds a span attribute the standard way; this should NOT
+		// leak into OutboundTraceAttributes.
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String("user.id", "u-42"))
+		return nil
+	})
+
+	ic := &sdk.InvocationContext{FunctionName: "fn", InvocationID: "id-1"}
+	if err := chain(context.Background(), ic); err != nil {
+		t.Fatalf("chain returned error: %v", err)
+	}
+	if len(ic.OutboundTraceAttributes) != 0 {
+		t.Errorf("expected OutboundTraceAttributes to remain empty, got %v", ic.OutboundTraceAttributes)
+	}
+}
+
+func TestBuildInboundBaggage_SkipsInvalidEntries(t *testing.T) {
+	in := map[string]string{
+		"valid": "ok",
+		"":      "bad-key", // empty key is invalid per the baggage spec
+	}
+	bag := buildInboundBaggage(in)
+	if got := bag.Member("valid").Value(); got != "ok" {
+		t.Errorf("valid member: got %q want %q", got, "ok")
+	}
+	if bag.Len() != 1 {
+		t.Errorf("expected only 1 valid member kept, got %d", bag.Len())
+	}
+}
+
 

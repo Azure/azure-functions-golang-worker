@@ -46,6 +46,33 @@ type InvocationContext struct {
 	// parameters). Values are flattened to strings for ergonomic access;
 	// non-string TypedData values are skipped.
 	TriggerMetadata map[string]string
+
+	// OutboundTraceAttributes are tags the worker wants added to the
+	// host's parent activity span representing this invocation. The
+	// host copies each entry to its own current Activity via
+	// Activity.AddTag(k, v), surfacing them as span attributes on the
+	// host-emitted "request" record in Application Insights.
+	//
+	// This is rarely needed in normal OpenTelemetry usage: when the
+	// otelfunc middleware is active and a real exporter is wired up,
+	// the user's standard span.SetAttributes calls land on the worker
+	// span and are exported directly to the OTel backend — no extra
+	// plumbing required. Use this field only when you need a tag to
+	// appear on the host's parent span specifically (e.g. for KQL
+	// queries against the App Insights "requests" table that filter
+	// or group by a custom dimension).
+	//
+	// The otelfunc middleware does NOT auto-populate this field; the
+	// user writes to it directly. The dispatcher forwards the map
+	// verbatim to InvocationResponse.TraceContextAttributes.
+	//
+	// Not a baggage propagation channel. To propagate baggage to your
+	// own downstream calls, use the standard OpenTelemetry baggage
+	// API (baggage.ContextWithBaggage) plus an instrumented HTTP /
+	// gRPC client (otelhttp, otelgrpc) — those read baggage off ctx
+	// at call time. The host protocol does not support baggage
+	// propagation back to the host itself.
+	OutboundTraceAttributes map[string]string
 }
 
 // TraceContext mirrors the fields of pb.RpcTraceContext that the Functions
@@ -64,6 +91,21 @@ type TraceContext struct {
 	// Attributes carries any extra attributes the host attached to the
 	// trace context. Typically empty for inbound invocations.
 	Attributes map[string]string
+
+	// Baggage is the inbound OpenTelemetry baggage map populated by
+	// the host from its OpenTelemetry.Baggage.Current at the time of
+	// invocation dispatch. The otelfunc middleware hydrates ctx with
+	// these values via baggage.ContextWithBaggage so user code reading
+	// baggage.FromContext(ctx) sees what upstream services attached.
+	//
+	// To propagate baggage to your own downstream calls, mutate ctx
+	// via baggage.ContextWithBaggage and use otelhttp / otelgrpc — they
+	// read baggage off ctx at call time and emit the W3C baggage header.
+	//
+	// Baggage mutations are scoped to the invocation: the host protocol
+	// does not carry baggage back from worker to host, so the host's
+	// own outgoing baggage is unaffected by changes you make here.
+	Baggage map[string]string
 }
 
 // RetryContext describes the host-applied retry state for an invocation.

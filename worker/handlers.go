@@ -392,9 +392,10 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 		RequestId: requestId,
 		Content: &pb.StreamingMessage_InvocationResponse{
 			InvocationResponse: &pb.InvocationResponse{
-				InvocationId: req.InvocationId,
-				ReturnValue:  returnValue,
-				Result:       status,
+				InvocationId:           req.InvocationId,
+				ReturnValue:            returnValue,
+				Result:                 status,
+				TraceContextAttributes: ic.OutboundTraceAttributes,
 			},
 		},
 	}, nil
@@ -486,6 +487,7 @@ func convertTraceContext(tc *pb.RpcTraceContext) sdk.TraceContext {
 		TraceParent: tc.GetTraceParent(),
 		TraceState:  tc.GetTraceState(),
 		Attributes:  tc.GetAttributes(),
+		Baggage:     tc.GetBaggage(),
 	}
 }
 

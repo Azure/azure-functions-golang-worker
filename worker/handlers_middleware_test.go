@@ -244,3 +244,38 @@ func TestHandleInvocationRequest_NoMiddleware_StillRuns(t *testing.T) {
 		t.Errorf("expected Success; got %v", resp.GetInvocationResponse().Result.Status)
 	}
 }
+
+func TestHandleInvocationRequest_OutboundTraceAttributes_ForwardedToResponse(t *testing.T) {
+	// Verifies the dispatcher copies user-set ic.OutboundTraceAttributes to
+	// InvocationResponse.TraceContextAttributes verbatim (no auto-population
+	// or filtering) so the host can apply them as tags on its parent span.
+	disp := newTestDispatcher("req-tags")
+
+	rf := loadFunc(t, disp, "TagSetter", func(ctx context.Context, _ bindings.TimerInfo) error {
+		ic, ok := sdk.FromContext(ctx)
+		if !ok {
+			t.Errorf("expected InvocationContext on ctx")
+			return nil
+		}
+		ic.OutboundTraceAttributes = map[string]string{
+			"tenant":      "contoso",
+			"result.kind": "ok",
+		}
+		return nil
+	})
+
+	resp, err := handleInvocationRequest(invokeRequest(rf.FuncId, "inv-tags"), disp, "req-tags")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := resp.GetInvocationResponse().GetTraceContextAttributes()
+	if got["tenant"] != "contoso" {
+		t.Errorf("tenant: got %q want %q", got["tenant"], "contoso")
+	}
+	if got["result.kind"] != "ok" {
+		t.Errorf("result.kind: got %q want %q", got["result.kind"], "ok")
+	}
+	if len(got) != 2 {
+		t.Errorf("expected exactly 2 entries forwarded, got %d (%v)", len(got), got)
+	}
+}

@@ -62,6 +62,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -246,6 +247,16 @@ func (m *otelMiddleware) Wrap(next sdk.Handler) sdk.Handler {
 	}
 	return func(ctx context.Context, ic *sdk.InvocationContext) error {
 		ctx = m.cfg.propagator.Extract(ctx, traceContextCarrier(ic))
+
+		// Inbound baggage: hydrate ctx with the host-supplied baggage
+		// map so user code reading baggage.FromContext(ctx) sees what
+		// upstream services attached. The user can then propagate this
+		// baggage to their own downstream calls by using the standard
+		// otelhttp / otelgrpc instrumentations, which read baggage off
+		// ctx at call time.
+		if inboundBag := buildInboundBaggage(ic.TraceContext.Baggage); inboundBag.Len() > 0 {
+			ctx = baggage.ContextWithBaggage(ctx, inboundBag)
+		}
 
 		attrs := []attribute.KeyValue{
 			semconv.FaaSInvocationID(ic.InvocationID),
@@ -523,4 +534,29 @@ func isNoopTracerProvider(tp trace.TracerProvider) bool {
 	_, span := tracer.Start(context.Background(), "noop-detect")
 	defer span.End()
 	return !span.IsRecording()
+}
+
+// buildInboundBaggage converts the host-supplied baggage map into an
+// OpenTelemetry baggage.Baggage so user code can read it via the
+// standard baggage.FromContext(ctx) entry point. Invalid entries (per
+// the W3C baggage spec) are skipped silently — the inbound channel is
+// trusted host data, but defending against malformed values keeps the
+// middleware robust to upstream changes.
+func buildInboundBaggage(in map[string]string) baggage.Baggage {
+	bag := baggage.Baggage{}
+	if len(in) == 0 {
+		return bag
+	}
+	for k, v := range in {
+		member, err := baggage.NewMemberRaw(k, v)
+		if err != nil {
+			continue
+		}
+		next, err := bag.SetMember(member)
+		if err != nil {
+			continue
+		}
+		bag = next
+	}
+	return bag
 }
