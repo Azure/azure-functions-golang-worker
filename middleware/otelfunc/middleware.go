@@ -271,6 +271,39 @@ func WithAttributes(attrs ...attribute.KeyValue) Option {
 	})
 }
 
+// WithResource appends caller-supplied attributes to the default
+// Resource the middleware uses when building its own TracerProvider /
+// LoggerProvider (via [WithExporter], [WithLogExporter], or env-var
+// auto-OTLP). The attributes are merged on top of the default Resource
+// (cloud.provider=azure, cloud.platform=azure_functions, service.name)
+// so callers can extend rather than replace the defaults.
+//
+// Common use: stamp every span and log record with deployment-scoped
+// metadata that isn't suitable for OTEL_RESOURCE_ATTRIBUTES (e.g. a
+// build SHA injected via -ldflags, a typed numeric value, or anything
+// you'd rather not configure as a string in app settings):
+//
+//	app.Use(otelfunc.Middleware(
+//	    otelfunc.WithResource(
+//	        semconv.ServiceVersion(buildVersion),
+//	        semconv.DeploymentEnvironmentName("production"),
+//	        attribute.String("build.sha", buildSHA),
+//	    ),
+//	))
+//
+// May be called multiple times; attributes accumulate. Later attributes
+// override earlier ones with the same key (matching resource.Merge
+// semantics).
+//
+// Has no effect when [WithTracerProvider] AND [WithLoggerProvider] are
+// both set, since neither owned provider is built in that case. When
+// only one is set, the Resource attributes still apply to the other.
+func WithResource(attrs ...attribute.KeyValue) Option {
+	return optionFunc(func(c *config) {
+		c.resourceAttrs = append(c.resourceAttrs, attrs...)
+	})
+}
+
 type config struct {
 	tp          trace.TracerProvider
 	exporters   []sdktrace.SpanExporter
@@ -281,6 +314,7 @@ type config struct {
 	flusherSet  bool // tracks whether the user explicitly set a flusher (or disabled it)
 	spanName    func(*sdk.InvocationContext) string
 	extraAttrs  []attribute.KeyValue
+	resourceAttrs []attribute.KeyValue // appended to default Resource when middleware builds the providers
 }
 
 // otelMiddleware is the [sdk.Middleware] implementation Middleware
@@ -447,13 +481,13 @@ func Middleware(opts ...Option) sdk.Middleware {
 		for _, e := range cfg.exporters {
 			opts = append(opts, sdktrace.WithBatcher(e))
 		}
-		opts = append(opts, sdktrace.WithResource(buildDefaultResource()))
+		opts = append(opts, sdktrace.WithResource(buildDefaultResource(cfg.resourceAttrs...)))
 		owned := sdktrace.NewTracerProvider(opts...)
 		cfg.tp = owned
 		m.ownedTP = owned
 	}
 	if cfg.tp == nil {
-		if owned, err := buildOTLPTracerProvider(); err == nil && owned != nil {
+		if owned, err := buildOTLPTracerProvider(cfg.resourceAttrs...); err == nil && owned != nil {
 			cfg.tp = owned
 			m.ownedTP = owned
 		}
@@ -498,7 +532,7 @@ func Middleware(opts ...Option) sdk.Middleware {
 		for _, e := range cfg.logExporters {
 			opts = append(opts, sdklog.WithProcessor(sdklog.NewBatchProcessor(e)))
 		}
-		opts = append(opts, sdklog.WithResource(buildDefaultResource()))
+		opts = append(opts, sdklog.WithResource(buildDefaultResource(cfg.resourceAttrs...)))
 		ownedLP := sdklog.NewLoggerProvider(opts...)
 		cfg.lp = ownedLP
 		m.ownedLP = ownedLP
@@ -506,7 +540,7 @@ func Middleware(opts ...Option) sdk.Middleware {
 	if cfg.lp == nil {
 		// Auto-OTLP for logs mirrors the trace path. Builds only when
 		// OTEL_EXPORTER_OTLP_ENDPOINT (or per-signal override) is set.
-		if owned, err := buildOTLPLoggerProvider(); err == nil && owned != nil {
+		if owned, err := buildOTLPLoggerProvider(cfg.resourceAttrs...); err == nil && owned != nil {
 			cfg.lp = owned
 			m.ownedLP = owned
 		}
@@ -614,11 +648,12 @@ func classifyTrigger(t string) string {
 //   - cloud.provider = azure
 //   - cloud.platform = azure_functions
 //   - service.name   = OTEL_SERVICE_NAME / WEBSITE_SITE_NAME / "azure-functions"
+//   - any extras supplied via [WithResource] (highest precedence)
 //
 // resource.Default() already incorporates the standard environment
 // detector (OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES) so callers can
 // override any of the above with the standard OTel env vars.
-func buildDefaultResource() *resource.Resource {
+func buildDefaultResource(extra ...attribute.KeyValue) *resource.Resource {
 	attrs := []attribute.KeyValue{
 		semconv.CloudProviderAzure,
 		semconv.CloudPlatformAzureFunctions,
@@ -626,6 +661,9 @@ func buildDefaultResource() *resource.Resource {
 	if name := serviceNameFromEnv(); name != "" {
 		attrs = append(attrs, semconv.ServiceName(name))
 	}
+	// Caller-supplied attrs come last so they win on duplicate keys
+	// (resource.Merge applies right-hand-wins precedence).
+	attrs = append(attrs, extra...)
 
 	r, err := resource.Merge(
 		resource.Default(),
@@ -746,7 +784,11 @@ func (m *otelMiddleware) Shutdown(ctx context.Context) error {
 // (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS,
 // OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf). Returns (nil, nil) when no
 // endpoint is set so the caller can leave the global TP untouched.
-func buildOTLPTracerProvider() (*sdktrace.TracerProvider, error) {
+//
+// extraResource attributes are merged into the default Resource on top
+// of the env-derived defaults so [WithResource] applies to auto-OTLP
+// providers exactly as it does to WithExporter-built ones.
+func buildOTLPTracerProvider(extraResource ...attribute.KeyValue) (*sdktrace.TracerProvider, error) {
 	if !hasOTLPEndpoint() {
 		return nil, nil
 	}
@@ -756,7 +798,7 @@ func buildOTLPTracerProvider() (*sdktrace.TracerProvider, error) {
 	}
 	return sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(buildDefaultResource()),
+		sdktrace.WithResource(buildDefaultResource(extraResource...)),
 	), nil
 }
 
@@ -764,7 +806,7 @@ func buildOTLPTracerProvider() (*sdktrace.TracerProvider, error) {
 // OTLP HTTP endpoint specified by the standard OpenTelemetry env vars.
 // Returns (nil, nil) when no endpoint is set so the caller can leave the
 // global LP untouched.
-func buildOTLPLoggerProvider() (*sdklog.LoggerProvider, error) {
+func buildOTLPLoggerProvider(extraResource ...attribute.KeyValue) (*sdklog.LoggerProvider, error) {
 	if !hasOTLPEndpoint() {
 		return nil, nil
 	}
@@ -774,7 +816,7 @@ func buildOTLPLoggerProvider() (*sdklog.LoggerProvider, error) {
 	}
 	return sdklog.NewLoggerProvider(
 		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
-		sdklog.WithResource(buildDefaultResource()),
+		sdklog.WithResource(buildDefaultResource(extraResource...)),
 	), nil
 }
 

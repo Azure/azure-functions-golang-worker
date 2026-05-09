@@ -482,6 +482,51 @@ func TestMiddleware_WithExporter_StacksMultipleExporters(t *testing.T) {
 	}
 }
 
+// TestMiddleware_WithResource_AppendsToOwnedTracerProviderResource asserts
+// that attributes passed via WithResource land on the Resource of the
+// owned TracerProvider built from WithExporter, on top of the default
+// cloud.provider/cloud.platform/service.name. Multiple WithResource
+// calls accumulate.
+func TestMiddleware_WithResource_AppendsToOwnedTracerProviderResource(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	mw := Middleware(
+		WithExporter(exp),
+		WithResource(attribute.String("deployment.environment", "production")),
+		WithResource(attribute.String("build.sha", "abcdef1")),
+	)
+
+	chain := mw.Wrap(func(ctx context.Context, _ *sdk.InvocationContext) error { return nil })
+	if err := chain(context.Background(), invocationContextForTest()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span; got %d", len(spans))
+	}
+	res := spans[0].Resource
+	if res == nil {
+		t.Fatal("span has no resource")
+	}
+
+	got := map[string]string{}
+	for _, kv := range res.Attributes() {
+		got[string(kv.Key)] = kv.Value.Emit()
+	}
+	if got["deployment.environment"] != "production" {
+		t.Errorf("deployment.environment = %q, want %q", got["deployment.environment"], "production")
+	}
+	if got["build.sha"] != "abcdef1" {
+		t.Errorf("build.sha = %q, want %q", got["build.sha"], "abcdef1")
+	}
+	// Defaults must still be present.
+	if got["cloud.provider"] != "azure" {
+		t.Errorf("cloud.provider = %q, want %q (default must survive WithResource merge)", got["cloud.provider"], "azure")
+	}
+	if got["cloud.platform"] != "azure_functions" {
+		t.Errorf("cloud.platform = %q, want %q", got["cloud.platform"], "azure_functions")
+	}
+}
+
 func TestIsDisabledByEnv_TruthyValues(t *testing.T) {
 	cases := map[string]bool{
 		"":      false,
