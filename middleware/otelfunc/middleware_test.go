@@ -459,6 +459,29 @@ func TestMiddleware_WithExporter_BuildsTPAndAdvertises(t *testing.T) {
 	}
 }
 
+// TestMiddleware_WithExporter_StacksMultipleExporters guards the contract
+// that calling WithExporter more than once fans every span out to all of
+// the supplied exporters. Users routing to multiple backends in-process
+// (e.g. one OTLP target + one debug stdouttrace) rely on this; the
+// previous single-field implementation silently dropped all but the last
+// exporter.
+func TestMiddleware_WithExporter_StacksMultipleExporters(t *testing.T) {
+	exp1 := tracetest.NewInMemoryExporter()
+	exp2 := tracetest.NewInMemoryExporter()
+	mw := Middleware(WithExporter(exp1), WithExporter(exp2))
+
+	chain := mw.Wrap(func(ctx context.Context, _ *sdk.InvocationContext) error { return nil })
+	if err := chain(context.Background(), invocationContextForTest()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := len(exp1.GetSpans()); got != 1 {
+		t.Errorf("exp1 should have received 1 span; got %d", got)
+	}
+	if got := len(exp2.GetSpans()); got != 1 {
+		t.Errorf("exp2 should have received 1 span; got %d", got)
+	}
+}
+
 func TestIsDisabledByEnv_TruthyValues(t *testing.T) {
 	cases := map[string]bool{
 		"":      false,

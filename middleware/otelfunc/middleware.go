@@ -159,13 +159,22 @@ func WithTracerProvider(tp trace.TracerProvider) Option {
 // cloud.platform=azure_functions, and a derived service.name (from
 // OTEL_SERVICE_NAME, then WEBSITE_SITE_NAME, then "azure-functions").
 //
+// May be called multiple times to fan out spans to multiple backends
+// (e.g. one OTLP exporter pointing at New Relic, another at a custom
+// collector). Each exporter is wrapped in its own BatchSpanProcessor on
+// the same TracerProvider, so every span is delivered to all of them.
+//
 // Use this when you want sane defaults without constructing a
-// TracerProvider yourself; for full control, use [WithTracerProvider].
+// TracerProvider yourself; for full control over Resource, sampler, or
+// processor types, use [WithTracerProvider].
 //
 // Ignored when [WithTracerProvider] is also passed.
 func WithExporter(e sdktrace.SpanExporter) Option {
 	return optionFunc(func(c *config) {
-		c.exporter = e
+		if e == nil {
+			return
+		}
+		c.exporters = append(c.exporters, e)
 	})
 }
 
@@ -191,13 +200,21 @@ func WithLoggerProvider(lp olog.LoggerProvider) Option {
 // LoggerProvider so user slog records flow through the OTel logs
 // pipeline alongside the host's RpcLog channel.
 //
+// May be called multiple times to fan out log records to multiple
+// backends. Each exporter is wrapped in its own BatchProcessor on the
+// same LoggerProvider, so every record is delivered to all of them.
+//
 // Use this when you want sane defaults without constructing a
-// LoggerProvider yourself; for full control, use [WithLoggerProvider].
+// LoggerProvider yourself; for full control over Resource or processor
+// types, use [WithLoggerProvider].
 //
 // Ignored when [WithLoggerProvider] is also passed.
 func WithLogExporter(e sdklog.Exporter) Option {
 	return optionFunc(func(c *config) {
-		c.logExporter = e
+		if e == nil {
+			return
+		}
+		c.logExporters = append(c.logExporters, e)
 	})
 }
 
@@ -256,9 +273,9 @@ func WithAttributes(attrs ...attribute.KeyValue) Option {
 
 type config struct {
 	tp          trace.TracerProvider
-	exporter    sdktrace.SpanExporter
+	exporters   []sdktrace.SpanExporter
 	lp          olog.LoggerProvider
-	logExporter sdklog.Exporter
+	logExporters []sdklog.Exporter
 	propagator  propagation.TextMapPropagator
 	flusher     Flusher
 	flusherSet  bool // tracks whether the user explicitly set a flusher (or disabled it)
@@ -425,11 +442,13 @@ func Middleware(opts ...Option) sdk.Middleware {
 	// alone is sufficient configuration; this also matches the
 	// LoggerProvider resolution path below.
 	tpFromGlobal := false
-	if cfg.tp == nil && cfg.exporter != nil {
-		owned := sdktrace.NewTracerProvider(
-			sdktrace.WithBatcher(cfg.exporter),
-			sdktrace.WithResource(buildDefaultResource()),
-		)
+	if cfg.tp == nil && len(cfg.exporters) > 0 {
+		opts := make([]sdktrace.TracerProviderOption, 0, len(cfg.exporters)+1)
+		for _, e := range cfg.exporters {
+			opts = append(opts, sdktrace.WithBatcher(e))
+		}
+		opts = append(opts, sdktrace.WithResource(buildDefaultResource()))
+		owned := sdktrace.NewTracerProvider(opts...)
 		cfg.tp = owned
 		m.ownedTP = owned
 	}
@@ -474,11 +493,13 @@ func Middleware(opts ...Option) sdk.Middleware {
 	// OTEL_EXPORTER_OTLP_ENDPOINT env var. Auto-OTLP wins so the env
 	// var alone is sufficient configuration.
 	lpFromGlobal := false
-	if cfg.lp == nil && cfg.logExporter != nil {
-		ownedLP := sdklog.NewLoggerProvider(
-			sdklog.WithProcessor(sdklog.NewBatchProcessor(cfg.logExporter)),
-			sdklog.WithResource(buildDefaultResource()),
-		)
+	if cfg.lp == nil && len(cfg.logExporters) > 0 {
+		opts := make([]sdklog.LoggerProviderOption, 0, len(cfg.logExporters)+1)
+		for _, e := range cfg.logExporters {
+			opts = append(opts, sdklog.WithProcessor(sdklog.NewBatchProcessor(e)))
+		}
+		opts = append(opts, sdklog.WithResource(buildDefaultResource()))
+		ownedLP := sdklog.NewLoggerProvider(opts...)
 		cfg.lp = ownedLP
 		m.ownedLP = ownedLP
 	}
