@@ -147,6 +147,41 @@ func TestMiddleware_ExtractsParentTraceContext(t *testing.T) {
 	}
 }
 
+// Regression: when no Propagator is supplied via WithPropagator, the
+// middleware must still extract W3C traceparent from the inbound
+// InvocationContext. An earlier implementation defaulted to
+// otel.GetTextMapPropagator() which is an empty composite that silently
+// ignores traceparent — leaving worker spans uncorrelated with the
+// host's parent activity.
+func TestMiddleware_DefaultPropagator_ExtractsW3CTraceparent(t *testing.T) {
+	tp, exp := newTestProvider()
+	mw := Middleware(WithTracerProvider(tp)) // intentionally no WithPropagator
+
+	const traceParent = "00-0123456789abcdef0123456789abcdef-abcdef0123456789-01"
+	ic := &sdk.InvocationContext{
+		InvocationID: "inv-default-prop",
+		FunctionName: "Trace",
+		TraceContext: sdk.TraceContext{TraceParent: traceParent},
+	}
+
+	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error { return nil })
+	if err := chain(context.Background(), ic); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	if got := spans[0].SpanContext.TraceID().String(); got != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("span trace id = %s, want %s (default propagator must extract W3C)", got,
+			"0123456789abcdef0123456789abcdef")
+	}
+	if got := spans[0].Parent.SpanID().String(); got != "abcdef0123456789" {
+		t.Errorf("span parent id = %s, want %s", got, "abcdef0123456789")
+	}
+}
+
 func TestMiddleware_ForceFlushAfterEachInvocation(t *testing.T) {
 	tp, _ := newTestProvider()
 	flusher := &countingFlusher{}

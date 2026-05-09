@@ -282,6 +282,15 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	ic := buildInvocationContext(req, &loadedFunc.Function)
 	ctx := sdk.NewContext(context.Background(), ic)
 
+	// Emit a system log with the inbound trace_parent so OTel correlation
+	// can be debugged from production logs without instrumenting user code.
+	disp.SystemLogger().Debug("InvocationRequest trace context",
+		"invocation_id", ic.InvocationID,
+		"trace_parent", ic.TraceContext.TraceParent,
+		"trace_state", ic.TraceContext.TraceState,
+		"baggage_count", len(ic.TraceContext.Baggage),
+	)
+
 	ft := reflect.TypeOf(loadedFunc.Function.Func)
 	args := make([]reflect.Value, ft.NumIn())
 

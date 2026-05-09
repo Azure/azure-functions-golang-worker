@@ -11,8 +11,6 @@ import (
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
-	"go.opentelemetry.io/otel/log/global"
-	"go.opentelemetry.io/otel/log/noop"
 )
 
 // userLogHandler is the slog.Handler the SDK installs as the package-level
@@ -67,17 +65,17 @@ func (h *userLogHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 // resolveOTelBridge returns the cached slog.Handler that bridges to the
-// global OTel LoggerProvider, or nil if no provider is wired up. The
-// resolution is performed at most once per handler instance after a real
-// provider becomes visible — once cached we keep the bridge even if the
-// global is later replaced, since the bridge re-resolves the underlying
-// LoggerProvider on each call internally.
+// global OTel LoggerProvider, constructing it on first use.
+//
+// The bridge is always created -- when no real LoggerProvider is wired
+// up the global delegates to a noop and emit() calls drop the record at
+// the OTel layer (cheap). Type-asserting on global.GetLoggerProvider()
+// to detect noop status does not work because global.GetLoggerProvider
+// returns an internal *global.loggerProvider wrapper that delegates to
+// either the user-supplied provider or a noop, never the bare noop type.
 func (h *userLogHandler) resolveOTelBridge() slog.Handler {
 	if cur := h.otelBridge.Load(); cur != nil {
 		return *cur
-	}
-	if isNoopLoggerProvider() {
-		return nil
 	}
 	bridge := slog.Handler(otelslog.NewHandler("github.com/azure/azure-functions-golang-worker/sdk"))
 	if len(h.attrs) > 0 {
@@ -91,18 +89,6 @@ func (h *userLogHandler) resolveOTelBridge() slog.Handler {
 		return *cur
 	}
 	return bridge
-}
-
-// isNoopLoggerProvider reports whether the global OpenTelemetry
-// LoggerProvider is the noop default. The noop package's exported
-// LoggerProvider type is the canonical signal -- we detect it via type
-// assertion rather than calling logger methods to avoid spurious record
-// allocations on every handle.
-func isNoopLoggerProvider() bool {
-	if _, ok := global.GetLoggerProvider().(noop.LoggerProvider); ok {
-		return true
-	}
-	return false
 }
 
 func (h *userLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {

@@ -334,6 +334,16 @@ func (m *otelMiddleware) Wrap(next sdk.Handler) sdk.Handler {
 				slog.WarnContext(ctx, "otelfunc: ForceFlush failed", "err", flushErr)
 			}
 		}
+		// Force-flush the LoggerProvider too so log records emitted
+		// during the invocation are pushed to the OTel backend before
+		// the worker may be frozen between invocations on consumption-
+		// style plans. Only owned LPs are flushed -- user-supplied LPs
+		// remain the user's lifecycle to manage.
+		if m.ownedLP != nil {
+			if flushErr := m.ownedLP.ForceFlush(ctx); flushErr != nil && !errors.Is(flushErr, context.Canceled) {
+				slog.WarnContext(ctx, "otelfunc: LoggerProvider ForceFlush failed", "err", flushErr)
+			}
+		}
 		return err
 	}
 }
@@ -399,16 +409,22 @@ func Middleware(opts ...Option) sdk.Middleware {
 	// Resolve TracerProvider in priority order:
 	//   1. WithTracerProvider — explicitly given, use as-is.
 	//   2. WithExporter — build a TracerProvider with a default Resource.
-	//   3. otel.GetTracerProvider() — honor the global, may be a noop.
-	//   4. OTEL_EXPORTER_OTLP_ENDPOINT env var — auto-build an OTLP HTTP
+	//   3. OTEL_EXPORTER_OTLP_ENDPOINT env var — auto-build an OTLP HTTP
 	//      TracerProvider so a vanilla `app.Use(otelfunc.Middleware())`
 	//      configures end-to-end tracing with no in-code wiring.
+	//   4. otel.GetTracerProvider() — honor a non-noop global.
 	//
-	// We only run the (relatively expensive) noop detection in case 3,
-	// where we cannot otherwise tell whether the global has been wired
-	// up. If the user explicitly handed us a TracerProvider or exporter,
-	// we trust their configuration and advertise the capability.
-	usedFallback := false
+	// Auto-OTLP is preferred over the global because the OTel global
+	// TracerProvider is a delegating wrapper that routes spans through
+	// go.opentelemetry.io/auto/sdk — which is pulled in transitively by
+	// otelslog and other contrib bridges. The auto SDK reports spans as
+	// IsRecording=true so an eBPF agent can capture them later, which
+	// makes a behavioral noop check return false even when nothing is
+	// actually exporting. If we treat that wrapper as "user configured"
+	// we silently swallow every span. Auto-OTLP wins so the env var
+	// alone is sufficient configuration; this also matches the
+	// LoggerProvider resolution path below.
+	tpFromGlobal := false
 	if cfg.tp == nil && cfg.exporter != nil {
 		owned := sdktrace.NewTracerProvider(
 			sdktrace.WithBatcher(cfg.exporter),
@@ -418,35 +434,46 @@ func Middleware(opts ...Option) sdk.Middleware {
 		m.ownedTP = owned
 	}
 	if cfg.tp == nil {
-		cfg.tp = otel.GetTracerProvider()
-		usedFallback = true
-	}
-
-	if usedFallback && isNoopTracerProvider(cfg.tp) {
-		// Try the env-var auto-config path before declaring the
-		// middleware inactive. When OTEL_EXPORTER_OTLP_ENDPOINT is set
-		// users expect OTel to "just work"; building the TP for them
-		// matches the behavior of every other OTel SDK ecosystem.
 		if owned, err := buildOTLPTracerProvider(); err == nil && owned != nil {
 			cfg.tp = owned
 			m.ownedTP = owned
-			otel.SetTracerProvider(owned)
-			usedFallback = false
 		}
 	}
+	if cfg.tp == nil {
+		cfg.tp = otel.GetTracerProvider()
+		tpFromGlobal = true
+	}
 
-	if usedFallback && isNoopTracerProvider(cfg.tp) {
+	if tpFromGlobal && isNoopTracerProvider(cfg.tp) {
 		// Pass-through: no real exporter is wired up. The user has not
 		// asked for OpenTelemetry, so we should not advertise the
 		// capability or override the host's telemetry path.
 		return m
 	}
+	if m.ownedTP != nil {
+		// Publish the owned TP as the global so user code calling
+		// otel.GetTracerProvider() / otel.Tracer(...) for ad-hoc spans
+		// inside their handler reaches the same exporter the middleware
+		// is using. We only do this for providers we constructed --
+		// when the user explicitly passed WithTracerProvider they keep
+		// full control of global state (matches OTel convention that
+		// libraries do not mutate globals out from under callers).
+		otel.SetTracerProvider(cfg.tp)
+	}
 
-	// Resolve LoggerProvider in the same priority order as the
-	// TracerProvider. The SDK's slog handler bridges to the global
-	// LoggerProvider (set on success by SetLoggerProvider below), so any
-	// user slog records flow through the OTel logs pipeline alongside
-	// the host's RpcLog channel.
+	// Resolve LoggerProvider in priority order:
+	//   1. WithLoggerProvider — explicitly given, use as-is.
+	//   2. WithLogExporter — build a LoggerProvider with a default Resource.
+	//   3. OTEL_EXPORTER_OTLP_ENDPOINT — auto-build an OTLP HTTP LoggerProvider.
+	//   4. global.GetLoggerProvider() — honor a user-installed global.
+	//
+	// Auto-OTLP is preferred over the global because the OTel global
+	// LoggerProvider is a delegating wrapper that always reports as
+	// non-noop via type assertion; if we treat the wrapper as "user
+	// configured", we'd skip auto-OTLP even when the user only set the
+	// OTEL_EXPORTER_OTLP_ENDPOINT env var. Auto-OTLP wins so the env
+	// var alone is sufficient configuration.
+	lpFromGlobal := false
 	if cfg.lp == nil && cfg.logExporter != nil {
 		ownedLP := sdklog.NewLoggerProvider(
 			sdklog.WithProcessor(sdklog.NewBatchProcessor(cfg.logExporter)),
@@ -456,20 +483,23 @@ func Middleware(opts ...Option) sdk.Middleware {
 		m.ownedLP = ownedLP
 	}
 	if cfg.lp == nil {
-		if existing := global.GetLoggerProvider(); !isNoopLoggerProvider(existing) {
-			cfg.lp = existing
-		}
-	}
-	if cfg.lp == nil {
 		// Auto-OTLP for logs mirrors the trace path. Builds only when
-		// OTEL_EXPORTER_OTLP_ENDPOINT is set and the user has not wired
-		// a LoggerProvider themselves.
+		// OTEL_EXPORTER_OTLP_ENDPOINT (or per-signal override) is set.
 		if owned, err := buildOTLPLoggerProvider(); err == nil && owned != nil {
 			cfg.lp = owned
 			m.ownedLP = owned
 		}
 	}
-	if cfg.lp != nil {
+	if cfg.lp == nil {
+		if existing := global.GetLoggerProvider(); !isNoopLoggerProvider(existing) {
+			cfg.lp = existing
+			lpFromGlobal = true
+		}
+	}
+	if cfg.lp != nil && !lpFromGlobal {
+		// Only set the global when we have a NEW provider; otherwise
+		// we'd be self-delegating the global wrapper to itself, which
+		// the OTel global package warns about and which is a no-op.
 		global.SetLoggerProvider(cfg.lp)
 	}
 
@@ -501,15 +531,21 @@ func defaultSpanName(ic *sdk.InvocationContext) string {
 	return ic.FunctionName
 }
 
-// defaultPropagator returns the global propagator if configured, otherwise
-// the standard W3C TraceContext propagator. The Functions host emits W3C
-// trace context, so this is the right default.
+// defaultPropagator returns the propagator the middleware uses when the
+// caller has not explicitly supplied one via [WithPropagator].
+//
+// The Functions host always sends W3C-format traceparent/tracestate via
+// RpcTraceContext, so we default to a composite propagator that extracts
+// W3C TraceContext + Baggage. Importantly, we do NOT delegate to
+// otel.GetTextMapPropagator() here: the OTel global default is an empty
+// composite that extracts nothing, which would silently break inbound
+// trace correlation. Users who want a custom propagator can still pass
+// otel.GetTextMapPropagator() explicitly via [WithPropagator].
 func defaultPropagator() propagation.TextMapPropagator {
-	p := otel.GetTextMapPropagator()
-	if p == nil {
-		return propagation.TraceContext{}
-	}
-	return p
+	return propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	)
 }
 
 // traceContextCarrier adapts the incoming sdk.TraceContext to the
