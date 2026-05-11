@@ -2,6 +2,11 @@
 
 An Azure Function that triggers on Azure Event Grid events. The event data is deserialized into a typed `EventGridEvent` struct.
 
+## What this sample demonstrates
+
+- A typed Event Grid handler `func(ctx context.Context, event bindings.EventGridEvent) error` — the JSON payload (subject, eventType, data, eventTime, etc.) is deserialized directly from the gRPC `InvocationRequest`.
+- Structured logging via `slog.InfoContext` carrying both event metadata (subject, eventType) and the auto-attached invocation attributes.
+
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)

@@ -2,6 +2,11 @@
 
 An Azure Function that triggers when messages arrive on an Azure Service Bus queue.
 
+## What this sample demonstrates
+
+- A typed Service Bus queue handler that receives a deserialized message body plus host-supplied trigger metadata (delivery count, lock token, message id).
+- Structured logging via `slog.InfoContext` carrying both message metadata and the auto-attached invocation attributes — lets you filter / aggregate by message id or delivery count in any observability backend.
+
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)

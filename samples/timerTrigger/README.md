@@ -2,6 +2,12 @@
 
 An Azure Function that runs on a schedule using a CRON expression. The timer info (schedule status, next/last run times, past-due flag) is deserialized into a typed `TimerInfo` struct.
 
+## What this sample demonstrates
+
+- A typed timer-trigger handler `func(ctx context.Context, timer bindings.TimerInfo) error` — the `context.Context` carries the per-invocation metadata.
+- Reading the [`sdk.InvocationContext`](../../sdk/context.go) via `sdk.FromContext(ctx)` to surface `RetryContext` when the host is replaying a failed invocation.
+- Structured logging with `slog.InfoContext`/`slog.WarnContext` — records arrive at the host with `severityLevel`, `customDimensions` for every attribute, and the auto-attached `invocation_id` / `function_name` / `trigger_type` fields.
+
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)
