@@ -246,8 +246,11 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	// "HttpUri" capability, the user handler runs against the live
 	// http.ResponseWriter inside the embedded HTTP proxy. The gRPC side
 	// just waits for completion and returns a minimal InvocationResponse.
+	// Pass disp.App so the proxy can compose the registered middleware
+	// chain (notably otelfunc) around the user handler -- without this,
+	// HTTP-streaming invocations would bypass middleware entirely.
 	if disp.HTTPProxy != nil && isHTTPHandler(loadedFunc) && isHTTPProxiedInvocation(req) {
-		status, err := disp.HTTPProxy.notifyGRPCArrival(req, loadedFunc)
+		status, err := disp.HTTPProxy.notifyGRPCArrival(req, loadedFunc, disp.App)
 		if err != nil {
 			// Don't return a Go error — handleBidiStream treats those as
 			// fatal. A rendezvous failure (timeout, cancelled HTTP request)

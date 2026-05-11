@@ -13,6 +13,7 @@ import (
 	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 )
+
 // TestHTTPProxy_StreamingResponse verifies that when an HTTP-trigger
 // invocation arrives via the HTTP-proxy capability, the user handler runs
 // against the live ResponseWriter and chunks are flushed end-to-end.
@@ -77,7 +78,7 @@ func TestHTTPProxy_StreamingResponse(t *testing.T) {
 			InvocationId: invocationID,
 			FunctionId:   rf.FuncId,
 		}
-		grpcStatus, grpcErr = proxy.notifyGRPCArrival(req, loaded)
+		grpcStatus, grpcErr = proxy.notifyGRPCArrival(req, loaded, app)
 	}()
 
 	httpReq, err := http.NewRequest(http.MethodGet, proxy.url+"/api/stream", nil)
@@ -140,7 +141,7 @@ func TestHTTPProxy_PanickingHandler(t *testing.T) {
 		status, _ = proxy.notifyGRPCArrival(&pb.InvocationRequest{
 			InvocationId: invocationID,
 			FunctionId:   rf.FuncId,
-		}, loaded)
+		}, loaded, app)
 	}()
 
 	httpReq, _ := http.NewRequest(http.MethodGet, proxy.url+"/api/explode", nil)
@@ -179,8 +180,8 @@ func TestStartHTTPProxy_NoHTTPFunctions(t *testing.T) {
 // the app has HTTP triggers.
 func TestStartHTTPProxy_DisabledByEnv(t *testing.T) {
 	cases := []struct {
-		value      string
-		wantNil    bool
+		value       string
+		wantNil     bool
 		description string
 	}{
 		{"1", true, "1 disables"},
@@ -235,5 +236,97 @@ func TestIsHTTPProxiedInvocation(t *testing.T) {
 	}
 	if isHTTPProxiedInvocation(legacy) {
 		t.Error("expected populated RpcHttp.Url to be detected as legacy gRPC-body path")
+	}
+}
+
+// TestHTTPProxy_RunsMiddlewareChain validates the fix that ensures
+// HTTP-streaming invocations (HttpUri capability) run through the
+// App.Compose middleware chain just like gRPC-body invocations. Without
+// this, otelfunc.Middleware (and any other CapabilityProvider middleware)
+// would silently bypass HTTP-streaming triggers, leaving them
+// un-instrumented in production. The bridge is established via the App
+// pointer passed to notifyGRPCArrival -> grpcArrival -> invokeHTTPHandler.
+func TestHTTPProxy_RunsMiddlewareChain(t *testing.T) {
+	// trackingMW counts how many invocations it wraps and stashes the
+	// last ctx it saw so we can assert sdk.FromContext is wired through
+	// the inner handler.
+	var wrapCount int
+	type ctxAssertion struct {
+		invID  string
+		fnName string
+	}
+	asserted := make(chan ctxAssertion, 1)
+
+	app := sdk.FunctionApp()
+	app.HTTP("instrumented", func(w http.ResponseWriter, r *http.Request) {
+		ic, ok := sdk.FromContext(r.Context())
+		if ok && ic != nil {
+			asserted <- ctxAssertion{invID: ic.InvocationID, fnName: ic.FunctionName}
+		} else {
+			asserted <- ctxAssertion{}
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Register a Middleware whose Wrap function increments wrapCount
+	// and forwards. Using sdk.MiddlewareFunc keeps the test free of
+	// otelfunc-specific machinery.
+	app.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
+		return func(ctx context.Context, ic *sdk.InvocationContext) error {
+			wrapCount++
+			return next(ctx, ic)
+		}
+	}))
+
+	proxy := startHTTPProxy(app)
+	if proxy == nil {
+		t.Fatal("expected HTTP proxy to start")
+	}
+	t.Cleanup(func() { _ = proxy.shutdown(nil) })
+
+	var rf *sdk.RegisteredFunction
+	app.GetRegisteredFunctions().Range(func(_, value any) bool {
+		rf = value.(*sdk.RegisteredFunction)
+		return false
+	})
+	loaded := &LoadedFunction{Function: *rf}
+
+	const invocationID = "test-invocation-middleware"
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = proxy.notifyGRPCArrival(&pb.InvocationRequest{
+			InvocationId: invocationID,
+			FunctionId:   rf.FuncId,
+		}, loaded, app)
+	}()
+
+	httpReq, _ := http.NewRequest(http.MethodGet, proxy.url+"/api/instrumented", nil)
+	httpReq.Header.Set(invocationCorrelationHeader, invocationID)
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("client Do: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for gRPC side")
+	}
+
+	if wrapCount != 1 {
+		t.Errorf("middleware Wrap was called %d times; want 1", wrapCount)
+	}
+	select {
+	case got := <-asserted:
+		if got.invID != invocationID {
+			t.Errorf("invocation_id from ctx = %q, want %q", got.invID, invocationID)
+		}
+		if got.fnName != "instrumented" {
+			t.Errorf("function_name from ctx = %q, want %q", got.fnName, "instrumented")
+		}
+	default:
+		t.Error("handler did not observe sdk.FromContext (no assertion delivered)")
 	}
 }

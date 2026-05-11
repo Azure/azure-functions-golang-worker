@@ -54,8 +54,22 @@ const httpInvocationWaitTimeout = 4 * time.Minute
 // Buffered channels of size 1 mean that whichever side arrives first never
 // blocks on the send, so order of arrival is irrelevant.
 type pendingHTTPInvocation struct {
-	grpc chan *LoadedFunction  // gRPC side delivers the function to invoke
+	grpc chan grpcArrival      // gRPC side delivers the function + invocation request
 	done chan *pb.StatusResult // HTTP side delivers the final invocation status
+}
+
+// grpcArrival carries everything the HTTP handler needs from the gRPC
+// side: the loaded function, the originating InvocationRequest (used to
+// build the per-invocation sdk.InvocationContext), and the App reference
+// (used to compose the registered Middleware chain around the handler).
+//
+// This is the integration point that ensures HTTP-streaming invocations
+// run through the same App.Compose chain as gRPC-body invocations, so
+// middleware like otelfunc wraps both paths uniformly.
+type grpcArrival struct {
+	fn  *LoadedFunction
+	req *pb.InvocationRequest
+	app *sdk.App
 }
 
 // httpProxy is the in-process HTTP server that the host forwards trigger
@@ -174,7 +188,7 @@ func (p *httpProxy) getOrCreatePending(invocationID string) *pendingHTTPInvocati
 		return pi
 	}
 	pi := &pendingHTTPInvocation{
-		grpc: make(chan *LoadedFunction, 1),
+		grpc: make(chan grpcArrival, 1),
 		done: make(chan *pb.StatusResult, 1),
 	}
 	p.pending[invocationID] = pi
@@ -208,9 +222,9 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 	timeout := time.NewTimer(httpInvocationWaitTimeout)
 	defer timeout.Stop()
 
-	var loadedFunc *LoadedFunction
+	var arrival grpcArrival
 	select {
-	case loadedFunc = <-pending.grpc:
+	case arrival = <-pending.grpc:
 	case <-r.Context().Done():
 		// Client disconnected (or YARP timed out) before the gRPC trigger
 		// arrived. If gRPC arrives later it will block on <-pending.done
@@ -258,7 +272,7 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 
-		invokeHTTPHandler(loadedFunc, w, r)
+		invokeHTTPHandler(arrival, w, r)
 	}()
 
 	pending.done <- status
@@ -269,15 +283,47 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 // the live ResponseWriter from the embedded server, so http.Flusher,
 // chunked transfer encoding, hijacking, and trailers all work as in any
 // standard Go HTTP server.
-func invokeHTTPHandler(lf *LoadedFunction, w http.ResponseWriter, r *http.Request) {
-	switch h := lf.Function.Func.(type) {
-	case http.HandlerFunc:
-		h(w, r)
-	case func(http.ResponseWriter, *http.Request):
-		h(w, r)
-	default:
-		http.Error(w, "registered handler is not an http.HandlerFunc", http.StatusInternalServerError)
+//
+// Before calling the user's handler we attach the per-invocation
+// sdk.InvocationContext to r.Context() and run the call through
+// arrival.app.Compose, so middleware registered via App.Use (most
+// notably otelfunc.Middleware for distributed tracing) wraps the HTTP-
+// streaming path uniformly with the gRPC-body path. Without this,
+// otel spans / faas.* attributes would only attach to invocations that
+// went through the legacy gRPC-body HTTP path.
+func invokeHTTPHandler(arrival grpcArrival, w http.ResponseWriter, r *http.Request) {
+	handler, ok := arrival.fn.Function.Func.(func(http.ResponseWriter, *http.Request))
+	if !ok {
+		if h, ok2 := arrival.fn.Function.Func.(http.HandlerFunc); ok2 {
+			handler = h
+		} else {
+			http.Error(w, "registered handler is not an http.HandlerFunc", http.StatusInternalServerError)
+			return
+		}
 	}
+
+	ic := buildInvocationContext(arrival.req, &arrival.fn.Function)
+	ctx := sdk.NewContext(r.Context(), ic)
+
+	// inner is the innermost Handler that the middleware chain wraps. It
+	// receives the (possibly enriched) ctx and runs the user handler with
+	// it attached to the request. http.HandlerFunc cannot return errors,
+	// so the inner always returns nil; user handlers that need to surface
+	// errors should write the HTTP status themselves.
+	inner := func(ctx context.Context, _ *sdk.InvocationContext) error {
+		handler(w, r.WithContext(ctx))
+		return nil
+	}
+
+	if arrival.app != nil {
+		chain := arrival.app.Compose(inner)
+		_ = chain(ctx, ic)
+		return
+	}
+	// Defensive: a nil App means the worker bootstrapped without
+	// registering anything via app.Use. Skip composition and run the
+	// handler directly.
+	handler(w, r.WithContext(ctx))
 }
 
 // tryWriteError writes an error response only if headers haven't been sent
@@ -291,15 +337,18 @@ func tryWriteError(w http.ResponseWriter, msg string) {
 }
 
 // notifyGRPCArrival is called from the gRPC dispatcher when an HTTP-trigger
-// InvocationRequest is received. It hands the loaded function to the HTTP
-// handler goroutine and blocks until the handler reports completion.
+// InvocationRequest is received. It hands the loaded function plus the
+// originating InvocationRequest to the HTTP handler goroutine (so the
+// handler can build a per-invocation sdk.InvocationContext and run the
+// user code through the App.Compose middleware chain) and blocks until
+// the handler reports completion.
 //
 // Returns the final status to send back in the InvocationResponse.
-func (p *httpProxy) notifyGRPCArrival(req *pb.InvocationRequest, lf *LoadedFunction) (*pb.StatusResult, error) {
+func (p *httpProxy) notifyGRPCArrival(req *pb.InvocationRequest, lf *LoadedFunction, app *sdk.App) (*pb.StatusResult, error) {
 	invocationID := req.GetInvocationId()
 	pending := p.getOrCreatePending(invocationID)
 
-	pending.grpc <- lf
+	pending.grpc <- grpcArrival{fn: lf, req: req, app: app}
 
 	// time.NewTimer + defer t.Stop() so the timer is reclaimed promptly on
 	// the success path; time.After would keep the timer alive for the full
