@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 
@@ -66,7 +67,8 @@ func sendStartStreamMessage(client grpc.BidiStreamingClient[pb.StreamingMessage,
 // Returns:
 //   - send: a goroutine-safe enqueue function. Pass it to LogWriter and
 //     anywhere a response message needs to be emitted.
-//   - stop: shuts the sender goroutine down. Safe to call exactly once.
+//   - stop: shuts the sender goroutine down. Safe to call any number of
+//     times concurrently; only the first call closes the queue.
 //   - done: closed when the sender goroutine has exited (either because
 //     stop was called or because Send returned an error). Callers may
 //     wait on it to know the gRPC stream is no longer usable.
@@ -84,9 +86,11 @@ func startSender(client grpc.BidiStreamingClient[pb.StreamingMessage, pb.Streami
 		for msg := range queue {
 			if err := client.Send(msg); err != nil {
 				errLogger.Error("gRPC send failed; sender exiting", "err", err)
-				// Drain remaining messages to unblock producers; they
-				// will see send returning the closed-stream error
-				// once we close the queue below.
+				// Drain remaining messages to unblock producers that
+				// are mid-send on the buffered channel. Once we return
+				// and the deferred close(finished) fires, subsequent
+				// producers exit via the <-finished arm of the select
+				// in sendFn and get io.ErrClosedPipe.
 				for range queue {
 				}
 				return
@@ -94,13 +98,15 @@ func startSender(client grpc.BidiStreamingClient[pb.StreamingMessage, pb.Streami
 		}
 	}()
 
-	closeOnce := false
+	// stopOnce makes stopFn safe for concurrent and repeated calls; only
+	// the first invocation closes the queue. Without this the bool flag
+	// would race between two callers (e.g. signal handler and Start's
+	// normal-exit path) and produce a "close of closed channel" panic.
+	var stopOnce sync.Once
 	stopFn := func() {
-		if closeOnce {
-			return
-		}
-		closeOnce = true
-		close(queue)
+		stopOnce.Do(func() {
+			close(queue)
+		})
 	}
 
 	sendFn := func(m *pb.StreamingMessage) error {
