@@ -44,29 +44,29 @@ Create a `main.go` file:
 package main
 
 import (
-"fmt"
-"net/http"
+    "fmt"
+    "net/http"
 
-"github.com/azure/azure-functions-golang-worker/sdk"
-"github.com/azure/azure-functions-golang-worker/worker"
+    "github.com/azure/azure-functions-golang-worker/sdk"
+    "github.com/azure/azure-functions-golang-worker/worker"
 )
 
 func main() {
-app := sdk.FunctionApp()
+    app := sdk.FunctionApp()
 
-// Register an HTTP trigger using familiar types
-app.HTTP("hello", hello).Methods("GET", "POST").Auth("anonymous")
+    // Register an HTTP trigger using familiar types
+    app.HTTP("hello", hello).Methods("GET", "POST").Auth("anonymous")
 
-// Start the worker
-worker.Start(app)
+    // Start the worker
+    worker.Start(app)
 }
 
 func hello(w http.ResponseWriter, r *http.Request) {
-name := r.URL.Query().Get("name")
-if name == "" {
-name = "Azure"
-}
-fmt.Fprintf(w, "Hello, %s! Welcome to Go on Azure Functions.", name)
+    name := r.URL.Query().Get("name")
+    if name == "" {
+        name = "Azure"
+    }
+    fmt.Fprintf(w, "Hello, %s! Welcome to Go on Azure Functions.", name)
 }
 ```
 
