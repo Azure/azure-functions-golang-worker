@@ -9,13 +9,59 @@ import (
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
-
-	"go.opentelemetry.io/contrib/bridges/otelslog"
 )
+
+// UserLogObserver is invoked for every user log record after the RpcLog
+// has been emitted on the gRPC stream. Observers are an opt-in extension
+// point: the worker itself never imports any observability backend, so
+// users who don't register one pay zero binary-size cost for that path.
+//
+// The typical caller is the otelfunc middleware, which registers an
+// otelslog-bridge observer so user log records also flow through the
+// configured OpenTelemetry LoggerProvider. Observer errors are swallowed
+// silently -- the RpcLog has already gone out, so a failing observer
+// must not derail the user's invocation.
+type UserLogObserver func(ctx context.Context, record slog.Record)
+
+// userLogObservers is the package-global slice of registered observers.
+// Reads happen on the user-log emit hot path so we keep this as an
+// atomic.Pointer to a (read-only) slice; writes copy-on-write.
+var userLogObservers atomic.Pointer[[]UserLogObserver]
+
+// RegisterUserLogObserver appends fn to the set of observers invoked for
+// every user slog record. Safe to call concurrently. Idempotency is the
+// caller's responsibility: registering the same function twice will
+// invoke it twice per record.
+//
+// Observers are called synchronously after the RpcLog has been enqueued
+// on the outbound gRPC stream. They run in the goroutine that emitted
+// the record, so a slow observer back-pressures the user handler. The
+// otelfunc middleware avoids this by using the BatchProcessor on its
+// LoggerProvider; the bridge call itself just enqueues the record.
+func RegisterUserLogObserver(fn UserLogObserver) {
+	if fn == nil {
+		return
+	}
+	for {
+		cur := userLogObservers.Load()
+		var next []UserLogObserver
+		if cur != nil {
+			next = make([]UserLogObserver, len(*cur), len(*cur)+1)
+			copy(next, *cur)
+		} else {
+			next = make([]UserLogObserver, 0, 1)
+		}
+		next = append(next, fn)
+		if userLogObservers.CompareAndSwap(cur, &next) {
+			return
+		}
+	}
+}
 
 // userLogHandler is the slog.Handler the SDK installs as the package-level
 // default base via [sdk.SetDefaultBaseHandler] once the gRPC stream is
-// open. It emits each record as a User-category RpcLog over the stream.
+// open. It emits each record as a User-category RpcLog over the stream
+// and then fans the record out to every registered [UserLogObserver].
 //
 // The SDK's outer handler (returned by [sdk.NewLogHandler]) is responsible
 // for attaching invocation_id / function_name / trigger_type attributes
@@ -24,22 +70,17 @@ import (
 // top level of the RpcLog (the host expects it there) and pack the rest
 // into the JSON properties bag.
 //
-// If a global OpenTelemetry LoggerProvider is configured (non-noop) the
-// handler also forwards the record through the otelslog bridge so OTel-
-// aware backends receive the same record. This handles the case where the
-// host has WorkerOpenTelemetryEnabled=true and stops forwarding RpcLog
-// User-category records to its own telemetry pipeline; without the bridge
-// user logs would silently disappear in OTel mode.
+// The fan-out to observers handles the case where the host has
+// WorkerOpenTelemetryEnabled=true and stops forwarding RpcLog User
+// records to its own telemetry pipeline; without an observer hooked up,
+// user logs would silently disappear in OTel mode. The otelfunc package
+// registers an observer that bridges to the OTel LoggerProvider so OTel
+// users get the right behavior automatically; users who don't import
+// otelfunc never link any OTel code into their binary.
 type userLogHandler struct {
 	writer *LogWriter
 	attrs  []slog.Attr
 	groups []string
-
-	// otelBridge is the slog.Handler that fans the record out to the
-	// global OTel LoggerProvider. Lazily resolved on first Handle call
-	// (and atomically swapped in) so a user-supplied SetLoggerProvider
-	// is picked up regardless of init ordering.
-	otelBridge atomic.Pointer[slog.Handler]
 }
 
 // NewUserLogHandler returns the User-category gRPC slog.Handler. It is
@@ -54,41 +95,24 @@ func (h *userLogHandler) Enabled(_ context.Context, _ slog.Level) bool { return 
 func (h *userLogHandler) Handle(ctx context.Context, r slog.Record) error {
 	rl := buildRpcLog(ctx, r, pb.RpcLog_User, h.attrs, h.groups)
 	h.writer.Write(rl)
-	if bridge := h.resolveOTelBridge(); bridge != nil {
-		// Forward the record (with the SDK-attached invocation attrs
-		// intact) to the global OTel LoggerProvider. Errors are
-		// non-fatal: RpcLog already received the record, so a failed
-		// OTel emission only loses the OTel-side copy.
-		_ = bridge.Handle(ctx, r.Clone())
+
+	// Fan out to registered observers (e.g. the otelfunc -> OTel
+	// LoggerProvider bridge). Observers see the record post-RpcLog so
+	// the user-facing host pipeline is the source of truth; observer
+	// errors are non-fatal because the RpcLog has already gone out.
+	if obs := userLogObservers.Load(); obs != nil {
+		rec := r.Clone()
+		// Replay any bound attrs and groups onto the cloned record so
+		// observers see the same structure the RpcLog received. This
+		// avoids each observer having to re-implement attr accumulation.
+		if len(h.attrs) > 0 {
+			rec.AddAttrs(h.attrs...)
+		}
+		for _, fn := range *obs {
+			fn(ctx, rec)
+		}
 	}
 	return nil
-}
-
-// resolveOTelBridge returns the cached slog.Handler that bridges to the
-// global OTel LoggerProvider, constructing it on first use.
-//
-// The bridge is always created -- when no real LoggerProvider is wired
-// up the global delegates to a noop and emit() calls drop the record at
-// the OTel layer (cheap). Type-asserting on global.GetLoggerProvider()
-// to detect noop status does not work because global.GetLoggerProvider
-// returns an internal *global.loggerProvider wrapper that delegates to
-// either the user-supplied provider or a noop, never the bare noop type.
-func (h *userLogHandler) resolveOTelBridge() slog.Handler {
-	if cur := h.otelBridge.Load(); cur != nil {
-		return *cur
-	}
-	bridge := slog.Handler(otelslog.NewHandler("github.com/azure/azure-functions-golang-worker/sdk"))
-	if len(h.attrs) > 0 {
-		bridge = bridge.WithAttrs(h.attrs)
-	}
-	for _, g := range h.groups {
-		bridge = bridge.WithGroup(g)
-	}
-	h.otelBridge.CompareAndSwap(nil, &bridge)
-	if cur := h.otelBridge.Load(); cur != nil {
-		return *cur
-	}
-	return bridge
 }
 
 func (h *userLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {

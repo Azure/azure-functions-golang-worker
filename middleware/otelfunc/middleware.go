@@ -57,9 +57,12 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
+	"github.com/azure/azure-functions-golang-worker/worker"
 
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
@@ -558,6 +561,17 @@ func Middleware(opts ...Option) sdk.Middleware {
 		global.SetLoggerProvider(cfg.lp)
 	}
 
+	// Register a one-time worker.UserLogObserver that bridges every user
+	// slog record into the global OTel LoggerProvider. We do this here
+	// rather than in worker/system_logger.go so users who don't import
+	// otelfunc never pay the binary-size cost of the otelslog bridge or
+	// the OTel log SDK. registerOTelLogObserverOnce ensures the observer
+	// is registered exactly once per process even if Middleware is
+	// constructed multiple times (e.g. tests).
+	if cfg.lp != nil {
+		registerOTelLogObserverOnce()
+	}
+
 	// Auto-flush via the TracerProvider when the user hasn't configured a
 	// flusher explicitly. The standard sdk/trace.TracerProvider satisfies
 	// Flusher; user-supplied custom TPs may not.
@@ -846,4 +860,33 @@ func isNoopLoggerProvider(lp olog.LoggerProvider) bool {
 	}
 	_, ok := lp.(lognoop.LoggerProvider)
 	return ok
+}
+
+// otelLogObserverOnce ensures the slog->OTel observer is registered at
+// most once per process. Registering more than once would fan each user
+// log record into the OTel LoggerProvider N times for N Middleware
+// constructions, which is incorrect (we'd see duplicate records in the
+// configured backend) and breaks the observer's "exactly one delivery"
+// contract.
+var otelLogObserverOnce sync.Once
+
+// registerOTelLogObserverOnce installs an observer on the worker's user
+// log handler that emits each record through the otelslog bridge. The
+// bridge reads the global OTel LoggerProvider lazily on each Emit call,
+// so middleware constructed after another middleware in the same process
+// (or before the user calls global.SetLoggerProvider) still routes
+// correctly to whichever provider is current.
+//
+// We register exactly once and rely on the bridge's lazy lookup; there
+// is no per-Middleware bookkeeping to do.
+func registerOTelLogObserverOnce() {
+	otelLogObserverOnce.Do(func() {
+		bridge := otelslog.NewHandler(ScopeName)
+		worker.RegisterUserLogObserver(func(ctx context.Context, rec slog.Record) {
+			// Bridge errors are swallowed: the RpcLog has already been
+			// emitted on the gRPC stream by the time we see the record,
+			// so a failed OTel hop loses only the OTel-side copy.
+			_ = bridge.Handle(ctx, rec)
+		})
+	})
 }
