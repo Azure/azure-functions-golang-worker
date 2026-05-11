@@ -27,7 +27,7 @@ func newTestProvider() (*sdktrace.TracerProvider, *tracetest.InMemoryExporter) {
 	return tp, exp
 }
 
-func TestMiddleware_StartsServerSpan(t *testing.T) {
+func TestMiddleware_StartsInvocationSpan(t *testing.T) {
 	tp, exp := newTestProvider()
 	mw := Middleware(WithTracerProvider(tp))
 
@@ -59,11 +59,11 @@ func TestMiddleware_StartsServerSpan(t *testing.T) {
 	}
 	span := spans[0]
 
-	if span.Name != "Hello" {
-		t.Errorf("span name = %q, want %q", span.Name, "Hello")
+	if span.Name != "function Hello" {
+		t.Errorf("span name = %q, want %q", span.Name, "function Hello")
 	}
-	if span.SpanKind != trace.SpanKindServer {
-		t.Errorf("span kind = %v, want Server", span.SpanKind)
+	if span.SpanKind != trace.SpanKindInternal {
+		t.Errorf("span kind = %v, want Internal", span.SpanKind)
 	}
 
 	wantAttrs := map[attribute.Key]string{
@@ -291,17 +291,17 @@ func TestMiddleware_ExtraAttributes(t *testing.T) {
 
 func TestClassifyTrigger(t *testing.T) {
 	cases := map[string]string{
-		"httpTrigger":             "http",
-		"timerTrigger":            "timer",
-		"blobTrigger":             "datasource",
-		"cosmosDBTrigger":         "datasource",
-		"eventHubTrigger":         "pubsub",
-		"serviceBusTrigger":       "pubsub",
-		"serviceBusQueueTrigger":  "pubsub",
-		"serviceBusTopicTrigger":  "pubsub",
-		"eventGridTrigger":        "pubsub",
-		"":                        "other",
-		"someUnknownTriggerType":  "other",
+		"httpTrigger":            "http",
+		"timerTrigger":           "timer",
+		"blobTrigger":            "datasource",
+		"cosmosDBTrigger":        "datasource",
+		"eventHubTrigger":        "pubsub",
+		"serviceBusTrigger":      "pubsub",
+		"serviceBusQueueTrigger": "pubsub",
+		"serviceBusTopicTrigger": "pubsub",
+		"eventGridTrigger":       "pubsub",
+		"":                       "other",
+		"someUnknownTriggerType": "other",
 	}
 	for input, want := range cases {
 		if got := classifyTrigger(input); got != want {
@@ -745,4 +745,198 @@ func TestIsNoopLoggerProvider(t *testing.T) {
 	}
 }
 
+// TestBuildDefaultResource_AzureEnvVarsPopulateResourceAttrs verifies that
+// when the Azure Functions / App Service environment variables are set
+// (as they always are in a real Function App), the owned TracerProvider's
+// Resource picks up cloud.region, cloud.resource.id, and
+// deployment.environment.name in the exact format the Java worker emits,
+// so cross-runtime dashboards filter on identical keys/values.
+func TestBuildDefaultResource_AzureEnvVarsPopulateResourceAttrs(t *testing.T) {
+	const (
+		subID  = "591f4fff-379d-40b1-bbcf-91f91afaa636"
+		stamp  = "northeurope-stamp"
+		rg     = "goworker-flex-rg"
+		site   = "func-goworker-flex"
+		region = "northeurope"
+		slot   = "staging"
+	)
+	t.Setenv("REGION_NAME", region)
+	t.Setenv("WEBSITE_RESOURCE_GROUP", rg)
+	t.Setenv("WEBSITE_OWNER_NAME", subID+"+"+stamp)
+	t.Setenv("WEBSITE_SITE_NAME", site)
+	t.Setenv("WEBSITE_SLOT_NAME", slot)
 
+	res := buildDefaultResource()
+	if res == nil {
+		t.Fatal("buildDefaultResource returned nil")
+	}
+
+	got := map[string]string{}
+	for _, kv := range res.Attributes() {
+		got[string(kv.Key)] = kv.Value.Emit()
+	}
+
+	if got["cloud.region"] != region {
+		t.Errorf("cloud.region = %q, want %q", got["cloud.region"], region)
+	}
+	wantArm := "/subscriptions/" + subID + "/resourceGroups/" + rg + "/providers/Microsoft.Web/sites/" + site
+	// OTel semconv v1.27 renamed cloud.resource.id (older Java-worker
+	// vocabulary) to cloud.resource_id. We track the current spec.
+	if got["cloud.resource_id"] != wantArm {
+		t.Errorf("cloud.resource_id = %q, want %q", got["cloud.resource_id"], wantArm)
+	}
+	if got["deployment.environment.name"] != slot {
+		t.Errorf("deployment.environment.name = %q, want %q", got["deployment.environment.name"], slot)
+	}
+}
+
+// TestBuildDefaultResource_DeploymentEnvDefaultsToProduction confirms the
+// Java-parity default: when WEBSITE_SLOT_NAME is unset, the slot is
+// reported as "production" rather than being omitted from the Resource.
+func TestBuildDefaultResource_DeploymentEnvDefaultsToProduction(t *testing.T) {
+	t.Setenv("WEBSITE_SLOT_NAME", "")
+	res := buildDefaultResource()
+	for _, kv := range res.Attributes() {
+		if string(kv.Key) == "deployment.environment.name" {
+			if got := kv.Value.Emit(); got != "production" {
+				t.Errorf("deployment.environment.name = %q, want %q", got, "production")
+			}
+			return
+		}
+	}
+	t.Error("deployment.environment.name attribute missing entirely")
+}
+
+// TestBuildDefaultResource_OmitsArmIDWhenInputsIncomplete asserts that
+// cloud.resource.id is left off the Resource when any of the three
+// required environment variables (WEBSITE_OWNER_NAME, WEBSITE_RESOURCE_GROUP,
+// WEBSITE_SITE_NAME) is missing -- matches the Java behavior of producing
+// no attribute rather than a malformed string.
+func TestBuildDefaultResource_OmitsArmIDWhenInputsIncomplete(t *testing.T) {
+	t.Setenv("WEBSITE_RESOURCE_GROUP", "rg")
+	t.Setenv("WEBSITE_SITE_NAME", "site")
+	t.Setenv("WEBSITE_OWNER_NAME", "") // missing
+	res := buildDefaultResource()
+	for _, kv := range res.Attributes() {
+		if string(kv.Key) == "cloud.resource_id" {
+			t.Errorf("cloud.resource_id should be omitted; got %q", kv.Value.Emit())
+		}
+	}
+}
+
+func TestExtractSubscriptionID(t *testing.T) {
+	cases := map[string]string{
+		"sub-id+stamp-region":         "sub-id",
+		"591f4fff-379d-40b1+anything": "591f4fff-379d-40b1",
+		"":                            "",
+		"no-plus":                     "",
+		"+stamp-only":                 "", // empty prefix, treat as invalid
+	}
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			if got := extractSubscriptionID(in); got != want {
+				t.Errorf("extractSubscriptionID(%q) = %q, want %q", in, got, want)
+			}
+		})
+	}
+}
+
+// TestMiddleware_PromotesInboundTraceContextAttrs asserts that the host-
+// supplied RpcTraceContext.attributes (HostInstanceId / ProcessId /
+// #AzFuncLiveLogsSessionId) get surfaced as standard semconv span
+// attributes (faas.instance / process.pid) and an Azure-specific
+// attribute (azure.functions.live_logs_session_id). This is the
+// log-correlation path the Java worker exposes via getAzureContext().
+func TestMiddleware_PromotesInboundTraceContextAttrs(t *testing.T) {
+	tp, exp := newTestProvider()
+	mw := Middleware(WithTracerProvider(tp))
+	chain := mw.Wrap(func(ctx context.Context, _ *sdk.InvocationContext) error { return nil })
+
+	ic := &sdk.InvocationContext{
+		InvocationID: "inv-1",
+		FunctionName: "Hello",
+		TraceContext: sdk.TraceContext{
+			Attributes: map[string]string{
+				"HostInstanceId":           "host-abc",
+				"ProcessId":                "42",
+				"#AzFuncLiveLogsSessionId": "session-xyz",
+			},
+		},
+	}
+	if err := chain(context.Background(), ic); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	got := map[attribute.Key]string{}
+	for _, a := range spans[0].Attributes {
+		got[a.Key] = a.Value.Emit()
+	}
+	if got["faas.instance"] != "host-abc" {
+		t.Errorf("faas.instance = %q, want %q", got["faas.instance"], "host-abc")
+	}
+	if got["process.pid"] != "42" {
+		t.Errorf("process.pid = %q, want %q", got["process.pid"], "42")
+	}
+	if got["azure.functions.live_logs_session_id"] != "session-xyz" {
+		t.Errorf("azure.functions.live_logs_session_id = %q, want %q", got["azure.functions.live_logs_session_id"], "session-xyz")
+	}
+}
+
+// TestMiddleware_OmitsTraceContextAttrsWhenMissing confirms the
+// "(absent) -> attribute not set" semantic: when the host omits one of
+// the optional attributes, the span carries no entry for that key
+// rather than an empty-string value (which would pollute downstream
+// dashboards' uniques() / cardinality calculations).
+func TestMiddleware_OmitsTraceContextAttrsWhenMissing(t *testing.T) {
+	tp, exp := newTestProvider()
+	mw := Middleware(WithTracerProvider(tp))
+	chain := mw.Wrap(func(ctx context.Context, _ *sdk.InvocationContext) error { return nil })
+
+	if err := chain(context.Background(), &sdk.InvocationContext{
+		InvocationID: "inv-2",
+		FunctionName: "Hello",
+		// TraceContext zero-valued -> Attributes is nil
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	for _, a := range spans[0].Attributes {
+		switch string(a.Key) {
+		case "faas.instance", "process.pid", "azure.functions.live_logs_session_id":
+			t.Errorf("optional attribute %q should be absent when host didn't send it; got %q", a.Key, a.Value.Emit())
+		}
+	}
+}
+
+// TestMiddleware_TracerInstrumentationVersionSet verifies that spans
+// produced by the middleware carry an otel.library.version equal to the
+// resolved SDK version. Lets users query telemetry by SDK build (e.g.
+// "all spans from worker SDK v0.4.0-preview") without further wiring.
+func TestMiddleware_TracerInstrumentationVersionSet(t *testing.T) {
+	tp, exp := newTestProvider()
+	mw := Middleware(WithTracerProvider(tp))
+	chain := mw.Wrap(func(ctx context.Context, _ *sdk.InvocationContext) error { return nil })
+
+	if err := chain(context.Background(), &sdk.InvocationContext{FunctionName: "Hello"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	got := spans[0].InstrumentationScope.Version
+	if got == "" {
+		t.Error("InstrumentationScope.Version is empty; want a non-empty SDK version")
+	}
+	// Don't assert exact value: in unit tests the resolved version is
+	// "(devel)" (no module replace, building the test binary directly).
+	// Tagged-release builds will see "v0.X.Y-preview". Either is correct.
+}

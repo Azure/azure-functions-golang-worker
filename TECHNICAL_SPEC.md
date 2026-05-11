@@ -357,7 +357,7 @@ type ShutdownProvider interface {
 }
 ```
 
-When a registered middleware implements `CapabilityProvider`, the App merges its capability map into `WorkerInitResponse.Capabilities` so the host knows what features the worker supports (most importantly `WorkerOpenTelemetryEnabled` from `middleware/otelfunc`, which tells the host to skip its own Application Insights emission). When a middleware implements `ShutdownProvider`, the worker invokes its `Shutdown(ctx)` after the gRPC stream closes or on SIGTERM/SIGINT — so middleware that own asynchronous resources (OTel batch processors, exporters) get flushed without user code needing a `defer cleanup()` line.
+When a registered middleware implements `CapabilityProvider`, the App merges its capability map into `WorkerInitResponse.Capabilities` so the host knows what features the worker supports (most importantly `WorkerOpenTelemetryEnabled` from `middleware/otelfunc`, which tells the host to suppress forwarding of worker-emitted `Function.*` log records into the host's own OpenTelemetry log pipeline — the worker is expected to emit those itself via its own LoggerProvider). When a middleware implements `ShutdownProvider`, the worker invokes its `Shutdown(ctx)` after the gRPC stream closes or on SIGTERM/SIGINT — so middleware that own asynchronous resources (OTel batch processors, exporters) get flushed without user code needing a `defer cleanup()` line.
 
 #### 5.2.1 Example: timing middleware
 

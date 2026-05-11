@@ -160,7 +160,7 @@ The default handler honors the host's per-category log levels and the `--verbose
 
 ### OpenTelemetry distributed tracing
 
-The [`middleware/otelfunc`](middleware/otelfunc) package provides an `sdk.Middleware` that creates a server-kind span around every invocation, extracts the host's W3C trace context so user spans correlate end-to-end, advertises the `WorkerOpenTelemetryEnabled` capability so the host stops double-emitting telemetry, and force-flushes after each invocation (critical on consumption-style plans where the worker may be frozen).
+The [`middleware/otelfunc`](middleware/otelfunc) package provides an `sdk.Middleware` that creates a server-kind span around every invocation, extracts the host's W3C trace context so user spans correlate end-to-end, advertises the `WorkerOpenTelemetryEnabled` capability so the host stops forwarding the worker's user log records (`Function.*` categories) into its own OpenTelemetry pipeline, and force-flushes after each invocation (critical on consumption-style plans where the worker may be frozen).
 
 The middleware is **opt-in**: importing only `sdk` and `worker` keeps the OTel SDK out of your binary entirely. The smallest setup just registers the middleware and sets the standard OTel env vars on your Function App:
 

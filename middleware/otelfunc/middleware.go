@@ -51,8 +51,12 @@
 // middleware reports the worker-level capabilities WorkerOpenTelemetryEnabled
 // and WorkerOpenTelemetrySchemaVersion via the [sdk.CapabilityProvider]
 // contract. The worker copies those flags into WorkerInitResponse.Capabilities
-// so the host knows the worker is emitting OpenTelemetry telemetry directly
-// and should not double-emit to Application Insights for the same invocation.
+// so the host knows the worker is emitting OpenTelemetry telemetry directly.
+// The host honors WorkerOpenTelemetryEnabled narrowly: it suppresses the
+// forwarding of worker-emitted `Function.*` log records into its own
+// OpenTelemetry log pipeline. Host-emitted spans (AspNetCore HTTP server,
+// Functions.Host init activity) keep flowing because they describe the
+// host's own activity, not the worker's.
 //
 // Force-flushing:
 //
@@ -86,6 +90,8 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -122,8 +128,12 @@ const SchemaVersion = "1.27.0"
 
 // CapabilityWorkerOpenTelemetryEnabled is the worker-level capability key
 // the middleware advertises when an active (non-noop) TracerProvider is
-// wired up. The host uses it to decide whether to skip its own
-// Application Insights emission for invocations served by this worker.
+// wired up. The host uses it to suppress forwarding of worker-emitted
+// `Function.*` log records into the host's own OpenTelemetry log
+// pipeline -- the worker is expected to emit those itself via its own
+// LoggerProvider. Host-emitted spans (AspNetCore HTTP server,
+// Functions.Host init activity) are unaffected by this capability and
+// continue to flow through the host's telemetry pipeline.
 const CapabilityWorkerOpenTelemetryEnabled = "WorkerOpenTelemetryEnabled"
 
 // CapabilityWorkerOpenTelemetrySchemaVersion is the worker-level capability
@@ -149,6 +159,25 @@ const EnvServiceName = "OTEL_SERVICE_NAME"
 // envWebsiteSiteName is the Functions/App Service environment variable
 // carrying the site name; we use it as a fallback for service.name.
 const envWebsiteSiteName = "WEBSITE_SITE_NAME"
+
+// Azure Functions / App Service environment variables used to populate
+// OpenTelemetry Resource attributes that match what the Java worker
+// emits, so cross-runtime dashboards filter on the same keys.
+const (
+	envRegionName          = "REGION_NAME"            // e.g. "eastus2"
+	envWebsiteResourceGroup = "WEBSITE_RESOURCE_GROUP" // e.g. "my-rg"
+	envWebsiteOwnerName    = "WEBSITE_OWNER_NAME"     // "<subscriptionId>+<stamp>..."
+	envWebsiteSlotName     = "WEBSITE_SLOT_NAME"      // "production" / "staging" / etc.
+)
+
+// Inbound RpcTraceContext.Attributes keys the host sends on every
+// InvocationRequest. We promote a subset onto the per-invocation span
+// for diagnostic correlation, matching what the Java worker does.
+const (
+	hostAttrProcessID         = "ProcessId"
+	hostAttrHostInstanceID    = "HostInstanceId"
+	hostAttrLiveLogsSessionID = "#AzFuncLiveLogsSessionId"
+)
 
 // Flusher is the optional contract the Middleware uses to push pending
 // telemetry to the configured exporter at the end of each invocation.
@@ -396,10 +425,36 @@ func (m *otelMiddleware) Wrap(next sdk.Handler) sdk.Handler {
 			semconv.FaaSName(ic.FunctionName),
 			attribute.String("faas.trigger", classifyTrigger(ic.TriggerType)),
 		}
+		// Promote select inbound RpcTraceContext attributes onto the
+		// per-invocation span. These keys match what the .NET host
+		// emits and what the Java worker surfaces, so cross-runtime
+		// dashboards filter on the same names.
+		if hostAttrs := ic.TraceContext.Attributes; len(hostAttrs) > 0 {
+			if v := hostAttrs[hostAttrProcessID]; v != "" {
+				if pid, err := strconv.Atoi(v); err == nil {
+					attrs = append(attrs, semconv.ProcessPID(pid))
+				}
+			}
+			if v := hostAttrs[hostAttrHostInstanceID]; v != "" {
+				attrs = append(attrs, semconv.FaaSInstance(v))
+			}
+			if v := hostAttrs[hostAttrLiveLogsSessionID]; v != "" {
+				// Not OTel-standard; the azure.functions.* prefix
+				// signals this is an Azure-Functions-specific extension.
+				// Used by the host's portal live-log feature to
+				// correlate stream sessions with telemetry.
+				attrs = append(attrs, attribute.String("azure.functions.live_logs_session_id", v))
+			}
+		}
 		attrs = append(attrs, m.cfg.extraAttrs...)
 
 		ctx, span := m.tracer.Start(ctx, m.cfg.spanName(ic),
-			trace.WithSpanKind(trace.SpanKindServer),
+			// SpanKindInternal: the host's Microsoft.AspNetCore
+			// instrumentation already owns the SERVER-kind span for
+			// HTTP triggers, and non-HTTP triggers don't represent a
+			// network server. Matches the Java worker which uses
+			// INTERNAL uniformly.
+			trace.WithSpanKind(trace.SpanKindInternal),
 			trace.WithAttributes(attrs...),
 		)
 
@@ -617,7 +672,10 @@ func Middleware(opts ...Option) sdk.Middleware {
 		}
 	}
 
-	m.tracer = cfg.tp.Tracer(ScopeName)
+	m.tracer = cfg.tp.Tracer(ScopeName,
+		trace.WithInstrumentationVersion(resolveSDKVersion()),
+		trace.WithSchemaURL(semconv.SchemaURL),
+	)
 	m.enabled = true
 	m.capabilities = map[string]string{
 		CapabilityWorkerOpenTelemetryEnabled:       "true",
@@ -626,14 +684,17 @@ func Middleware(opts ...Option) sdk.Middleware {
 	return m
 }
 
-// defaultSpanName is the default WithSpanNameFormatter — it returns the
-// function's user-facing name. Falls back to "azure-functions-invocation"
-// when ic carries no name (defensive; should not happen in practice).
+// defaultSpanName is the default WithSpanNameFormatter. It returns
+// "function <FunctionName>" -- the OpenTelemetry "verb object"
+// convention, and the same format the Java worker emits so cross-runtime
+// dashboards searching for function spans find them by the same string.
+// Falls back to "azure-functions-invocation" when ic carries no name
+// (defensive; should not happen in practice).
 func defaultSpanName(ic *sdk.InvocationContext) string {
 	if ic == nil || ic.FunctionName == "" {
 		return "azure-functions-invocation"
 	}
-	return ic.FunctionName
+	return "function " + ic.FunctionName
 }
 
 // defaultPropagator returns the propagator the middleware uses when the
@@ -695,10 +756,19 @@ func classifyTrigger(t string) string {
 // the middleware builds its own TracerProvider via [WithExporter]. The
 // Resource carries:
 //
-//   - cloud.provider = azure
-//   - cloud.platform = azure_functions
-//   - service.name   = OTEL_SERVICE_NAME / WEBSITE_SITE_NAME / "azure-functions"
+//   - cloud.provider              = azure
+//   - cloud.platform              = azure_functions
+//   - cloud.region                = $REGION_NAME (when present)
+//   - cloud.resource_id           = full ARM resource ID (when WEBSITE_OWNER_NAME +
+//                                    WEBSITE_RESOURCE_GROUP + WEBSITE_SITE_NAME present)
+//   - deployment.environment.name = $WEBSITE_SLOT_NAME (default "production")
+//   - service.name                = OTEL_SERVICE_NAME / WEBSITE_SITE_NAME / "azure-functions"
 //   - any extras supplied via [WithResource] (highest precedence)
+//
+// These keys match what the Java worker emits (with one caveat: the
+// Java worker still uses the older `cloud.resource.id` form, while
+// OTel semconv v1.27 renamed it to `cloud.resource_id` with an
+// underscore -- we track the current spec).
 //
 // resource.Default() already incorporates the standard environment
 // detector (OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES) so callers can
@@ -711,6 +781,21 @@ func buildDefaultResource(extra ...attribute.KeyValue) *resource.Resource {
 	if name := serviceNameFromEnv(); name != "" {
 		attrs = append(attrs, semconv.ServiceName(name))
 	}
+	if region := strings.TrimSpace(os.Getenv(envRegionName)); region != "" {
+		attrs = append(attrs, semconv.CloudRegion(region))
+	}
+	if id := armResourceIDFromEnv(); id != "" {
+		attrs = append(attrs, semconv.CloudResourceID(id))
+	}
+	// deployment.environment.name is always set: WEBSITE_SLOT_NAME when
+	// available, "production" as the Azure-canonical default otherwise.
+	// Matches the Java worker's behavior.
+	slot := strings.TrimSpace(os.Getenv(envWebsiteSlotName))
+	if slot == "" {
+		slot = "production"
+	}
+	attrs = append(attrs, semconv.DeploymentEnvironmentName(slot))
+
 	// Caller-supplied attrs come last so they win on duplicate keys
 	// (resource.Merge applies right-hand-wins precedence).
 	attrs = append(attrs, extra...)
@@ -725,6 +810,44 @@ func buildDefaultResource(extra ...attribute.KeyValue) *resource.Resource {
 		return resource.NewWithAttributes(semconv.SchemaURL, attrs...)
 	}
 	return r
+}
+
+// armResourceIDFromEnv builds the full ARM resource ID from the
+// Azure Functions environment variables. Returns "" when any required
+// input is missing -- callers should skip the attribute in that case.
+//
+// WEBSITE_OWNER_NAME is shaped "<subscriptionId>+<region-stamp>...",
+// so the subscription ID is the prefix up to the first '+'. Matches
+// the Java worker's extraction logic exactly so the resulting ID
+// string is byte-identical across the two runtimes.
+func armResourceIDFromEnv() string {
+	site := strings.TrimSpace(os.Getenv(envWebsiteSiteName))
+	rg := strings.TrimSpace(os.Getenv(envWebsiteResourceGroup))
+	owner := strings.TrimSpace(os.Getenv(envWebsiteOwnerName))
+	if site == "" || rg == "" || owner == "" {
+		return ""
+	}
+	sub := extractSubscriptionID(owner)
+	if sub == "" {
+		return ""
+	}
+	return "/subscriptions/" + sub +
+		"/resourceGroups/" + rg +
+		"/providers/Microsoft.Web/sites/" + site
+}
+
+// extractSubscriptionID parses the subscription GUID out of
+// WEBSITE_OWNER_NAME. The format is "<subscriptionId>+<stamp>", so the
+// substring before the first '+' is the subscription ID. Returns ""
+// when the input is empty or contains no '+'.
+func extractSubscriptionID(ownerName string) string {
+	if ownerName == "" {
+		return ""
+	}
+	if i := strings.IndexByte(ownerName, '+'); i > 0 {
+		return ownerName[:i]
+	}
+	return ""
 }
 
 // serviceNameFromEnv resolves the service.name fallback chain. Returns
@@ -898,6 +1021,45 @@ func isNoopLoggerProvider(lp olog.LoggerProvider) bool {
 	return ok
 }
 
+// sdkModulePath is the canonical module path of the worker SDK that
+// hosts this otelfunc package. resolveSDKVersion walks the user app's
+// runtime/debug BuildInfo to find this dep and return its version, used
+// as the instrumentation-scope version on emitted spans and log
+// records.
+const sdkModulePath = "github.com/azure/azure-functions-golang-worker"
+
+// resolveSDKVersion returns the version of the azure-functions-golang-worker
+// module the user binary was built against. Cached after first call --
+// BuildInfo does not change at runtime.
+//
+// Return values match the contract documented on worker.WorkerMetadata:
+//   - "vX.Y.Z" for tagged releases
+//   - "(devel)" for source builds (no tag) and filesystem `replace` directives
+//
+// Used as the instrumentation-scope version on every Tracer/Logger we
+// construct so spans and log records emitted by otelfunc carry
+// otel.library.version pointing at the exact SDK build that produced
+// them.
+var resolveSDKVersion = sync.OnceValue(func() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "(devel)"
+	}
+	for _, dep := range bi.Deps {
+		if dep == nil || dep.Path != sdkModulePath {
+			continue
+		}
+		if dep.Replace != nil && dep.Replace.Version != "" {
+			return dep.Replace.Version
+		}
+		if dep.Version != "" {
+			return dep.Version
+		}
+		break
+	}
+	return "(devel)"
+})
+
 // otelLogObserverOnce ensures the slog->OTel observer is registered at
 // most once per process. Registering more than once would fan each user
 // log record into the OTel LoggerProvider N times for N Middleware
@@ -917,7 +1079,10 @@ var otelLogObserverOnce sync.Once
 // is no per-Middleware bookkeeping to do.
 func registerOTelLogObserverOnce() {
 	otelLogObserverOnce.Do(func() {
-		bridge := otelslog.NewHandler(ScopeName)
+		bridge := otelslog.NewHandler(ScopeName,
+			otelslog.WithVersion(resolveSDKVersion()),
+			otelslog.WithSchemaURL(semconv.SchemaURL),
+		)
 		worker.RegisterUserLogObserver(func(ctx context.Context, rec slog.Record) {
 			// Bridge errors are swallowed: the RpcLog has already been
 			// emitted on the gRPC stream by the time we see the record,

@@ -53,7 +53,7 @@ That's it. Every invocation gets a server-kind span correlated with the host's p
 | User `slog` records bridged to the OTel `LoggerProvider` | Same `trace.id`/`span.id` as the worker span |
 | `ForceFlush` after every invocation (both TracerProvider and LoggerProvider) | Critical for Flex/Consumption plans |
 | Graceful shutdown via `sdk.ShutdownProvider` | Worker invokes on stream close / SIGTERM / SIGINT |
-| Capability advertising (`WorkerOpenTelemetryEnabled=true`) | Tells host to skip its own Application Insights emission |
+| Capability advertising (`WorkerOpenTelemetryEnabled=true`) | Tells host to suppress its own forwarding of worker `Function.*` log records (worker emits via its own LoggerProvider). Host AspNetCore HTTP-server spans and `Host.*` traces are not affected. |
 
 ## Configuration options
 

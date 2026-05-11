@@ -79,6 +79,26 @@ func Start(app *sdk.App) {
 	// nil and skips advertising HttpUri in WorkerInitResponse.
 	dispatcher.HTTPProxy = startHTTPProxy(app)
 
+	// Emit a one-time System-category record summarizing the worker
+	// build so customers can correlate observed behavior with the SDK
+	// version and the git commit their binary was built from. The
+	// host's "Worker" category trace category is enabled at
+	// Information by default, so this lands in App Insights customer
+	// queries without any opt-in; in OTel mode it also flows to the
+	// configured LoggerProvider via the otelslog bridge that
+	// middleware/otelfunc registers.
+	md := buildWorkerMetadata()
+	dispatcher.systemLogger.Info("Go worker started",
+		"sdk_version", md.GetWorkerVersion(),
+		"sdk_replaced", md.GetCustomProperties()[MetaSDKReplaced],
+		"sdk_replace_path", md.GetCustomProperties()[MetaSDKReplacePath],
+		"vcs_revision", md.GetCustomProperties()[MetaAppVCSRevision],
+		"build_dirty", md.GetCustomProperties()[MetaAppBuiltDirty],
+		"go_version", md.GetRuntimeVersion(),
+		"worker_bitness", md.GetWorkerBitness(),
+		"http_proxy_enabled", dispatcher.HTTPProxy != nil,
+	)
+
 	// Trap SIGTERM / SIGINT so middleware-owned resources (e.g. OTel
 	// providers) get a chance to flush and shut down cleanly when the
 	// host or platform asks the worker to terminate. On signal the
