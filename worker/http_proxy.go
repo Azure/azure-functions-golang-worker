@@ -317,7 +317,16 @@ func invokeHTTPHandler(arrival grpcArrival, w http.ResponseWriter, r *http.Reque
 
 	if arrival.app != nil {
 		chain := arrival.app.Compose(inner)
-		_ = chain(ctx, ic)
+		// Middleware may surface a non-nil error (e.g. an auth middleware
+		// short-circuiting before the handler runs). HTTP responses are
+		// already owned by the user handler / middleware -- they're
+		// expected to write status codes themselves -- so we only log
+		// the chain error here for diagnostics. The host pipeline does
+		// not see this error; HTTP-streaming InvocationResponse status
+		// comes from notifyGRPCArrival's separate rendezvous path.
+		if err := chain(ctx, ic); err != nil {
+			log.Printf("HTTP proxy: middleware chain returned error for invocation %s: %v", ic.InvocationID, err)
+		}
 		return
 	}
 	// Defensive: a nil App means the worker bootstrapped without
