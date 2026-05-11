@@ -80,10 +80,11 @@ func Start(app *sdk.App) {
 
 	// Trap SIGTERM / SIGINT so middleware-owned resources (e.g. OTel
 	// providers) get a chance to flush and shut down cleanly when the
-	// host or platform asks the worker to terminate. The signal handler
-	// closes the recv loop's context indirectly by stopping the sender
-	// goroutine; the recv loop unblocks and Start falls through to the
-	// shutdown path below.
+	// host or platform asks the worker to terminate. On signal the
+	// supporting goroutine below calls client.CloseSend(), which causes
+	// the in-flight client.Recv() to return io.EOF; handleBidiStream
+	// exits via its normal stream-closed path and Start falls through
+	// to the shutdown sequence below.
 	signalCtx, signalStop := signalContext(dispatcher.systemLogger)
 	defer signalStop()
 

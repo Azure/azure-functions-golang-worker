@@ -83,8 +83,8 @@ type userLogHandler struct {
 	groups []string
 }
 
-// NewUserLogHandler returns the User-category gRPC slog.Handler. It is
-// exported so callers (typically worker.Start) can install it via
+// newUserLogHandler returns the User-category gRPC slog.Handler. Called
+// by worker.Start once the gRPC stream is open to install via
 // sdk.SetDefaultBaseHandler.
 func newUserLogHandler(w *LogWriter) slog.Handler {
 	return &userLogHandler{writer: w}

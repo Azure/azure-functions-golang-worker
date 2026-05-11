@@ -162,15 +162,44 @@ The default handler honors the host's per-category log levels and the `--verbose
 
 The [`middleware/otelfunc`](middleware/otelfunc) package provides an `sdk.Middleware` that creates a server-kind span around every invocation, extracts the host's W3C trace context so user spans correlate end-to-end, advertises the `WorkerOpenTelemetryEnabled` capability so the host stops double-emitting telemetry, and force-flushes after each invocation (critical on consumption-style plans where the worker may be frozen).
 
+The middleware is **opt-in**: importing only `sdk` and `worker` keeps the OTel SDK out of your binary entirely. The smallest setup just registers the middleware and sets the standard OTel env vars on your Function App:
+
+```go
+import (
+    "github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
+)
+
+app := sdk.FunctionApp()
+app.Use(otelfunc.Middleware())
+```
+
+```
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.your-backend.example
+OTEL_EXPORTER_OTLP_HEADERS=api-key=<your_token>
+OTEL_SERVICE_NAME=my-function-app
+```
+
+For more control, build the exporters yourself and pass them as options. `WithExporter` and `WithLogExporter` can be called multiple times to fan out to several backends:
+
 ```go
 import (
     "github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
     "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+    "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 )
 
-exp, _ := otlptracehttp.New(ctx)
+otlpExp, _ := otlptracehttp.New(ctx)
+debugExp, _ := stdouttrace.New(stdouttrace.WithWriter(os.Stderr))
+
 app := sdk.FunctionApp()
-app.Use(otelfunc.Middleware(otelfunc.WithExporter(exp)))
+app.Use(otelfunc.Middleware(
+    otelfunc.WithExporter(otlpExp),
+    otelfunc.WithExporter(debugExp),
+    otelfunc.WithResource(
+        semconv.ServiceVersion(buildVersion),
+        semconv.DeploymentEnvironmentName("production"),
+    ),
+))
 ```
 
 Inbound W3C baggage is hydrated onto `ctx` automatically — read with `baggage.FromContext(ctx)`, propagate to your downstream calls with `otelhttp.NewTransport(...)` / `otelgrpc` interceptors. See `package otelfunc` godoc for full options including `WithTracerProvider`, `WithPropagator`, custom span names, and the `AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED` kill switch.

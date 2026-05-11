@@ -90,7 +90,8 @@ func ExampleMiddleware_customAttributes() {
 	app.Use(otelfunc.Middleware(
 		otelfunc.WithTracerProvider(tp),
 		otelfunc.WithAttributes(
-		// attribute.String("deployment.slot", os.Getenv("DEPLOYMENT_SLOT")),
+			attribute.String("deployment.slot", os.Getenv("DEPLOYMENT_SLOT")),
+			attribute.String("build.sha", os.Getenv("GIT_COMMIT")),
 		),
 	))
 	_ = app
