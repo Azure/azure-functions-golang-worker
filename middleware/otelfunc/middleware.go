@@ -2,7 +2,8 @@
 // azure-functions-golang-worker SDK.
 //
 // Apps that want distributed tracing import this package and register the
-// Middleware via App.Use:
+// Middleware via App.Use. The simplest setup is the zero-arg form combined
+// with the standard OTel env vars on the Function App:
 //
 //	import (
 //	    "github.com/azure/azure-functions-golang-worker/sdk"
@@ -11,20 +12,37 @@
 //
 //	func main() {
 //	    app := sdk.FunctionApp()
-//	    app.Use(otelfunc.Middleware(otelfunc.WithExporter(myExporter)))
+//	    app.Use(otelfunc.Middleware())
 //
 //	    app.HTTP("hello", helloHandler)
 //	    worker.Start(app)
 //	}
 //
-// The middleware honors three setup paths in priority order:
+// With OTEL_EXPORTER_OTLP_ENDPOINT (and optionally
+// OTEL_EXPORTER_OTLP_HEADERS, OTEL_SERVICE_NAME) set in the app settings,
+// the middleware auto-configures both a TracerProvider and a
+// LoggerProvider against the OTLP HTTP endpoint, wires force-flush, and
+// registers a clean shutdown — no in-code provider plumbing required.
 //
-//  1. [WithTracerProvider] — caller hands us a TracerProvider. We use it as-is.
-//  2. [WithExporter] — caller hands us a SpanExporter. We build a TracerProvider
-//     around it with a default Resource carrying cloud.provider=azure /
-//     cloud.platform=azure_functions / service.name (from WEBSITE_SITE_NAME or
-//     OTEL_SERVICE_NAME).
-//  3. Otherwise — we fall back to otel.GetTracerProvider().
+// The middleware honors four setup paths in priority order:
+//
+//  1. [WithTracerProvider] — caller hands us a TracerProvider. We use it
+//     as-is. (Same shape for [WithLoggerProvider].)
+//  2. [WithExporter] — caller hands us one or more SpanExporters. We build
+//     a TracerProvider around them with a default Resource carrying
+//     cloud.provider=azure / cloud.platform=azure_functions / service.name
+//     (from OTEL_SERVICE_NAME or WEBSITE_SITE_NAME). (Same shape for
+//     [WithLogExporter].)
+//  3. OTEL_EXPORTER_OTLP_ENDPOINT env var — auto-build an OTLP HTTP
+//     TracerProvider and LoggerProvider. This is preferred over the
+//     OTel global because the global is a delegating wrapper that
+//     reports as non-noop even when nothing is wired up.
+//  4. otel.GetTracerProvider() / global.GetLoggerProvider() — only when
+//     the global is a true non-wrapper non-noop provider.
+//
+// Use [WithResource] to extend the default Resource with deployment
+// attributes (service.version, deployment.environment, build SHA, etc.)
+// that you'd rather supply in code than via OTEL_RESOURCE_ATTRIBUTES.
 //
 // Capability advertising:
 //
@@ -43,7 +61,19 @@
 // the exporter has buffered. The middleware therefore force-flushes after
 // every invocation when the configured TracerProvider implements [Flusher]
 // (which the standard go.opentelemetry.io/otel/sdk/trace TracerProvider
-// does). Override with [WithFlusher] or disable with [WithoutFlusher].
+// does). The owned LoggerProvider is also force-flushed on every
+// invocation. Override the TracerProvider flusher with [WithFlusher] or
+// disable with [WithoutFlusher].
+//
+// Graceful shutdown:
+//
+// When the middleware constructs its own TracerProvider or LoggerProvider
+// (via [WithExporter] / [WithLogExporter] / auto-OTLP), it also implements
+// [sdk.ShutdownProvider]. The worker invokes Shutdown after the gRPC
+// stream closes or on SIGTERM/SIGINT, so user code does not need a
+// defer cleanup() line in main(). User-supplied providers (passed via
+// [WithTracerProvider] / [WithLoggerProvider]) are NOT shut down — they
+// remain the user's lifecycle to manage.
 //
 // Design follows aws-lambda-go's otellambda package: a thin Middleware
 // that (a) extracts the host's W3C trace context from
@@ -437,8 +467,14 @@ func (m *otelMiddleware) Capabilities() map[string]string {
 //
 //   - The AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED env var is set
 //     to a truthy value, or
-//   - The configured TracerProvider is the OpenTelemetry noop (i.e. no
-//     real exporter is wired up).
+//   - No explicit TracerProvider/exporter was supplied, OTEL_EXPORTER_OTLP_*
+//     env vars are not set, AND the OTel global TracerProvider is the
+//     noop default. In other words: nothing connected on any of the
+//     four resolution paths.
+//
+// A user who explicitly passes a noop TracerProvider via [WithTracerProvider]
+// is honored (capabilities are still advertised) — that is treated as an
+// intentional configuration choice, not "unconfigured".
 //
 // In pass-through mode, user-side OpenTelemetry calls still work — the
 // middleware just does not contribute spans of its own.
