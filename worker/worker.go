@@ -79,16 +79,30 @@ func Start(app *sdk.App) {
 	// nil and skips advertising HttpUri in WorkerInitResponse.
 	dispatcher.HTTPProxy = startHTTPProxy(app)
 
-	// Emit a one-time System-category record summarizing the worker
-	// build so customers can correlate observed behavior with the SDK
-	// version and the git commit their binary was built from. The
-	// host's "Worker" category trace category is enabled at
-	// Information by default, so this lands in App Insights customer
-	// queries without any opt-in; in OTel mode it also flows to the
-	// configured LoggerProvider via the otelslog bridge that
-	// middleware/otelfunc registers.
+	// Emit a one-time record summarizing the worker build so customers
+	// can correlate observed behavior with the SDK version and the git
+	// commit their binary was built from. We route through slog.Default
+	// (i.e. the user-category gRPC handler installed above), not the
+	// System logger, because:
+	//
+	//   1. With telemetryMode = OpenTelemetry, the host does NOT forward
+	//      System-category RpcLogs into its OTel log pipeline (per
+	//      WorkerOpenTelemetryEnabled — see middleware/otelfunc godoc).
+	//      A System record would be invisible to OTel customers, who
+	//      are the population most likely to query for it.
+	//   2. The user-category path runs through [userLogHandler], which
+	//      writes the RpcLog AND fans the slog.Record out to any
+	//      registered [UserLogObserver]. middleware/otelfunc registers
+	//      an observer that bridges to the global OTel LoggerProvider,
+	//      so the record reaches the configured backend (e.g. New Relic)
+	//      automatically when the customer is using OTel.
+	//   3. Classic Application Insights customers still see the record:
+	//      it lands under the app's Function.* category instead of the
+	//      "Worker" category, both of which the host enables at
+	//      Information by default. Same customer query (`message
+	//      startswith "Go worker started"`) finds it in both modes.
 	md := buildWorkerMetadata()
-	dispatcher.systemLogger.Info("Go worker started",
+	slog.Info("Go worker started",
 		"sdk_version", md.GetWorkerVersion(),
 		"sdk_replaced", md.GetCustomProperties()[MetaSDKReplaced],
 		"sdk_replace_path", md.GetCustomProperties()[MetaSDKReplacePath],

@@ -820,6 +820,14 @@ func buildDefaultResource(extra ...attribute.KeyValue) *resource.Resource {
 // so the subscription ID is the prefix up to the first '+'. Matches
 // the Java worker's extraction logic exactly so the resulting ID
 // string is byte-identical across the two runtimes.
+//
+// On the Flex Consumption plan, WEBSITE_RESOURCE_GROUP is not populated
+// by the platform (it is listed under "Deprecated properties and
+// settings" for Flex), so this function returns "" and cloud.resource_id
+// is omitted from the Resource. The .NET host's FunctionsResourceDetector
+// has the same gap. Customers who need cloud.resource_id on Flex can
+// supply it via OTEL_RESOURCE_ATTRIBUTES or [WithResource]; both are
+// merged on top of the default Resource by [buildDefaultResource].
 func armResourceIDFromEnv() string {
 	site := strings.TrimSpace(os.Getenv(envWebsiteSiteName))
 	rg := strings.TrimSpace(os.Getenv(envWebsiteResourceGroup))
