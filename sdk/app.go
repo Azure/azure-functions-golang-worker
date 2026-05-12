@@ -178,9 +178,10 @@ func (app *App) Blob(name string, f any, opts ...Option) *RegisteredFunction {
 	if factory, ok := GetClientFactory(string(bindings.BlobTriggerType)); ok {
 		rf.ClientFactory = factory
 	} else {
-		slog.Warn("no ClientFactory registered for blob trigger; did you forget to import triggers/blob?",
-			"trigger_type", string(bindings.BlobTriggerType),
-			"function_name", name,
+		slog.LogAttrs(context.Background(), slog.LevelWarn,
+			"no ClientFactory registered for blob trigger; did you forget to import triggers/blob?",
+			slog.String("trigger_type", string(bindings.BlobTriggerType)),
+			slog.String("function_name", name),
 		)
 	}
 

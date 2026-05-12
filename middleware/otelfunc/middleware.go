@@ -470,7 +470,9 @@ func (m *otelMiddleware) Wrap(next sdk.Handler) sdk.Handler {
 		// flush batch.
 		if m.cfg.flusher != nil {
 			if flushErr := m.cfg.flusher.ForceFlush(ctx); flushErr != nil && !errors.Is(flushErr, context.Canceled) {
-				slog.WarnContext(ctx, "otelfunc: ForceFlush failed", "err", flushErr)
+				slog.LogAttrs(ctx, slog.LevelWarn, "otelfunc: ForceFlush failed",
+					slog.Any("err", flushErr),
+				)
 			}
 		}
 		// Force-flush the LoggerProvider too so log records emitted
@@ -480,7 +482,9 @@ func (m *otelMiddleware) Wrap(next sdk.Handler) sdk.Handler {
 		// remain the user's lifecycle to manage.
 		if m.ownedLP != nil {
 			if flushErr := m.ownedLP.ForceFlush(ctx); flushErr != nil && !errors.Is(flushErr, context.Canceled) {
-				slog.WarnContext(ctx, "otelfunc: LoggerProvider ForceFlush failed", "err", flushErr)
+				slog.LogAttrs(ctx, slog.LevelWarn, "otelfunc: LoggerProvider ForceFlush failed",
+					slog.Any("err", flushErr),
+				)
 			}
 		}
 		return err

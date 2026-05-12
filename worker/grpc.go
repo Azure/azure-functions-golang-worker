@@ -85,7 +85,9 @@ func startSender(client grpc.BidiStreamingClient[pb.StreamingMessage, pb.Streami
 		defer close(finished)
 		for msg := range queue {
 			if err := client.Send(msg); err != nil {
-				errLogger.Error("gRPC send failed; sender exiting", "err", err)
+				errLogger.LogAttrs(context.Background(), slog.LevelError, "gRPC send failed; sender exiting",
+					slog.Any("err", err),
+				)
 				// Drain remaining messages to unblock producers that
 				// are mid-send on the buffered channel. Once we return
 				// and the deferred close(finished) fires, subsequent

@@ -68,7 +68,7 @@ func (disp *Dispatcher) processRequestMessage(reqMsg *pb.StreamingMessage) (*pb.
 
 	switch content := reqMsg.GetContent().(type) {
 	case *pb.StreamingMessage_WorkerInitRequest:
-		logger.Info("Handling WorkerInitRequest")
+		logger.LogAttrs(context.Background(), slog.LevelInfo, "Handling WorkerInitRequest")
 		// Wire host-supplied log_categories into the LogWriter's filter
 		// map so subsequent records are filtered as the host expects.
 		if disp.logWriter != nil {
@@ -76,26 +76,32 @@ func (disp *Dispatcher) processRequestMessage(reqMsg *pb.StreamingMessage) (*pb.
 		}
 		return handleWorkerInitRequest(content.WorkerInitRequest, requestId, disp), nil
 	case *pb.StreamingMessage_FunctionsMetadataRequest:
-		logger.Info("Handling FunctionsMetadataRequest")
+		logger.LogAttrs(context.Background(), slog.LevelInfo, "Handling FunctionsMetadataRequest")
 		return handleFunctionsMetadataRequest(content.FunctionsMetadataRequest, disp.App, requestId), nil
 	case *pb.StreamingMessage_InvocationRequest:
-		logger.Info("Handling InvocationRequest", "invocation_id", content.InvocationRequest.GetInvocationId())
+		logger.LogAttrs(context.Background(), slog.LevelInfo, "Handling InvocationRequest",
+			slog.String("invocation_id", content.InvocationRequest.GetInvocationId()),
+		)
 		// For invocations, the Host *does* provide a specific RequestId that we MUST echo back exactly.
 		return handleInvocationRequest(content.InvocationRequest, disp, reqMsg.GetRequestId())
 	case *pb.StreamingMessage_FunctionLoadRequest:
-		logger.Info("Handling FunctionLoadRequest", "function_id", content.FunctionLoadRequest.GetFunctionId())
+		logger.LogAttrs(context.Background(), slog.LevelInfo, "Handling FunctionLoadRequest",
+			slog.String("function_id", content.FunctionLoadRequest.GetFunctionId()),
+		)
 		return handleFunctionLoadRequest(content.FunctionLoadRequest, disp, requestId), nil
 	case *pb.StreamingMessage_WorkerStatusRequest:
-		logger.Debug("Handling WorkerStatusRequest")
+		logger.LogAttrs(context.Background(), slog.LevelDebug, "Handling WorkerStatusRequest")
 		return handleWorkerStatusRequest(requestId, content.WorkerStatusRequest)
 	case *pb.StreamingMessage_WorkerTerminate:
-		logger.Info("Handling WorkerTerminate")
+		logger.LogAttrs(context.Background(), slog.LevelInfo, "Handling WorkerTerminate")
 		return handleWorkerTerminate(requestId, content.WorkerTerminate)
 	case *pb.StreamingMessage_FunctionEnvironmentReloadRequest:
-		logger.Info("Handling FunctionEnvironmentReloadRequest")
+		logger.LogAttrs(context.Background(), slog.LevelInfo, "Handling FunctionEnvironmentReloadRequest")
 		return handleFunctionEnvironmentReloadRequest(requestId, content.FunctionEnvironmentReloadRequest)
 	default:
-		logger.Warn("Received unhandled message type", "content_type", contentTypeName(content))
+		logger.LogAttrs(context.Background(), slog.LevelWarn, "Received unhandled message type",
+			slog.String("content_type", contentTypeName(content)),
+		)
 		return nil, nil
 	}
 }

@@ -41,15 +41,21 @@ func Start(app *sdk.App) {
 
 	config, err := GetWorkerStartupConfig()
 	if err != nil {
-		bootstrap.Error("Failed to parse worker configuration", "err", err)
+		bootstrap.LogAttrs(context.Background(), slog.LevelError, "Failed to parse worker configuration",
+			slog.Any("err", err),
+		)
 		os.Exit(1)
 	}
 
-	bootstrap.Info("Starting Worker", "worker_id", config.FunctionsWorkerId)
+	bootstrap.LogAttrs(context.Background(), slog.LevelInfo, "Starting Worker",
+		slog.String("worker_id", config.FunctionsWorkerId),
+	)
 
 	client, err := connectToHost(config.FunctionsUri, config.FunctionsGrpcMaxMessageLength, config.FunctionsWorkerId)
 	if err != nil {
-		bootstrap.Error("Error establishing connection to host's gRPC server", "err", err)
+		bootstrap.LogAttrs(context.Background(), slog.LevelError, "Error establishing connection to host's gRPC server",
+			slog.Any("err", err),
+		)
 		os.Exit(1)
 	}
 
@@ -102,15 +108,15 @@ func Start(app *sdk.App) {
 	//      Information by default. Same customer query (`message
 	//      startswith "Go worker started"`) finds it in both modes.
 	md := buildWorkerMetadata()
-	slog.Info("Go worker started",
-		"sdk_version", md.GetWorkerVersion(),
-		"sdk_replaced", md.GetCustomProperties()[MetaSDKReplaced],
-		"sdk_replace_path", md.GetCustomProperties()[MetaSDKReplacePath],
-		"vcs_revision", md.GetCustomProperties()[MetaAppVCSRevision],
-		"build_dirty", md.GetCustomProperties()[MetaAppBuiltDirty],
-		"go_version", md.GetRuntimeVersion(),
-		"worker_bitness", md.GetWorkerBitness(),
-		"http_proxy_enabled", dispatcher.HTTPProxy != nil,
+	slog.LogAttrs(context.Background(), slog.LevelInfo, "Go worker started",
+		slog.String("sdk_version", md.GetWorkerVersion()),
+		slog.String("sdk_replaced", md.GetCustomProperties()[MetaSDKReplaced]),
+		slog.String("sdk_replace_path", md.GetCustomProperties()[MetaSDKReplacePath]),
+		slog.String("vcs_revision", md.GetCustomProperties()[MetaAppVCSRevision]),
+		slog.String("build_dirty", md.GetCustomProperties()[MetaAppBuiltDirty]),
+		slog.String("go_version", md.GetRuntimeVersion()),
+		slog.String("worker_bitness", md.GetWorkerBitness()),
+		slog.Bool("http_proxy_enabled", dispatcher.HTTPProxy != nil),
 	)
 
 	// Trap SIGTERM / SIGINT so middleware-owned resources (e.g. OTel
@@ -145,7 +151,9 @@ func Start(app *sdk.App) {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := app.RunShutdowns(shutdownCtx); err != nil {
-		dispatcher.systemLogger.Warn("Middleware shutdown returned error", "err", err)
+		dispatcher.systemLogger.LogAttrs(shutdownCtx, slog.LevelWarn, "Middleware shutdown returned error",
+			slog.Any("err", err),
+		)
 	}
 }
 
@@ -161,7 +169,9 @@ func signalContext(logger *slog.Logger) (context.Context, func()) {
 	go func() {
 		select {
 		case sig := <-ch:
-			logger.Info("Received termination signal; initiating shutdown", "signal", sig.String())
+			logger.LogAttrs(ctx, slog.LevelInfo, "Received termination signal; initiating shutdown",
+				slog.String("signal", sig.String()),
+			)
 			cancel()
 		case <-ctx.Done():
 		}
@@ -194,11 +204,13 @@ func handleBidiStream(
 	for {
 		reqMsg, err := client.Recv()
 		if err == io.EOF {
-			disp.systemLogger.Info("Stream closed by server")
+			disp.systemLogger.LogAttrs(context.Background(), slog.LevelInfo, "Stream closed by server")
 			return
 		}
 		if err != nil {
-			disp.systemLogger.Error("Error receiving from stream", "err", err)
+			disp.systemLogger.LogAttrs(context.Background(), slog.LevelError, "Error receiving from stream",
+				slog.Any("err", err),
+			)
 			return
 		}
 
@@ -218,10 +230,10 @@ func handleBidiStream(
 			// panic via the system logger is the most useful action.
 			defer func() {
 				if rec := recover(); rec != nil {
-					disp.systemLogger.Error("panic in message dispatch goroutine",
-						"content_type", contentTypeName(msg.GetContent()),
-						"panic", rec,
-						"stack", string(debug.Stack()),
+					disp.systemLogger.LogAttrs(context.Background(), slog.LevelError, "panic in message dispatch goroutine",
+						slog.String("content_type", contentTypeName(msg.GetContent())),
+						slog.Any("panic", rec),
+						slog.String("stack", string(debug.Stack())),
 					)
 				}
 			}()
@@ -231,15 +243,19 @@ func handleBidiStream(
 				// Per-message errors must not crash the worker. The host
 				// will retry or time out the affected request; other
 				// in-flight messages keep flowing.
-				disp.systemLogger.Error("Error processing request",
-					"content_type", contentTypeName(msg.GetContent()), "err", err)
+				disp.systemLogger.LogAttrs(context.Background(), slog.LevelError, "Error processing request",
+					slog.String("content_type", contentTypeName(msg.GetContent())),
+					slog.Any("err", err),
+				)
 				return
 			}
 			if respMsg == nil {
 				return
 			}
 			if sendErr := send(respMsg); sendErr != nil {
-				disp.systemLogger.Error("Error sending response", "err", sendErr)
+				disp.systemLogger.LogAttrs(context.Background(), slog.LevelError, "Error sending response",
+					slog.Any("err", sendErr),
+				)
 			}
 		}(reqMsg)
 	}

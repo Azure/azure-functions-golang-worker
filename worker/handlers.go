@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"reflect"
 
@@ -18,7 +19,9 @@ type LoadedFunction struct {
 
 func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *Dispatcher) *pb.StreamingMessage {
 	logger := disp.SystemLogger()
-	logger.Info("Received WorkerInitRequest", "request_id", requestId)
+	logger.LogAttrs(context.Background(), slog.LevelInfo, "Received WorkerInitRequest",
+		slog.String("request_id", requestId),
+	)
 
 	// Capabilities the Go worker advertises. These mirror what the Functions
 	// host expects from a modern out-of-proc worker (Python / dotnet-isolated
@@ -51,7 +54,9 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *
 		// Required so route parameters still flow via gRPC trigger metadata
 		// when the body is being proxied over HTTP.
 		capabilities["RequiresRouteParameters"] = "true"
-		logger.Info("Advertising HttpUri for streaming HTTP triggers", "http_uri", disp.HTTPProxy.url)
+		logger.LogAttrs(context.Background(), slog.LevelInfo, "Advertising HttpUri for streaming HTTP triggers",
+			slog.String("http_uri", disp.HTTPProxy.url),
+		)
 	}
 
 	return &pb.StreamingMessage{
@@ -205,13 +210,13 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, re
 
 	logger := disp.SystemLogger()
 	for k, v := range fields {
-		logger.Debug("FunctionLoad field mapping",
-			"function_id", funcID,
-			"name", k,
-			"position", v.Position,
-			"type", v.Type.String(),
-			"direction", v.Direction,
-			"is_argument", v.IsArgument,
+		logger.LogAttrs(context.Background(), slog.LevelDebug, "FunctionLoad field mapping",
+			slog.String("function_id", funcID),
+			slog.String("name", k),
+			slog.Int("position", v.Position),
+			slog.String("type", v.Type.String()),
+			slog.String("direction", v.Direction),
+			slog.Bool("is_argument", v.IsArgument),
 		)
 	}
 
