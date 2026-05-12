@@ -375,7 +375,7 @@ Initializes a new Go Function App project, generating:
 ### 6.2 `func start`
 
 Core tools:
-1. Detects `FUNCTIONS_WORKER_RUNTIME = "native"` from `local.settings.json`.
+1. Invoked as `func start --worker-runtime go` to select the Go worker.
 2. Runs `go build -o app .` (or `app.exe` on Windows) to compile the project.
 3. Starts the Azure Functions Host, which reads `worker.config.json` and launches `app`.
 4. The host and worker communicate over gRPC.
