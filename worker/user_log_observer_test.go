@@ -60,8 +60,8 @@ func TestRegisterUserLogObserver_FansOut(t *testing.T) {
 	// observer-side attr propagation (the handler clones the record and
 	// re-AddAttrs the bound attrs).
 	h := (&userLogHandler{
-		writer: newLogWriter(func(*pb.StreamingMessage) error { return nil }, slog.NewTextHandler(discardWriter{}, nil)),
-		attrs:  []slog.Attr{slog.String("bound_key", "bound_val")},
+		writer:   newLogWriter(func(*pb.StreamingMessage) error { return nil }, slog.NewTextHandler(discardWriter{}, nil)),
+		composer: logComposer{}.withAttrs([]slog.Attr{slog.String("bound_key", "bound_val")}),
 	})
 
 	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "hello", 0)

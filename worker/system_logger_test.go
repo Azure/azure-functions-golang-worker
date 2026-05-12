@@ -31,7 +31,7 @@ func TestBuildRpcLog_PopulatesPropertiesMap(t *testing.T) {
 		slog.Bool("cached", true),
 	)
 
-	rl := buildRpcLog(ctx, r, pb.RpcLog_User, nil, nil)
+	rl := buildRpcLog(ctx, r, pb.RpcLog_User, logComposer{})
 
 	if rl.Properties != "" {
 		t.Errorf("RpcLog.Properties (deprecated string) should be empty, got %q", rl.Properties)
@@ -74,7 +74,7 @@ func TestBuildRpcLog_ReservedKeysSurfaceOnProto(t *testing.T) {
 		slog.String("normal_attr", "kept"),
 	)
 
-	rl := buildRpcLog(context.Background(), r, pb.RpcLog_User, nil, nil)
+	rl := buildRpcLog(context.Background(), r, pb.RpcLog_User, logComposer{})
 
 	if rl.InvocationId != "inv-9" {
 		t.Errorf("InvocationId: got %q want %q", rl.InvocationId, "inv-9")
@@ -216,7 +216,7 @@ func TestBuildRpcLog_RenderedTextHasReservedKeysAndUserAttrs(t *testing.T) {
 		slog.String("round_marker", "round1a-info"),
 	)
 
-	rl := buildRpcLog(context.Background(), r, pb.RpcLog_User, nil, nil)
+	rl := buildRpcLog(context.Background(), r, pb.RpcLog_User, logComposer{})
 
 	for _, banned := range []string{"invocation_id=", "function_name=", "event_id=", "category="} {
 		if strings.Contains(rl.Message, banned) {
@@ -229,3 +229,116 @@ func TestBuildRpcLog_RenderedTextHasReservedKeysAndUserAttrs(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildRpcLog_PreservesGroupAttrOrder asserts the slog Handler
+// contract for With / WithGroup interleaving:
+//
+//   - attrs bound before a WithGroup remain at the top level (no prefix);
+//   - attrs bound after a WithGroup are qualified by that group;
+//   - inline record attrs are qualified by the full group stack at
+//     Handle time, not the snapshot at any earlier With call.
+//
+// The pre-refactor implementation stored bound attrs and groups in two
+// flat parallel slices and applied every group as a prefix to every
+// bound attr, which violated all three invariants above. This test is
+// the regression guard for that fix.
+func TestBuildRpcLog_PreservesGroupAttrOrder(t *testing.T) {
+	composer := logComposer{}.
+		withAttrs([]slog.Attr{slog.String("tenant_id", "acme")}). // pre-group: top-level
+		withGroup("http").
+		withAttrs([]slog.Attr{ // post-group: qualified by http.
+			slog.String("method", "POST"),
+			slog.String("path", "/orders"),
+		})
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "invocation finished", 0)
+	r.AddAttrs(slog.Int("duration_ms", 142)) // inline: qualified by full stack (http.)
+
+	rl := buildRpcLog(context.Background(), r, pb.RpcLog_User, composer)
+
+	cases := []struct {
+		key  string
+		kind string // "string" or "int"
+		want any
+	}{
+		{"tenant_id", "string", "acme"},
+		{"http.method", "string", "POST"},
+		{"http.path", "string", "/orders"},
+		{"http.duration_ms", "int", int64(142)},
+	}
+	for _, c := range cases {
+		got, ok := rl.PropertiesMap[c.key]
+		if !ok {
+			t.Errorf("PropertiesMap missing key %q; keys present: %v", c.key, keysOf(rl.PropertiesMap))
+			continue
+		}
+		switch c.kind {
+		case "string":
+			if g := got.GetString_(); g != c.want {
+				t.Errorf("%s: got %q want %q", c.key, g, c.want)
+			}
+		case "int":
+			if g := got.GetInt(); g != c.want {
+				t.Errorf("%s: got %d want %d", c.key, g, c.want)
+			}
+		}
+	}
+	// The forbidden flat-prefix shape would have produced "http.tenant_id"
+	// (every group applied to every bound attr). Guard against that.
+	if _, leaked := rl.PropertiesMap["http.tenant_id"]; leaked {
+		t.Errorf("tenant_id should NOT be nested under http; PropertiesMap: %v", rl.PropertiesMap)
+	}
+}
+
+// TestBuildRpcLog_NestedGroupsBindingTime asserts that attrs bound when
+// only the outer group is open get the outer prefix, while attrs bound
+// after the inner group opens get the dotted outer.inner prefix. Inline
+// record attrs use the full stack.
+func TestBuildRpcLog_NestedGroupsBindingTime(t *testing.T) {
+	composer := logComposer{}.
+		withGroup("outer").
+		withAttrs([]slog.Attr{slog.Int("a", 1)}).
+		withGroup("inner").
+		withAttrs([]slog.Attr{slog.Int("b", 2)})
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)
+	r.AddAttrs(slog.Int("c", 3))
+
+	rl := buildRpcLog(context.Background(), r, pb.RpcLog_User, composer)
+
+	cases := map[string]int64{
+		"outer.a":       1,
+		"outer.inner.b": 2,
+		"outer.inner.c": 3,
+	}
+	for k, want := range cases {
+		got, ok := rl.PropertiesMap[k]
+		if !ok {
+			t.Errorf("PropertiesMap missing %q; keys=%v", k, keysOf(rl.PropertiesMap))
+			continue
+		}
+		if g := got.GetInt(); g != want {
+			t.Errorf("%s: got %d want %d", k, g, want)
+		}
+	}
+}
+
+// TestBuildRpcLog_EmptyGroupIsNoop documents that withGroup("") is a
+// no-op, matching slog's documented convention.
+func TestBuildRpcLog_EmptyGroupIsNoop(t *testing.T) {
+	composer := logComposer{}.
+		withAttrs([]slog.Attr{slog.Int("a", 1)}).
+		withGroup("").
+		withAttrs([]slog.Attr{slog.Int("b", 2)})
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)
+
+	rl := buildRpcLog(context.Background(), r, pb.RpcLog_User, composer)
+
+	for _, k := range []string{"a", "b"} {
+		if _, ok := rl.PropertiesMap[k]; !ok {
+			t.Errorf("PropertiesMap missing top-level %q; keys=%v", k, keysOf(rl.PropertiesMap))
+		}
+	}
+}
+

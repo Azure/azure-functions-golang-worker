@@ -78,9 +78,8 @@ func RegisterUserLogObserver(fn UserLogObserver) {
 // users get the right behavior automatically; users who don't import
 // otelfunc never link any OTel code into their binary.
 type userLogHandler struct {
-	writer *LogWriter
-	attrs  []slog.Attr
-	groups []string
+	writer   *LogWriter
+	composer logComposer
 }
 
 // newUserLogHandler returns the User-category gRPC slog.Handler. Called
@@ -93,7 +92,7 @@ func newUserLogHandler(w *LogWriter) slog.Handler {
 func (h *userLogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
 
 func (h *userLogHandler) Handle(ctx context.Context, r slog.Record) error {
-	rl := buildRpcLog(ctx, r, pb.RpcLog_User, h.attrs, h.groups)
+	rl := buildRpcLog(ctx, r, pb.RpcLog_User, h.composer)
 	h.writer.Write(rl)
 
 	// Fan out to registered observers (e.g. the otelfunc -> OTel
@@ -102,11 +101,16 @@ func (h *userLogHandler) Handle(ctx context.Context, r slog.Record) error {
 	// errors are non-fatal because the RpcLog has already gone out.
 	if obs := userLogObservers.Load(); obs != nil {
 		rec := r.Clone()
-		// Replay any bound attrs and groups onto the cloned record so
-		// observers see the same structure the RpcLog received. This
-		// avoids each observer having to re-implement attr accumulation.
-		if len(h.attrs) > 0 {
-			rec.AddAttrs(h.attrs...)
+		// Replay any bound attrs onto the cloned record with their
+		// recorded group path applied as a dotted prefix, so observers
+		// see the same fully-qualified shape the RpcLog received. This
+		// avoids each observer having to re-implement attr accumulation
+		// or slog's order-sensitive Group/Attr semantics.
+		for _, b := range h.composer.bound {
+			rec.AddAttrs(slog.Attr{
+				Key:   qualify(b.groups, b.attr.Key),
+				Value: b.attr.Value,
+			})
 		}
 		for _, fn := range *obs {
 			fn(ctx, rec)
@@ -116,21 +120,17 @@ func (h *userLogHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *userLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	cp := &userLogHandler{
-		writer: h.writer,
-		attrs:  mergeAttrs(h.attrs, attrs),
-		groups: append([]string{}, h.groups...),
+	return &userLogHandler{
+		writer:   h.writer,
+		composer: h.composer.withAttrs(attrs),
 	}
-	return cp
 }
 
 func (h *userLogHandler) WithGroup(name string) slog.Handler {
-	cp := &userLogHandler{
-		writer: h.writer,
-		attrs:  append([]slog.Attr{}, h.attrs...),
-		groups: append(append([]string{}, h.groups...), name),
+	return &userLogHandler{
+		writer:   h.writer,
+		composer: h.composer.withGroup(name),
 	}
-	return cp
 }
 
 // systemLogHandler is the slog.Handler used for worker-internal logs
@@ -139,9 +139,8 @@ func (h *userLogHandler) WithGroup(name string) slog.Handler {
 // instance is constructed at worker.Start time and stored on the
 // dispatcher; worker code calls it via [systemLogger].
 type systemLogHandler struct {
-	writer *LogWriter
-	attrs  []slog.Attr
-	groups []string
+	writer   *LogWriter
+	composer logComposer
 }
 
 // newSystemLogHandler returns the System-category slog.Handler.
@@ -152,7 +151,7 @@ func newSystemLogHandler(w *LogWriter) slog.Handler {
 func (h *systemLogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
 
 func (h *systemLogHandler) Handle(ctx context.Context, r slog.Record) error {
-	rl := buildRpcLog(ctx, r, pb.RpcLog_System, h.attrs, h.groups)
+	rl := buildRpcLog(ctx, r, pb.RpcLog_System, h.composer)
 	// System logs use the "Worker" category by default if the record
 	// does not specify one. The host's category filter recognizes
 	// "Worker" as the catch-all for worker-side logs.
@@ -164,15 +163,17 @@ func (h *systemLogHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *systemLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	cp := *h
-	cp.attrs = mergeAttrs(h.attrs, attrs)
-	return &cp
+	return &systemLogHandler{
+		writer:   h.writer,
+		composer: h.composer.withAttrs(attrs),
+	}
 }
 
 func (h *systemLogHandler) WithGroup(name string) slog.Handler {
-	cp := *h
-	cp.groups = append(append([]string{}, h.groups...), name)
-	return &cp
+	return &systemLogHandler{
+		writer:   h.writer,
+		composer: h.composer.withGroup(name),
+	}
 }
 
 // buildRpcLog converts an slog.Record into an RpcLog proto carrying the
@@ -190,7 +191,7 @@ func (h *systemLogHandler) WithGroup(name string) slog.Handler {
 // embedding attrs in the message and apply it to the RpcLog.Message
 // field so Go users get the structured-logging experience they expect.
 func buildRpcLog(ctx context.Context, r slog.Record, cat pb.RpcLog_RpcLogCategory,
-	bound []slog.Attr, groups []string) *pb.RpcLog {
+	c logComposer) *pb.RpcLog {
 
 	rl := &pb.RpcLog{
 		Level:       slogLevelToRpc(r.Level),
@@ -212,11 +213,12 @@ func buildRpcLog(ctx context.Context, r slog.Record, cat pb.RpcLog_RpcLogCategor
 
 	props := map[string]*pb.TypedData{}
 	var renderable []slog.Attr
-	walk := func(a slog.Attr) bool {
-		key := a.Key
-		if len(groups) > 0 {
-			key = strings.Join(append(append([]string{}, groups...), key), ".")
-		}
+	// walk processes one attribute with its already-qualified key. We
+	// pass the qualified key in rather than recomputing it inside the
+	// closure so bound attrs (which use their bind-time group snapshot)
+	// and record attrs (which use the full Handle-time group stack) can
+	// share the same dispatch logic.
+	walk := func(key string, a slog.Attr) {
 		switch key {
 		case "invocation_id":
 			if rl.InvocationId == "" {
@@ -240,12 +242,21 @@ func buildRpcLog(ctx context.Context, r slog.Record, cat pb.RpcLog_RpcLogCategor
 			props[key] = slogValueToTypedData(a.Value)
 			renderable = append(renderable, slog.Attr{Key: key, Value: a.Value})
 		}
+	}
+	// Bound attrs are qualified by the group stack that was open when
+	// each was attached -- snapshotted by [logComposer.withAttrs] -- so
+	// attrs added before a WithGroup remain unqualified by it, matching
+	// the slog Handler contract.
+	for _, b := range c.bound {
+		walk(qualify(b.groups, b.attr.Key), b.attr)
+	}
+	// Record-time inline attrs are qualified by the full group stack at
+	// Handle time -- they were emitted on a Record passed through the
+	// most recent WithGroup, so they nest under it.
+	r.Attrs(func(a slog.Attr) bool {
+		walk(qualify(c.groups, a.Key), a)
 		return true
-	}
-	for _, a := range bound {
-		walk(a)
-	}
-	r.Attrs(walk)
+	})
 	if len(props) > 0 {
 		rl.PropertiesMap = props
 	}
@@ -346,15 +357,6 @@ func slogValueToTypedData(v slog.Value) *pb.TypedData {
 	default:
 		return &pb.TypedData{Data: &pb.TypedData_String_{String_: v.String()}}
 	}
-}
-
-// mergeAttrs concatenates two slog.Attr slices into a fresh backing array
-// so handlers built from With(...) don't share state with the parent.
-func mergeAttrs(a, b []slog.Attr) []slog.Attr {
-	out := make([]slog.Attr, 0, len(a)+len(b))
-	out = append(out, a...)
-	out = append(out, b...)
-	return out
 }
 
 // stringValue extracts a string from an slog.Value, handling the common

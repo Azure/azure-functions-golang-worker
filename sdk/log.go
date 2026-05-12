@@ -107,11 +107,22 @@ type invocationLogHandler struct {
 	// explicitBase, when non-nil, takes precedence over the package-level
 	// default. Used by callers (e.g. tests) that want to bypass the default.
 	explicitBase slog.Handler
-	// attrs and groups accumulate through WithAttrs/WithGroup. They are
-	// applied to the resolved base lazily so that base swaps remain
-	// effective for already-constructed handlers.
-	attrs  []slog.Attr
-	groups []string
+	// ops is the interleaved log of WithAttrs / WithGroup calls made
+	// against this handler chain, in the order they were issued. We
+	// replay it against the resolved base at Handle time so the base
+	// can be swapped at any point and so slog's order-sensitive
+	// Group/Attr contract is preserved: attrs added before a WithGroup
+	// stay outside that group; attrs added after are nested under it.
+	ops []logOp
+}
+
+// logOp is one step in the With / WithGroup history of an
+// [invocationLogHandler] chain. Exactly one of attrs / group is
+// populated, signaled by isGroup.
+type logOp struct {
+	isGroup bool
+	group   string
+	attrs   []slog.Attr
 }
 
 // resolveBase picks the handler to delegate to: the explicit base when set,
@@ -123,15 +134,40 @@ func (h *invocationLogHandler) resolveBase() slog.Handler {
 	return defaultBase()
 }
 
-// effective composes the resolved base with any accumulated groups/attrs
-// for use in Handle.
-func (h *invocationLogHandler) effective() slog.Handler {
+// effective composes the resolved base with the SDK's invocation
+// attributes (when an InvocationContext is on the context) and then
+// replays the user's With / WithGroup ops in their original order.
+//
+// SDK invocation attrs (invocation_id, function_name, trigger_type) are
+// attached BEFORE the user ops, so they always land at the top level of
+// the emitted record -- even if the user logger has called WithGroup.
+// Without that ordering, an `slog.Default().WithGroup("http").Info(...)`
+// call would nest invocation_id under "http", which makes the host's
+// proto extraction (and customer queries against the AI/NR top-level
+// invocation_id field) silently fail.
+func (h *invocationLogHandler) effective(ctx context.Context) slog.Handler {
 	b := h.resolveBase()
-	for _, g := range h.groups {
-		b = b.WithGroup(g)
+	if ic, ok := FromContext(ctx); ok && ic != nil {
+		var sdkAttrs []slog.Attr
+		if ic.InvocationID != "" {
+			sdkAttrs = append(sdkAttrs, slog.String("invocation_id", ic.InvocationID))
+		}
+		if ic.FunctionName != "" {
+			sdkAttrs = append(sdkAttrs, slog.String("function_name", ic.FunctionName))
+		}
+		if ic.TriggerType != "" {
+			sdkAttrs = append(sdkAttrs, slog.String("trigger_type", ic.TriggerType))
+		}
+		if len(sdkAttrs) > 0 {
+			b = b.WithAttrs(sdkAttrs)
+		}
 	}
-	if len(h.attrs) > 0 {
-		b = b.WithAttrs(h.attrs)
+	for _, op := range h.ops {
+		if op.isGroup {
+			b = b.WithGroup(op.group)
+		} else {
+			b = b.WithAttrs(op.attrs)
+		}
 	}
 	return b
 }
@@ -141,32 +177,28 @@ func (h *invocationLogHandler) Enabled(ctx context.Context, level slog.Level) bo
 }
 
 func (h *invocationLogHandler) Handle(ctx context.Context, r slog.Record) error {
-	if ic, ok := FromContext(ctx); ok && ic != nil {
-		if ic.InvocationID != "" {
-			r.AddAttrs(slog.String("invocation_id", ic.InvocationID))
-		}
-		if ic.FunctionName != "" {
-			r.AddAttrs(slog.String("function_name", ic.FunctionName))
-		}
-		if ic.TriggerType != "" {
-			r.AddAttrs(slog.String("trigger_type", ic.TriggerType))
-		}
-	}
-	return h.effective().Handle(ctx, r)
+	return h.effective(ctx).Handle(ctx, r)
 }
 
 func (h *invocationLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	if len(attrs) == 0 {
+		return h
+	}
 	cp := *h
-	cp.attrs = make([]slog.Attr, 0, len(h.attrs)+len(attrs))
-	cp.attrs = append(cp.attrs, h.attrs...)
-	cp.attrs = append(cp.attrs, attrs...)
+	cp.ops = make([]logOp, 0, len(h.ops)+1)
+	cp.ops = append(cp.ops, h.ops...)
+	cp.ops = append(cp.ops, logOp{attrs: attrs})
 	return &cp
 }
 
 func (h *invocationLogHandler) WithGroup(name string) slog.Handler {
+	if name == "" {
+		// slog's documented convention: empty WithGroup is a no-op.
+		return h
+	}
 	cp := *h
-	cp.groups = make([]string, 0, len(h.groups)+1)
-	cp.groups = append(cp.groups, h.groups...)
-	cp.groups = append(cp.groups, name)
+	cp.ops = make([]logOp, 0, len(h.ops)+1)
+	cp.ops = append(cp.ops, h.ops...)
+	cp.ops = append(cp.ops, logOp{isGroup: true, group: name})
 	return &cp
 }

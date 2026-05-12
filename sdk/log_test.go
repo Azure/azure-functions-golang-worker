@@ -245,3 +245,158 @@ func (h *captureHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return cp
 }
 func (h *captureHandler) WithGroup(_ string) slog.Handler { return h }
+
+// TestNewLogHandler_PreservesGroupAttrOrder asserts that attrs bound via
+// With BEFORE a WithGroup remain at the top level, while attrs bound
+// AFTER and inline record attrs nest under the group. This is the slog
+// Handler contract -- WithGroup applies only to subsequently-added
+// attributes. The original invocationLogHandler stored attrs and groups
+// in two flat parallel slices and applied all groups before all attrs,
+// which collapsed every bound attr under every later group; this test
+// is the regression guard for that fix.
+func TestNewLogHandler_PreservesGroupAttrOrder(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.NewJSONHandler(&buf, nil)
+	logger := slog.New(NewLogHandler(base)).
+		With("tenant_id", "acme").
+		WithGroup("http").
+		With("method", "POST", "path", "/orders")
+
+	logger.Info("invocation finished", "duration_ms", 142)
+
+	var rec map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
+		t.Fatalf("log output is not valid JSON: %v\n%s", err, buf.String())
+	}
+
+	if rec["tenant_id"] != "acme" {
+		t.Errorf("tenant_id should be top-level; got %v\nfull record: %s", rec["tenant_id"], buf.String())
+	}
+	httpGroup, ok := rec["http"].(map[string]any)
+	if !ok {
+		t.Fatalf("http group missing or not a map: %v", rec["http"])
+	}
+	if httpGroup["method"] != "POST" {
+		t.Errorf("http.method mismatch: %v", httpGroup["method"])
+	}
+	if httpGroup["path"] != "/orders" {
+		t.Errorf("http.path mismatch: %v", httpGroup["path"])
+	}
+	// duration_ms is an inline record attr emitted after the group is
+	// open, so slog spec puts it inside the group.
+	if httpGroup["duration_ms"] == nil {
+		t.Errorf("http.duration_ms missing; got %v", httpGroup)
+	}
+	// tenant_id should NOT be nested inside http.
+	if _, leaked := httpGroup["tenant_id"]; leaked {
+		t.Errorf("tenant_id leaked into http group: %v", httpGroup)
+	}
+}
+
+// TestNewLogHandler_SDKAttrsTopLevelAcrossWithGroup asserts that the
+// SDK-attached invocation attrs (invocation_id, function_name,
+// trigger_type) stay at the top level of the emitted record even when
+// the user logger has called WithGroup. The host's RpcLog proto
+// extraction and customer queries against the top-level fields would
+// otherwise silently fail when users follow the slog idiom of grouping
+// related fields under a namespace.
+func TestNewLogHandler_SDKAttrsTopLevelAcrossWithGroup(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.NewJSONHandler(&buf, nil)
+	logger := slog.New(NewLogHandler(base)).WithGroup("http")
+
+	ctx := NewContext(context.Background(), &InvocationContext{
+		InvocationID: "inv-99",
+		FunctionName: "Hello",
+		TriggerType:  "httpTrigger",
+	})
+	logger.InfoContext(ctx, "ping", "status", 200)
+
+	var rec map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
+		t.Fatalf("log output is not valid JSON: %v\n%s", err, buf.String())
+	}
+
+	if rec["invocation_id"] != "inv-99" {
+		t.Errorf("invocation_id should be top-level despite WithGroup; got %v\nfull record: %s",
+			rec["invocation_id"], buf.String())
+	}
+	if rec["function_name"] != "Hello" {
+		t.Errorf("function_name should be top-level: %v", rec["function_name"])
+	}
+	if rec["trigger_type"] != "httpTrigger" {
+		t.Errorf("trigger_type should be top-level: %v", rec["trigger_type"])
+	}
+	// The user-supplied inline attr does belong inside the group.
+	httpGroup, ok := rec["http"].(map[string]any)
+	if !ok {
+		t.Fatalf("http group missing: %v", rec["http"])
+	}
+	if httpGroup["status"] == nil {
+		t.Errorf("http.status missing; got %v", httpGroup)
+	}
+}
+
+// TestNewLogHandler_NestedGroups asserts that nested groups produce
+// nested JSON objects, with attrs landing in whichever group was open
+// when they were bound.
+func TestNewLogHandler_NestedGroups(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.NewJSONHandler(&buf, nil)
+	logger := slog.New(NewLogHandler(base)).
+		WithGroup("outer").
+		With("a", 1).
+		WithGroup("inner").
+		With("b", 2)
+
+	logger.Info("msg")
+
+	var rec map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
+		t.Fatalf("log output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	outer, ok := rec["outer"].(map[string]any)
+	if !ok {
+		t.Fatalf("outer missing: %v", rec)
+	}
+	if outer["a"] == nil {
+		t.Errorf("outer.a missing: %v", outer)
+	}
+	inner, ok := outer["inner"].(map[string]any)
+	if !ok {
+		t.Fatalf("outer.inner missing: %v", outer)
+	}
+	if inner["b"] == nil {
+		t.Errorf("outer.inner.b missing: %v", inner)
+	}
+}
+
+// TestNewLogHandler_EmptyGroupIsNoop documents that an empty WithGroup
+// name is dropped silently, matching slog's documented convention. This
+// keeps round-tripped chain construction (e.g. `.WithGroup(maybeEmpty)`)
+// safe without forcing callers to nil-check at every site.
+func TestNewLogHandler_EmptyGroupIsNoop(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.NewJSONHandler(&buf, nil)
+	logger := slog.New(NewLogHandler(base)).
+		With("a", 1).
+		WithGroup("").
+		With("b", 2)
+
+	logger.Info("msg")
+
+	var rec map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
+		t.Fatalf("log output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if rec["a"] == nil {
+		t.Errorf("a missing: %v", rec)
+	}
+	if rec["b"] == nil {
+		t.Errorf("b missing: %v", rec)
+	}
+	if _, present := rec[""]; present {
+		t.Errorf("empty group should not have produced a top-level empty key: %v", rec)
+	}
+}
+
