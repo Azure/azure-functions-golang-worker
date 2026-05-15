@@ -249,13 +249,18 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 
 	// HTTP streaming path: when the host is forwarding HTTP via the
 	// "HttpUri" capability, the user handler runs against the live
-	// http.ResponseWriter inside the embedded HTTP proxy. The gRPC side
-	// just waits for completion and returns a minimal InvocationResponse.
-	// Pass disp.App so the proxy can compose the registered middleware
-	// chain (notably otelfunc) around the user handler -- without this,
-	// HTTP-streaming invocations would bypass middleware entirely.
+	// http.ResponseWriter inside the embedded HTTP proxy. The gRPC
+	// side waits for completion via notifyGRPCArrival, which returns
+	// the post-invocation [sdk.InvocationContext] alongside the status
+	// so we can populate the InvocationResponse the same way the
+	// gRPC-body path does below -- reading invocation-output fields
+	// (OutboundTraceAttributes today; future fields automatically) off
+	// the ic. Pass disp.App so the proxy can compose the registered
+	// middleware chain (notably otelfunc) around the user handler;
+	// without this, HTTP-streaming invocations would bypass middleware
+	// entirely.
 	if disp.HTTPProxy != nil && isHTTPHandler(loadedFunc) && isHTTPProxiedInvocation(req) {
-		status, err := disp.HTTPProxy.notifyGRPCArrival(req, loadedFunc, disp.App)
+		status, ic, err := disp.HTTPProxy.notifyGRPCArrival(req, loadedFunc, disp.App)
 		if err != nil {
 			// Don't return a Go error — handleBidiStream treats those as
 			// fatal. A rendezvous failure (timeout, cancelled HTTP request)
@@ -273,12 +278,24 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 				},
 			}
 		}
+		// ic is nil only on the early-return "client disconnected before
+		// gRPC arrival" branch in the proxy's handle(): no [grpcArrival]
+		// means no [sdk.InvocationContext] to copy onto the response. In
+		// that case the InvocationResponse carries just the status. The
+		// nil-check is a safety belt; every other code path produces a
+		// non-nil ic (including user-handler panics, where the ic was
+		// constructed before the panic).
+		var outboundTA map[string]string
+		if ic != nil {
+			outboundTA = ic.OutboundTraceAttributes
+		}
 		return &pb.StreamingMessage{
 			RequestId: requestId,
 			Content: &pb.StreamingMessage_InvocationResponse{
 				InvocationResponse: &pb.InvocationResponse{
-					InvocationId: req.InvocationId,
-					Result:       status,
+					InvocationId:           req.InvocationId,
+					Result:                 status,
+					TraceContextAttributes: outboundTA,
 				},
 			},
 		}, nil

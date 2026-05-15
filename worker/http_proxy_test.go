@@ -78,7 +78,7 @@ func TestHTTPProxy_StreamingResponse(t *testing.T) {
 			InvocationId: invocationID,
 			FunctionId:   rf.FuncId,
 		}
-		grpcStatus, grpcErr = proxy.notifyGRPCArrival(req, loaded, app)
+		grpcStatus, _, grpcErr = proxy.notifyGRPCArrival(req, loaded, app)
 	}()
 
 	httpReq, err := http.NewRequest(http.MethodGet, proxy.url+"/api/stream", nil)
@@ -138,7 +138,7 @@ func TestHTTPProxy_PanickingHandler(t *testing.T) {
 	var status *pb.StatusResult
 	go func() {
 		defer close(done)
-		status, _ = proxy.notifyGRPCArrival(&pb.InvocationRequest{
+		status, _, _ = proxy.notifyGRPCArrival(&pb.InvocationRequest{
 			InvocationId: invocationID,
 			FunctionId:   rf.FuncId,
 		}, loaded, app)
@@ -295,7 +295,7 @@ func TestHTTPProxy_RunsMiddlewareChain(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = proxy.notifyGRPCArrival(&pb.InvocationRequest{
+		_, _, _ = proxy.notifyGRPCArrival(&pb.InvocationRequest{
 			InvocationId: invocationID,
 			FunctionId:   rf.FuncId,
 		}, loaded, app)
@@ -328,5 +328,237 @@ func TestHTTPProxy_RunsMiddlewareChain(t *testing.T) {
 		}
 	default:
 		t.Error("handler did not observe sdk.FromContext (no assertion delivered)")
+	}
+}
+
+// TestHTTPProxy_PropagatesIcToGRPCSide asserts that the
+// sdk.InvocationContext the HTTP goroutine populates is handed across
+// the rendezvous channel to the gRPC dispatcher. The gRPC side uses
+// the returned ic to build the InvocationResponse the same way the
+// gRPC-body path does (reading invocation-output fields directly off
+// the ic). This is the structural fix: as long as the ic crosses the
+// boundary, the gRPC dispatcher can pick up any user-mutable ic field
+// without per-field plumbing.
+//
+// The test exercises [sdk.InvocationContext.OutboundTraceAttributes]
+// because that's the first such field shipped, but the contract being
+// asserted is broader: "whatever the user / middleware wrote to the
+// ic on the HTTP goroutine is observable on the gRPC side."
+func TestHTTPProxy_PropagatesIcToGRPCSide(t *testing.T) {
+	app := sdk.FunctionApp()
+	app.HTTP("attribute-setter", func(w http.ResponseWriter, r *http.Request) {
+		ic, ok := sdk.FromContext(r.Context())
+		if !ok || ic == nil {
+			t.Errorf("InvocationContext missing from request context")
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		// Mutate two ic fields in shapes future fields are likely to
+		// take: a nil-allocate-then-set on a map, and an
+		// initialize-and-set pattern. Both should round-trip.
+		if ic.OutboundTraceAttributes == nil {
+			ic.OutboundTraceAttributes = map[string]string{}
+		}
+		ic.OutboundTraceAttributes["test.kind"] = "outbound-trace-attr"
+		ic.OutboundTraceAttributes["test.fn"] = ic.FunctionName
+		w.WriteHeader(http.StatusOK)
+	})
+
+	proxy := startHTTPProxy(app)
+	if proxy == nil {
+		t.Fatal("expected HTTP proxy to start")
+	}
+	t.Cleanup(func() { _ = proxy.shutdown(nil) })
+
+	var rf *sdk.RegisteredFunction
+	app.GetRegisteredFunctions().Range(func(_, value any) bool {
+		rf = value.(*sdk.RegisteredFunction)
+		return false
+	})
+	loaded := &LoadedFunction{Function: *rf}
+
+	const invocationID = "test-invocation-ic-roundtrip"
+	done := make(chan struct{})
+	var gotStatus *pb.StatusResult
+	var gotIC *sdk.InvocationContext
+	go func() {
+		defer close(done)
+		gotStatus, gotIC, _ = proxy.notifyGRPCArrival(&pb.InvocationRequest{
+			InvocationId: invocationID,
+			FunctionId:   rf.FuncId,
+		}, loaded, app)
+	}()
+
+	httpReq, _ := http.NewRequest(http.MethodGet, proxy.url+"/api/attribute-setter", nil)
+	httpReq.Header.Set(invocationCorrelationHeader, invocationID)
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("client Do: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for gRPC side")
+	}
+
+	if gotStatus == nil || gotStatus.GetStatus() != pb.StatusResult_Success {
+		t.Errorf("expected Success status, got %v", gotStatus)
+	}
+	if gotIC == nil {
+		t.Fatal("expected non-nil InvocationContext from notifyGRPCArrival; got nil")
+	}
+	// The InvocationContext that comes out of the rendezvous is the
+	// same one the user handler mutated -- the gRPC side can read any
+	// field off it that the gRPC-body path would.
+	if got, want := gotIC.InvocationID, invocationID; got != want {
+		t.Errorf("ic.InvocationID = %q, want %q", got, want)
+	}
+	if got, want := gotIC.FunctionName, "attribute-setter"; got != want {
+		t.Errorf("ic.FunctionName = %q, want %q", got, want)
+	}
+	if got, want := gotIC.OutboundTraceAttributes["test.kind"], "outbound-trace-attr"; got != want {
+		t.Errorf("ic.OutboundTraceAttributes[\"test.kind\"] = %q, want %q (full map: %v)",
+			got, want, gotIC.OutboundTraceAttributes)
+	}
+	if got, want := gotIC.OutboundTraceAttributes["test.fn"], "attribute-setter"; got != want {
+		t.Errorf("ic.OutboundTraceAttributes[\"test.fn\"] = %q, want %q (full map: %v)",
+			got, want, gotIC.OutboundTraceAttributes)
+	}
+}
+
+// TestHTTPProxy_NoIcMutationsAreVisible asserts that when neither the
+// handler nor any middleware mutates the ic, the gRPC side still
+// receives a valid ic (constructed from the InvocationRequest) and any
+// invocation-output fields on it are at their zero values. The gRPC
+// dispatcher then emits an InvocationResponse with no propagated
+// invocation-output fields, matching the gRPC-body path's behavior.
+func TestHTTPProxy_NoIcMutationsAreVisible(t *testing.T) {
+	app := sdk.FunctionApp()
+	app.HTTP("noop", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	proxy := startHTTPProxy(app)
+	if proxy == nil {
+		t.Fatal("expected HTTP proxy to start")
+	}
+	t.Cleanup(func() { _ = proxy.shutdown(nil) })
+
+	var rf *sdk.RegisteredFunction
+	app.GetRegisteredFunctions().Range(func(_, value any) bool {
+		rf = value.(*sdk.RegisteredFunction)
+		return false
+	})
+	loaded := &LoadedFunction{Function: *rf}
+
+	const invocationID = "test-invocation-no-ic-mutation"
+	done := make(chan struct{})
+	var gotIC *sdk.InvocationContext
+	go func() {
+		defer close(done)
+		_, gotIC, _ = proxy.notifyGRPCArrival(&pb.InvocationRequest{
+			InvocationId: invocationID,
+			FunctionId:   rf.FuncId,
+		}, loaded, app)
+	}()
+
+	httpReq, _ := http.NewRequest(http.MethodGet, proxy.url+"/api/noop", nil)
+	httpReq.Header.Set(invocationCorrelationHeader, invocationID)
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("client Do: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for gRPC side")
+	}
+
+	if gotIC == nil {
+		t.Fatal("expected non-nil InvocationContext even when handler does not mutate it; got nil")
+	}
+	if gotIC.OutboundTraceAttributes != nil {
+		t.Errorf("expected nil OutboundTraceAttributes when handler does not touch the map; got %v",
+			gotIC.OutboundTraceAttributes)
+	}
+}
+
+// TestHTTPProxy_IcSurvivesHandlerPanic asserts that mutations the user
+// handler made to the ic BEFORE panicking still reach the gRPC side --
+// matching the gRPC-body path's behavior. This locks in the property
+// that motivated hoisting ic construction above the panic-recover
+// block in [httpProxy.handle]: if ic were built inside
+// invokeHTTPHandler, a panic would unwind the stack before the return,
+// the outer ic would stay nil, and any partial mutations the handler
+// made would be silently dropped on the streaming path while still
+// being propagated on the gRPC-body path. With ic hoisted, the handoff
+// is symmetric across paths.
+func TestHTTPProxy_IcSurvivesHandlerPanic(t *testing.T) {
+	app := sdk.FunctionApp()
+	app.HTTP("panic-after-mutate", func(w http.ResponseWriter, r *http.Request) {
+		ic, _ := sdk.FromContext(r.Context())
+		if ic.OutboundTraceAttributes == nil {
+			ic.OutboundTraceAttributes = map[string]string{}
+		}
+		// Mutate the ic, then panic. The mutation must survive the
+		// panic and be visible on the gRPC side.
+		ic.OutboundTraceAttributes["before.panic"] = "kept"
+		panic("intentional panic after ic mutation")
+	})
+
+	proxy := startHTTPProxy(app)
+	if proxy == nil {
+		t.Fatal("expected HTTP proxy to start")
+	}
+	t.Cleanup(func() { _ = proxy.shutdown(nil) })
+
+	var rf *sdk.RegisteredFunction
+	app.GetRegisteredFunctions().Range(func(_, value any) bool {
+		rf = value.(*sdk.RegisteredFunction)
+		return false
+	})
+	loaded := &LoadedFunction{Function: *rf}
+
+	const invocationID = "test-invocation-panic-survivor"
+	done := make(chan struct{})
+	var gotStatus *pb.StatusResult
+	var gotIC *sdk.InvocationContext
+	go func() {
+		defer close(done)
+		gotStatus, gotIC, _ = proxy.notifyGRPCArrival(&pb.InvocationRequest{
+			InvocationId: invocationID,
+			FunctionId:   rf.FuncId,
+		}, loaded, app)
+	}()
+
+	httpReq, _ := http.NewRequest(http.MethodGet, proxy.url+"/api/panic-after-mutate", nil)
+	httpReq.Header.Set(invocationCorrelationHeader, invocationID)
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("client Do: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for gRPC side")
+	}
+
+	// Status must be Failure (user code panicked) but ic must still be
+	// non-nil and carry the pre-panic mutation.
+	if gotStatus == nil || gotStatus.GetStatus() != pb.StatusResult_Failure {
+		t.Errorf("expected Failure status from panicking handler, got %v", gotStatus)
+	}
+	if gotIC == nil {
+		t.Fatal("expected non-nil InvocationContext even when handler panics; got nil")
+	}
+	if got, want := gotIC.OutboundTraceAttributes["before.panic"], "kept"; got != want {
+		t.Errorf("OutboundTraceAttributes[\"before.panic\"] = %q, want %q (full map: %v)",
+			got, want, gotIC.OutboundTraceAttributes)
 	}
 }
