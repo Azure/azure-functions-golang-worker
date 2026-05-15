@@ -1,15 +1,3 @@
-// Package log is the worker-side logging pipeline: a bootstrap stderr
-// handler used before the gRPC stream is open, a writer that emits
-// RpcLog values onto the established stream, and the User-/System-
-// category slog handlers that produce those RpcLog values.
-//
-// User code does not import this package directly. The sdk's slog
-// adapter installs a User handler from here as its base via
-// [sdk.SetDefaultBaseHandler]; the worker's internal code uses a
-// dedicated System handler via the dispatcher. Middleware that wants
-// to bridge slog records into another sink (e.g. middleware/otelfunc
-// bridging to OpenTelemetry's LoggerProvider) registers a [Observer]
-// here.
 package log
 
 import (
