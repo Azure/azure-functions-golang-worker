@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
+	"github.com/azure/azure-functions-golang-worker/worker/log"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 )
 
@@ -24,7 +25,7 @@ import (
 //     the LanguageWorkerConsoleLog[ts] prefix. Any logs emitted during
 //     argument parsing or gRPC dial errors land on stderr in that format,
 //     which the host recognizes.
-//  2. As soon as the gRPC stream is open, Start constructs a [LogWriter]
+//  2. As soon as the gRPC stream is open, Start constructs a [log.Writer]
 //     and registers it as the SDK's default base handler via
 //     [sdk.SetDefaultBaseHandler]. From this point on, slog calls in user
 //     code emit RpcLog values over the gRPC stream with category=User and
@@ -37,7 +38,7 @@ import (
 //
 // Start blocks until the gRPC bidi stream closes or returns an error.
 func Start(app *sdk.App) {
-	bootstrap := slog.New(newBootstrapHandler(os.Stderr))
+	bootstrap := slog.New(log.NewBootstrap(os.Stderr))
 
 	config, err := GetWorkerStartupConfig()
 	if err != nil {
@@ -59,22 +60,22 @@ func Start(app *sdk.App) {
 		os.Exit(1)
 	}
 
-	// Stand up the outbound sender goroutine and wire the LogWriter to it.
+	// Stand up the outbound sender goroutine and wire the log.Writer to it.
 	// Errors from gRPC Send are reported via the bootstrap handler to avoid
 	// a feedback loop through the writer we are setting up.
 	send, stopSender, senderDone := startSender(client, bootstrap)
 
-	logWriter := newLogWriter(send, newBootstrapHandler(os.Stderr))
+	logWriter := log.NewWriter(send, log.NewBootstrap(os.Stderr))
 
 	// SDK's default base handler is upgraded so user-side slog calls now
 	// route through the gRPC stream as User-category logs.
-	sdk.SetDefaultBaseHandler(newUserLogHandler(logWriter))
+	sdk.SetDefaultBaseHandler(log.NewUser(logWriter))
 
 	// System logger is a separate slog.Logger that the worker's internal
 	// code (dispatcher, handlers) calls via [systemLogger]. It emits
 	// System-category records and never picks up invocation attrs.
 	dispatcher := NewDispatcher(config, app)
-	dispatcher.systemLogger = slog.New(newSystemLogHandler(logWriter))
+	dispatcher.systemLogger = slog.New(log.NewSystem(logWriter))
 	dispatcher.logWriter = logWriter
 	dispatcher.send = send
 
@@ -96,9 +97,9 @@ func Start(app *sdk.App) {
 	//      WorkerOpenTelemetryEnabled — see middleware/otelfunc godoc).
 	//      A System record would be invisible to OTel customers, who
 	//      are the population most likely to query for it.
-	//   2. The user-category path runs through [userLogHandler], which
+	//   2. The user-category path runs through [log.NewUser]'s handler, which
 	//      writes the RpcLog AND fans the slog.Record out to any
-	//      registered [UserLogObserver]. middleware/otelfunc registers
+	//      registered [log.Observer]. middleware/otelfunc registers
 	//      an observer that bridges to the global OTel LoggerProvider,
 	//      so the record reaches the configured backend (e.g. New Relic)
 	//      automatically when the customer is using OTel.

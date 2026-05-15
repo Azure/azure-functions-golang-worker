@@ -6,11 +6,12 @@ import (
 	"sync"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
+	"github.com/azure/azure-functions-golang-worker/worker/log"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 )
 
 // Dispatcher routes incoming gRPC StreamingMessages to the appropriate
-// handlers. It also owns the LogWriter and the worker-internal
+// handlers. It also owns the log.Writer and the worker-internal
 // systemLogger, which are populated by [Start] before the recv loop
 // begins.
 type Dispatcher struct {
@@ -32,7 +33,7 @@ type Dispatcher struct {
 
 	// logWriter is the writer the system and user log handlers push
 	// records through. Populated by Start once the gRPC stream is open.
-	logWriter *LogWriter
+	logWriter *log.Writer
 
 	// send is the goroutine-safe enqueue function for the gRPC outbound
 	// channel. Populated by Start. Made available on the dispatcher so
@@ -69,7 +70,7 @@ func (disp *Dispatcher) processRequestMessage(reqMsg *pb.StreamingMessage) (*pb.
 	switch content := reqMsg.GetContent().(type) {
 	case *pb.StreamingMessage_WorkerInitRequest:
 		logger.LogAttrs(context.Background(), slog.LevelInfo, "Handling WorkerInitRequest")
-		// Wire host-supplied log_categories into the LogWriter's filter
+		// Wire host-supplied log_categories into the log.Writer's filter
 		// map so subsequent records are filtered as the host expects.
 		if disp.logWriter != nil {
 			disp.logWriter.SetCategories(content.WorkerInitRequest.GetLogCategories())

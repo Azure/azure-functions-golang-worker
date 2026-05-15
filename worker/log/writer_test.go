@@ -1,4 +1,4 @@
-package worker
+package log
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 )
 
-// recordedSender captures messages pushed by the LogWriter for assertions
+// recordedSender captures messages pushed by the Writer for assertions
 // in tests.
 type recordedSender struct {
 	mu   sync.Mutex
@@ -40,7 +40,7 @@ func (s *recordedSender) records() []*pb.RpcLog {
 
 func TestLogWriter_Write_EmitsRpcLogStreamingMessage(t *testing.T) {
 	r := &recordedSender{}
-	w := newLogWriter(r.send, nil)
+	w := NewWriter(r.send, nil)
 
 	w.Write(&pb.RpcLog{
 		Level:       pb.RpcLog_Information,
@@ -62,7 +62,7 @@ func TestLogWriter_Write_EmitsRpcLogStreamingMessage(t *testing.T) {
 
 func TestLogWriter_Write_NilDropped(t *testing.T) {
 	r := &recordedSender{}
-	w := newLogWriter(r.send, nil)
+	w := NewWriter(r.send, nil)
 	w.Write(nil)
 	if got := r.records(); len(got) != 0 {
 		t.Errorf("nil RpcLog must be silently dropped; got %d records", len(got))
@@ -71,7 +71,7 @@ func TestLogWriter_Write_NilDropped(t *testing.T) {
 
 func TestLogWriter_FilterByCategoryThreshold(t *testing.T) {
 	r := &recordedSender{}
-	w := newLogWriter(r.send, nil)
+	w := NewWriter(r.send, nil)
 
 	// The host instructs the worker to suppress everything from
 	// Function.Quiet but allow Worker traffic at Information+.
@@ -117,7 +117,7 @@ func TestLogWriter_NoCategoriesAllowsAllLevels(t *testing.T) {
 	// logging.logLevel.* configuration can decide what surfaces -- the
 	// host is the canonical place to filter by level.
 	r := &recordedSender{}
-	w := newLogWriter(r.send, nil)
+	w := NewWriter(r.send, nil)
 
 	for _, lvl := range []pb.RpcLog_Level{
 		pb.RpcLog_Trace,
@@ -137,7 +137,7 @@ func TestLogWriter_NoCategoriesAllowsAllLevels(t *testing.T) {
 func TestLogWriter_FallbackOnSendError(t *testing.T) {
 	failingSender := &recordedSender{err: errors.New("stream closed")}
 	var fb buffHandler
-	w := newLogWriter(failingSender.send, &fb)
+	w := NewWriter(failingSender.send, &fb)
 
 	w.Write(&pb.RpcLog{Level: pb.RpcLog_Error, Message: "boom"})
 
@@ -170,8 +170,8 @@ func (h *buffHandler) WithGroup(_ string) slog.Handler      { return h }
 
 func TestUserLogHandler_AttachesInvocationFromContext(t *testing.T) {
 	r := &recordedSender{}
-	w := newLogWriter(r.send, nil)
-	logger := slog.New(newUserLogHandler(w))
+	w := NewWriter(r.send, nil)
+	logger := slog.New(NewUser(w))
 
 	ic := &sdk.InvocationContext{
 		InvocationID: "inv-99",
@@ -197,8 +197,8 @@ func TestUserLogHandler_AttachesInvocationFromContext(t *testing.T) {
 
 func TestSystemLogHandler_DefaultsToWorkerCategory(t *testing.T) {
 	r := &recordedSender{}
-	w := newLogWriter(r.send, nil)
-	logger := slog.New(newSystemLogHandler(w))
+	w := NewWriter(r.send, nil)
+	logger := slog.New(NewSystem(w))
 
 	logger.Info("starting up")
 

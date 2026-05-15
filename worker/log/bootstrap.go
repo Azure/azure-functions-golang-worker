@@ -1,4 +1,16 @@
-package worker
+// Package log is the worker-side logging pipeline: a bootstrap stderr
+// handler used before the gRPC stream is open, a writer that emits
+// RpcLog values onto the established stream, and the User-/System-
+// category slog handlers that produce those RpcLog values.
+//
+// User code does not import this package directly. The sdk's slog
+// adapter installs a User handler from here as its base via
+// [sdk.SetDefaultBaseHandler]; the worker's internal code uses a
+// dedicated System handler via the dispatcher. Middleware that wants
+// to bridge slog records into another sink (e.g. middleware/otelfunc
+// bridging to OpenTelemetry's LoggerProvider) registers a [Observer]
+// here.
+package log
 
 import (
 	"context"
@@ -19,11 +31,11 @@ import (
 //
 //	LanguageWorkerConsoleLog[2026-05-07T15:04:05Z][INFO] worker starting up
 //
-// Once the gRPC stream is open and the system logger is wired,
-// [installSystemLogger] swaps the slog default to one that emits RpcLog
-// proto messages directly. The bootstrap handler is therefore short-lived
-// and only handles a handful of records (config parsing, dial errors, etc.)
-// before being replaced.
+// Once the gRPC stream is open and the system logger is wired, the
+// worker swaps the slog default to one built around [NewSystem] and
+// [NewUser] (backed by a [Writer]). The bootstrap handler is therefore
+// short-lived and only handles a handful of records (config parsing,
+// dial errors, etc.) before being replaced.
 //
 // The handler is concurrency-safe: a sync.Mutex serializes writes to the
 // underlying writer to avoid interleaved lines.
@@ -32,9 +44,13 @@ type bootstrapHandler struct {
 	w  io.Writer
 }
 
-// newBootstrapHandler returns a bootstrapHandler writing to w. Pass
-// os.Stderr in production; tests can pass a *bytes.Buffer.
-func newBootstrapHandler(w io.Writer) *bootstrapHandler {
+// NewBootstrap returns an slog.Handler that writes
+// "LanguageWorkerConsoleLog[ts][level] message k=v ..." lines to w.
+// Pass os.Stderr in production; tests can pass a *bytes.Buffer.
+//
+// Used both as the pre-gRPC default and as the [Writer]'s fallback when
+// the gRPC stream returns send errors, so logs are never silently lost.
+func NewBootstrap(w io.Writer) slog.Handler {
 	if w == nil {
 		w = os.Stderr
 	}

@@ -1,4 +1,4 @@
-package worker
+package log
 
 import (
 	"context"
@@ -10,32 +10,32 @@ import (
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 )
 
-// Each test in this file mutates the package-global userLogObservers
+// Each test in this file mutates the package-global observers
 // slice. Running them in parallel with anything else that registers an
 // observer would cross-contaminate. We snapshot and restore the slice
 // around each test so other tests in the package (which never register
 // an observer) are unaffected.
-func withClearedUserLogObservers(t *testing.T) {
+func withClearedObservers(t *testing.T) {
 	t.Helper()
-	prev := userLogObservers.Load()
+	prev := observers.Load()
 	t.Cleanup(func() {
-		userLogObservers.Store(prev)
+		observers.Store(prev)
 	})
-	userLogObservers.Store(nil)
+	observers.Store(nil)
 }
 
 // TestRegisterUserLogObserver_FansOut asserts the basic contract: every
 // observer registered before a Handle call sees every record, and each
 // observer sees the bound attrs the handler accumulated via WithAttrs.
 func TestRegisterUserLogObserver_FansOut(t *testing.T) {
-	withClearedUserLogObservers(t)
+	withClearedObservers(t)
 
 	type seen struct {
 		msg   string
 		attrs map[string]any
 	}
 	var mu sync.Mutex
-	collect := func(label string) (UserLogObserver, *[]seen) {
+	collect := func(label string) (Observer, *[]seen) {
 		records := &[]seen{}
 		fn := func(_ context.Context, r slog.Record) {
 			mu.Lock()
@@ -53,14 +53,14 @@ func TestRegisterUserLogObserver_FansOut(t *testing.T) {
 
 	obs1, recs1 := collect("obs1")
 	obs2, recs2 := collect("obs2")
-	RegisterUserLogObserver(obs1)
-	RegisterUserLogObserver(obs2)
+	RegisterObserver(obs1)
+	RegisterObserver(obs2)
 
-	// Build a userLogHandler with one bound attr so we exercise the
+	// Build a userHandler with one bound attr so we exercise the
 	// observer-side attr propagation (the handler clones the record and
 	// re-AddAttrs the bound attrs).
-	h := (&userLogHandler{
-		writer:   newLogWriter(func(*pb.StreamingMessage) error { return nil }, slog.NewTextHandler(discardWriter{}, nil)),
+	h := (&userHandler{
+		writer:   NewWriter(func(*pb.StreamingMessage) error { return nil }, slog.NewTextHandler(discardWriter{}, nil)),
 		composer: logComposer{}.withAttrs([]slog.Attr{slog.String("bound_key", "bound_val")}),
 	})
 
@@ -91,12 +91,12 @@ func TestRegisterUserLogObserver_FansOut(t *testing.T) {
 }
 
 // TestRegisterUserLogObserver_NilIgnored verifies a nil function passed
-// to RegisterUserLogObserver is silently dropped (so callers can wire
+// to RegisterObserver is silently dropped (so callers can wire
 // conditional observers without an explicit nil guard).
 func TestRegisterUserLogObserver_NilIgnored(t *testing.T) {
-	withClearedUserLogObservers(t)
-	RegisterUserLogObserver(nil)
-	if obs := userLogObservers.Load(); obs != nil && len(*obs) != 0 {
+	withClearedObservers(t)
+	RegisterObserver(nil)
+	if obs := observers.Load(); obs != nil && len(*obs) != 0 {
 		t.Errorf("nil observer must not be registered; got len=%d", len(*obs))
 	}
 }
@@ -106,10 +106,10 @@ func TestRegisterUserLogObserver_NilIgnored(t *testing.T) {
 // registered. The contract that "users who never import otelfunc pay no
 // runtime cost" relies on this fast-path.
 func TestRegisterUserLogObserver_NoObserversNoOp(t *testing.T) {
-	withClearedUserLogObservers(t)
+	withClearedObservers(t)
 
-	h := &userLogHandler{
-		writer: newLogWriter(func(*pb.StreamingMessage) error { return nil }, slog.NewTextHandler(discardWriter{}, nil)),
+	h := &userHandler{
+		writer: NewWriter(func(*pb.StreamingMessage) error { return nil }, slog.NewTextHandler(discardWriter{}, nil)),
 	}
 	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "hello", 0)
 	if err := h.Handle(context.Background(), rec); err != nil {

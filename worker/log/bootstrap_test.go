@@ -1,4 +1,4 @@
-package worker
+package log
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 
 func TestBootstrapHandler_PrefixedLanguageWorkerConsoleLog(t *testing.T) {
 	var buf bytes.Buffer
-	h := newBootstrapHandler(&buf)
+	h := NewBootstrap(&buf)
 	logger := slog.New(h)
 
 	logger.Info("starting up", "worker_id", "w-1")
@@ -47,11 +47,11 @@ func TestBootstrapHandler_NilWriterFallsBackToStderr(t *testing.T) {
 	// Smoke test: nil writer must not panic on construction.
 	defer func() {
 		if r := recover(); r != nil {
-			t.Fatalf("newBootstrapHandler(nil) panicked: %v", r)
+			t.Fatalf("NewBootstrap(nil) panicked: %v", r)
 		}
 	}()
-	h := newBootstrapHandler(nil)
+	h := NewBootstrap(nil)
 	if h == nil {
-		t.Fatal("expected non-nil handler from newBootstrapHandler(nil)")
+		t.Fatal("expected non-nil handler from NewBootstrap(nil)")
 	}
 }

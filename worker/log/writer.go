@@ -1,4 +1,4 @@
-package worker
+package log
 
 import (
 	"context"
@@ -11,24 +11,19 @@ import (
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 )
 
-// streamSender is the abstraction the LogWriter uses to push StreamingMessage
-// values out to the host. Production code passes a function that pushes onto
-// the dispatcher's outbound channel; tests pass a stub that records messages.
-type streamSender func(*pb.StreamingMessage) error
-
-// LogWriter is the worker-side component that translates already-built
+// Writer is the worker-side component that translates already-built
 // RpcLog values into StreamingMessage payloads on the bidirectional gRPC
 // stream to the Functions host.
 //
 // The host filters logs by category at the worker side via WorkerInitRequest's
 // log_categories map: e.g. "Worker = Verbose, Function.MyFunc = None"
 // suppresses all logs from MyFunc but lets the worker's own logs through.
-// LogWriter applies that filter before sending.
+// Writer applies that filter before sending.
 //
-// LogWriter is safe for concurrent use; the supplied send function must be
+// Writer is safe for concurrent use; the supplied send function must be
 // goroutine-safe (the dispatcher's channel-based outbound sender is).
-type LogWriter struct {
-	send streamSender
+type Writer struct {
+	send func(*pb.StreamingMessage) error
 
 	mu         sync.RWMutex
 	categories map[string]pb.RpcLog_Level
@@ -39,12 +34,12 @@ type LogWriter struct {
 	stderrFallback slog.Handler
 }
 
-// newLogWriter constructs a LogWriter. send must be a goroutine-safe push
-// onto the dispatcher's outbound channel. The optional stderrFallback is
-// consulted when the send function returns an error; pass nil to suppress
-// fallback writes (typically only desirable in tests).
-func newLogWriter(send streamSender, stderrFallback slog.Handler) *LogWriter {
-	return &LogWriter{
+// NewWriter constructs a Writer. send must be a goroutine-safe push
+// onto the dispatcher's outbound channel. The optional stderrFallback
+// is consulted when the send function returns an error; pass nil to
+// suppress fallback writes (typically only desirable in tests).
+func NewWriter(send func(*pb.StreamingMessage) error, stderrFallback slog.Handler) *Writer {
+	return &Writer{
 		send:           send,
 		stderrFallback: stderrFallback,
 	}
@@ -58,7 +53,7 @@ func newLogWriter(send streamSender, stderrFallback slog.Handler) *LogWriter {
 // the filter map (e.g. "Function.MyFunc" beats "Function" beats "Worker").
 // The default minimum level when no entry matches is Information,
 // mirroring the host's default category.
-func (w *LogWriter) SetCategories(c map[string]pb.RpcLog_Level) {
+func (w *Writer) SetCategories(c map[string]pb.RpcLog_Level) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if c == nil {
@@ -76,7 +71,7 @@ func (w *LogWriter) SetCategories(c map[string]pb.RpcLog_Level) {
 // host-supplied category filter. Records below the filter threshold are
 // dropped silently. Send errors fall back to the stderr handler so logs
 // are not lost when the gRPC stream is closing.
-func (w *LogWriter) Write(rl *pb.RpcLog) {
+func (w *Writer) Write(rl *pb.RpcLog) {
 	if rl == nil {
 		return
 	}
@@ -102,7 +97,7 @@ func (w *LogWriter) Write(rl *pb.RpcLog) {
 // host.json's logging.logLevel configuration. Without this default-allow
 // the worker would drop Debug records before the host ever sees them,
 // rendering host.json log-level overrides ineffective.
-func (w *LogWriter) allowed(rl *pb.RpcLog) bool {
+func (w *Writer) allowed(rl *pb.RpcLog) bool {
 	w.mu.RLock()
 	cats := w.categories
 	w.mu.RUnlock()
@@ -118,7 +113,7 @@ func (w *LogWriter) allowed(rl *pb.RpcLog) bool {
 // fallback forwards a record to the stderr fallback handler when the gRPC
 // send function returned an error. Best effort: if the fallback also fails
 // the record is dropped.
-func (w *LogWriter) fallback(rl *pb.RpcLog, sendErr error) {
+func (w *Writer) fallback(rl *pb.RpcLog, sendErr error) {
 	if w.stderrFallback == nil {
 		return
 	}

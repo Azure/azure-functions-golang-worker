@@ -1,4 +1,4 @@
-package worker
+package log
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 )
 
-// UserLogObserver is invoked for every user log record after the RpcLog
+// Observer is invoked for every user log record after the RpcLog
 // has been emitted on the gRPC stream. Observers are an opt-in extension
 // point: the worker itself never imports any observability backend, so
 // users who don't register one pay zero binary-size cost for that path.
@@ -21,14 +21,14 @@ import (
 // configured OpenTelemetry LoggerProvider. Observer errors are swallowed
 // silently -- the RpcLog has already gone out, so a failing observer
 // must not derail the user's invocation.
-type UserLogObserver func(ctx context.Context, record slog.Record)
+type Observer func(ctx context.Context, record slog.Record)
 
-// userLogObservers is the package-global slice of registered observers.
+// observers is the package-global slice of registered observers.
 // Reads happen on the user-log emit hot path so we keep this as an
 // atomic.Pointer to a (read-only) slice; writes copy-on-write.
-var userLogObservers atomic.Pointer[[]UserLogObserver]
+var observers atomic.Pointer[[]Observer]
 
-// RegisterUserLogObserver appends fn to the set of observers invoked for
+// RegisterObserver appends fn to the set of observers invoked for
 // every user slog record. Safe to call concurrently. Idempotency is the
 // caller's responsibility: registering the same function twice will
 // invoke it twice per record.
@@ -38,30 +38,30 @@ var userLogObservers atomic.Pointer[[]UserLogObserver]
 // the record, so a slow observer back-pressures the user handler. The
 // otelfunc middleware avoids this by using the BatchProcessor on its
 // LoggerProvider; the bridge call itself just enqueues the record.
-func RegisterUserLogObserver(fn UserLogObserver) {
+func RegisterObserver(fn Observer) {
 	if fn == nil {
 		return
 	}
 	for {
-		cur := userLogObservers.Load()
-		var next []UserLogObserver
+		cur := observers.Load()
+		var next []Observer
 		if cur != nil {
-			next = make([]UserLogObserver, len(*cur), len(*cur)+1)
+			next = make([]Observer, len(*cur), len(*cur)+1)
 			copy(next, *cur)
 		} else {
-			next = make([]UserLogObserver, 0, 1)
+			next = make([]Observer, 0, 1)
 		}
 		next = append(next, fn)
-		if userLogObservers.CompareAndSwap(cur, &next) {
+		if observers.CompareAndSwap(cur, &next) {
 			return
 		}
 	}
 }
 
-// userLogHandler is the slog.Handler the SDK installs as the package-level
+// userHandler is the slog.Handler the SDK installs as the package-level
 // default base via [sdk.SetDefaultBaseHandler] once the gRPC stream is
 // open. It emits each record as a User-category RpcLog over the stream
-// and then fans the record out to every registered [UserLogObserver].
+// and then fans the record out to every registered [Observer].
 //
 // The SDK's outer handler (returned by [sdk.NewLogHandler]) is responsible
 // for attaching invocation_id / function_name / trigger_type attributes
@@ -77,21 +77,21 @@ func RegisterUserLogObserver(fn UserLogObserver) {
 // registers an observer that bridges to the OTel LoggerProvider so OTel
 // users get the right behavior automatically; users who don't import
 // otelfunc never link any OTel code into their binary.
-type userLogHandler struct {
-	writer   *LogWriter
+type userHandler struct {
+	writer   *Writer
 	composer logComposer
 }
 
-// newUserLogHandler returns the User-category gRPC slog.Handler. Called
-// by worker.Start once the gRPC stream is open to install via
+// NewUser returns the User-category gRPC slog.Handler. Called by
+// worker.Start once the gRPC stream is open to install via
 // sdk.SetDefaultBaseHandler.
-func newUserLogHandler(w *LogWriter) slog.Handler {
-	return &userLogHandler{writer: w}
+func NewUser(w *Writer) slog.Handler {
+	return &userHandler{writer: w}
 }
 
-func (h *userLogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *userHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
 
-func (h *userLogHandler) Handle(ctx context.Context, r slog.Record) error {
+func (h *userHandler) Handle(ctx context.Context, r slog.Record) error {
 	rl := buildRpcLog(ctx, r, pb.RpcLog_User, h.composer)
 	h.writer.Write(rl)
 
@@ -99,7 +99,7 @@ func (h *userLogHandler) Handle(ctx context.Context, r slog.Record) error {
 	// LoggerProvider bridge). Observers see the record post-RpcLog so
 	// the user-facing host pipeline is the source of truth; observer
 	// errors are non-fatal because the RpcLog has already gone out.
-	if obs := userLogObservers.Load(); obs != nil {
+	if obs := observers.Load(); obs != nil {
 		rec := r.Clone()
 		// Replay any bound attrs onto the cloned record with their
 		// recorded group path applied as a dotted prefix, so observers
@@ -119,38 +119,38 @@ func (h *userLogHandler) Handle(ctx context.Context, r slog.Record) error {
 	return nil
 }
 
-func (h *userLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &userLogHandler{
+func (h *userHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &userHandler{
 		writer:   h.writer,
 		composer: h.composer.withAttrs(attrs),
 	}
 }
 
-func (h *userLogHandler) WithGroup(name string) slog.Handler {
-	return &userLogHandler{
+func (h *userHandler) WithGroup(name string) slog.Handler {
+	return &userHandler{
 		writer:   h.writer,
 		composer: h.composer.withGroup(name),
 	}
 }
 
-// systemLogHandler is the slog.Handler used for worker-internal logs
+// systemHandler is the slog.Handler used for worker-internal logs
 // (dispatcher startup, message dispatch, function load, etc.). Records
 // are emitted as System-category RpcLog values. A dedicated *slog.Logger
 // instance is constructed at worker.Start time and stored on the
-// dispatcher; worker code calls it via [systemLogger].
-type systemLogHandler struct {
-	writer   *LogWriter
+// dispatcher; worker code calls it via its SystemLogger() accessor.
+type systemHandler struct {
+	writer   *Writer
 	composer logComposer
 }
 
-// newSystemLogHandler returns the System-category slog.Handler.
-func newSystemLogHandler(w *LogWriter) slog.Handler {
-	return &systemLogHandler{writer: w}
+// NewSystem returns the System-category slog.Handler.
+func NewSystem(w *Writer) slog.Handler {
+	return &systemHandler{writer: w}
 }
 
-func (h *systemLogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *systemHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
 
-func (h *systemLogHandler) Handle(ctx context.Context, r slog.Record) error {
+func (h *systemHandler) Handle(ctx context.Context, r slog.Record) error {
 	rl := buildRpcLog(ctx, r, pb.RpcLog_System, h.composer)
 	// System logs use the "Worker" category by default if the record
 	// does not specify one. The host's category filter recognizes
@@ -162,15 +162,15 @@ func (h *systemLogHandler) Handle(ctx context.Context, r slog.Record) error {
 	return nil
 }
 
-func (h *systemLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &systemLogHandler{
+func (h *systemHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &systemHandler{
 		writer:   h.writer,
 		composer: h.composer.withAttrs(attrs),
 	}
 }
 
-func (h *systemLogHandler) WithGroup(name string) slog.Handler {
-	return &systemLogHandler{
+func (h *systemHandler) WithGroup(name string) slog.Handler {
+	return &systemHandler{
 		writer:   h.writer,
 		composer: h.composer.withGroup(name),
 	}

@@ -19,6 +19,13 @@ import (
 // host drains messages quickly enough that backpressure is rare.
 const outboundQueueSize = 256
 
+// streamSender is a goroutine-safe push onto the worker's outbound gRPC
+// queue. Returned by [startSender]; passed wherever a response or log
+// message needs to leave the worker. The signature matches what
+// [log.NewWriter] accepts as its send parameter, so the worker can wire
+// the same function into both the dispatcher and the log writer.
+type streamSender func(*pb.StreamingMessage) error
+
 func connectToHost(hostAddress string, maxMsgSize int, workerId string) (
 	grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error) {
 	client, err := getBidiStreamClient(hostAddress, maxMsgSize)

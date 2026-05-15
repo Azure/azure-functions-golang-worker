@@ -96,7 +96,7 @@ import (
 	"sync"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
-	"github.com/azure/azure-functions-golang-worker/worker"
+	"github.com/azure/azure-functions-golang-worker/worker/log"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
@@ -656,7 +656,7 @@ func Middleware(opts ...Option) sdk.Middleware {
 		global.SetLoggerProvider(cfg.lp)
 	}
 
-	// Register a one-time worker.UserLogObserver that bridges every user
+	// Register a one-time log.Observer that bridges every user
 	// slog record into the global OTel LoggerProvider. We do this here
 	// rather than in worker/system_logger.go so users who don't import
 	// otelfunc never pay the binary-size cost of the otelslog bridge or
@@ -1095,7 +1095,7 @@ func registerOTelLogObserverOnce() {
 			otelslog.WithVersion(resolveSDKVersion()),
 			otelslog.WithSchemaURL(semconv.SchemaURL),
 		)
-		worker.RegisterUserLogObserver(func(ctx context.Context, rec slog.Record) {
+		log.RegisterObserver(func(ctx context.Context, rec slog.Record) {
 			// Bridge errors are swallowed: the RpcLog has already been
 			// emitted on the gRPC stream by the time we see the record,
 			// so a failed OTel hop loses only the OTel-side copy.
