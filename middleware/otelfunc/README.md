@@ -39,17 +39,19 @@ OTEL_EXPORTER_OTLP_HEADERS=api-key=<token>
 OTEL_SERVICE_NAME=my-function-app
 ```
 
-That's it. Every invocation gets a server-kind span correlated with the host's parent activity, every `slog` call inside the handler carries `trace.id`/`span.id`, and both traces and logs are force-flushed between invocations so consumption-style plans don't lose buffered batches when the container is frozen.
+That's it. Every invocation gets an internal-kind span (named `function <FunctionName>`) correlated with the host's parent AspNetCore activity, every `slog` call inside the handler carries `trace.id`/`span.id`, and both traces and logs are force-flushed between invocations so consumption-style plans don't lose buffered batches when the container is frozen.
 
 ## What you get on every invocation
 
 | Behavior | Notes |
 |---|---|
-| Server-kind span named after the function | Override with [`WithSpanNameFormatter`](middleware.go) |
+| Internal-kind span named `function <FunctionName>` | The host's AspNetCore instrumentation owns the SERVER-kind span for HTTP triggers; non-HTTP triggers don't represent a network server. Matches the Java worker. Override the formatter with [`WithSpanNameFormatter`](middleware.go). |
 | W3C `traceparent`/`tracestate` extracted from `RpcTraceContext` | Worker spans correlate with host parent activity |
 | Inbound W3C baggage hydrated onto `ctx` | Read with `baggage.FromContext(ctx)` |
 | Standard `faas.invocation_id`, `faas.name`, `faas.trigger` semconv attrs | Custom static attrs via [`WithAttributes`](middleware.go) |
-| Default Resource: `cloud.provider=azure`, `cloud.platform=azure_functions`, `service.name` | Extend with [`WithResource`](middleware.go) |
+| Per-invocation span attrs `process.pid`, `faas.instance`, `azure.functions.live_logs_session_id` | Promoted from host-supplied `RpcTraceContext.Attributes`; matches the Java worker. Live-logs session ID is portal-only. |
+| Default Resource: `cloud.provider=azure`, `cloud.platform=azure_functions`, `cloud.region`, `cloud.resource_id`, `deployment.environment.name`, `service.name`, `otel.library.version` | `cloud.resource_id` is omitted on Flex Consumption (the platform doesn't inject `WEBSITE_RESOURCE_GROUP`; the .NET host's `FunctionsResourceDetector` has the same gap). Customers can supply it via `OTEL_RESOURCE_ATTRIBUTES` or [`WithResource`](middleware.go). |
+| `ic.OutboundTraceAttributes` propagated to the host's parent AspNetCore span | Both gRPC-body and HTTP-streaming paths. Used for tagging the parent activity with values from the request (`tenant_id`, `user_id`, etc.). |
 | User `slog` records bridged to the OTel `LoggerProvider` | Same `trace.id`/`span.id` as the worker span |
 | `ForceFlush` after every invocation (both TracerProvider and LoggerProvider) | Critical for Flex/Consumption plans |
 | Graceful shutdown via `sdk.ShutdownProvider` | Worker invokes on stream close / SIGTERM / SIGINT |
@@ -103,7 +105,7 @@ Setting `AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED=true` makes the middlewar
 
 ## Logs ↔ traces correlation
 
-The middleware registers a [`worker.UserLogObserver`](../../worker/system_logger.go) (exactly once per process, guarded by `sync.Once`) that bridges every user `slog` record into the OpenTelemetry `LoggerProvider` via the `otelslog` contrib bridge.
+The middleware registers a [`log.Observer`](../../worker/log/user.go) (exactly once per process, guarded by `sync.Once`) that bridges every user `slog` record into the OpenTelemetry `LoggerProvider` via the `otelslog` contrib bridge.
 
 The result: user log records emitted during an invocation carry the same `trace.id` and `span.id` as the worker span the middleware created. In most OTel backends this surfaces as clickable trace correlation on log records, plus the ability to filter logs by trace.
 
@@ -166,7 +168,7 @@ When you want full control (custom processor, sampler, or a non-OTLP exporter), 
 
 ## How it stays opt-in
 
-The worker package itself contains **zero** imports from `go.opentelemetry.io/*`. The user log observer hook (`worker.RegisterUserLogObserver`) is the only integration seam, and registration happens inside this package's `Middleware()` constructor. Users who never import `middleware/otelfunc` get zero OTel packages compiled into their final binary — measured on a minimal HTTP-trigger app:
+The worker package itself contains **zero** imports from `go.opentelemetry.io/*`. The user log observer hook ([`worker/log.RegisterObserver`](../../worker/log/user.go)) is the only integration seam, and registration happens inside this package's `Middleware()` constructor. Users who never import `middleware/otelfunc` get zero OTel packages compiled into their final binary — measured on a minimal HTTP-trigger app:
 
 | Configuration | OTel packages compiled in | Binary size |
 |---|---:|---:|

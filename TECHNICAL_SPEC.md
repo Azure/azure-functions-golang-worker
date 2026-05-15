@@ -13,7 +13,7 @@ The host launches the user's compiled Go binary (`app`) directly. The binary con
 ### 2.2 Components
 
 1. **The Host**: The Azure Functions Host (Runtime), which manages triggers and orchestrates invocations via gRPC.
-2. **The Worker (`app` / `app.exe`)**: The user's compiled Go application. It contains the Function Worker SDK, the user's function code, and SDK bindings.
+2. **The Worker (`app` / `app.exe`)**: The user's compiled Go application. It contains the Function Worker SDK, the user's function code, and SDK bindings. The worker's logging pipeline lives in [`worker/log/`](worker/log/doc.go): a bootstrap stderr handler used pre-stream, a Writer that emits `RpcLog` values on the established gRPC stream, User-/System-category slog handlers, and a process-global Observer registry that middleware (notably `middleware/otelfunc`) uses to bridge user log records into other sinks without the worker importing their dependencies.
 
 ### 2.3 Communication Protocol
 
@@ -327,6 +327,8 @@ func TimerHandler(ctx context.Context, timer bindings.TimerInfo) error {
 
 HTTP handlers reach the same context via `r.Context()` — the dispatcher attaches the per-invocation context to the `*http.Request` it passes to the handler, so the standard `net/http` signature stays unchanged and `sdk.FromContext(r.Context())` works exactly like the timer case above.
 
+The `OutboundTraceAttributes` map on the InvocationContext is the user-facing knob for tagging the host's parent AspNetCore activity. Whatever user code or middleware writes to it round-trips on `InvocationResponse.TraceContextAttributes`, and the host copies the values onto its parent span. The dispatcher reads `OutboundTraceAttributes` off the same `ic` on both the gRPC-body invocation path and the HTTP-streaming proxy path, so the user-facing API is identical regardless of how the host forwarded the request — a Flusher / SSE handler writes to the map the same way an `r.Body`-reading handler does.
+
 The choice of `context.Context` as the carrier (rather than a struct parameter) means handler signatures stay short, middleware can enrich the context with span objects / baggage / cancellation, and OpenTelemetry SDKs that read trace context from `context.Context` plug in transparently.
 
 ### 5.2 Middleware
@@ -406,7 +408,7 @@ slog.InfoContext(ctx, "processing order",
 
 ### 5.4 The user log observer hook
 
-`worker.RegisterUserLogObserver(fn UserLogObserver)` is a package-level extension point that lets third-party packages observe every user log record without the worker importing their dependencies. The worker's user log handler fans every record out to every registered observer **after** the RpcLog has been enqueued on the outbound stream, so the host-facing log path is the source of truth and observer failures (network errors, slow exporters) don't derail user invocations.
+`worker/log.RegisterObserver(fn log.Observer)` is a package-level extension point that lets third-party packages observe every user log record without the worker importing their dependencies. The worker's user log handler fans every record out to every registered observer **after** the RpcLog has been enqueued on the outbound stream, so the host-facing log path is the source of truth and observer failures (network errors, slow exporters) don't derail user invocations.
 
 The contract is intentionally narrow:
 
@@ -433,7 +435,7 @@ What the middleware does on every invocation:
 
 1. Extracts inbound W3C trace context from `RpcTraceContext.TraceParent` / `TraceState` and attaches it to `ctx` via the configured propagator, so worker spans correlate with the host's parent activity.
 2. Hydrates inbound baggage onto `ctx` via `baggage.ContextWithBaggage`, so user code reading `baggage.FromContext(ctx)` sees upstream-supplied baggage members.
-3. Starts a server-kind span named after the function carrying `faas.invocation_id`, `faas.name`, and `faas.trigger` semconv attributes.
+3. Starts an internal-kind span named `function <FunctionName>` carrying `faas.invocation_id`, `faas.name`, `faas.trigger`, `process.pid`, `faas.instance`, and `azure.functions.live_logs_session_id` semconv / Azure-specific attributes.
 4. Calls `next(ctx, ic)` — the user handler runs with the enriched context.
 5. Records any returned error on the span and sets the span status to Error.
 6. `ForceFlush`es the owned TracerProvider and LoggerProvider so telemetry is pushed before the host can freeze the container between invocations on consumption-style plans.

@@ -160,7 +160,25 @@ The default handler honors the host's per-category log levels and the `--verbose
 
 ### OpenTelemetry distributed tracing
 
-The [`middleware/otelfunc`](middleware/otelfunc) package provides an `sdk.Middleware` that creates a server-kind span around every invocation, extracts the host's W3C trace context so user spans correlate end-to-end, advertises the `WorkerOpenTelemetryEnabled` capability so the host stops forwarding the worker's user log records (`Function.*` categories) into its own OpenTelemetry pipeline, and force-flushes after each invocation (critical on consumption-style plans where the worker may be frozen).
+The [`middleware/otelfunc`](middleware/otelfunc) package provides an `sdk.Middleware` that creates an internal-kind span (`function <FunctionName>`) around every invocation, extracts the host's W3C trace context so user spans correlate end-to-end, advertises the `WorkerOpenTelemetryEnabled` capability so the host stops forwarding the worker's user log records (`Function.*` categories) into its own OpenTelemetry pipeline, and force-flushes after each invocation (critical on consumption-style plans where the worker may be frozen).
+
+The middleware emits the same span shape the [Java worker](https://github.com/microsoft/ApplicationInsights-Java/tree/main/agent/instrumentation/azure-functions) does, so cross-runtime dashboards filter on one set of keys. The default Resource carries `cloud.provider=azure`, `cloud.platform=azure_functions`, `cloud.region=$REGION_NAME`, `cloud.resource_id=/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Web/sites/<site>` (when `WEBSITE_OWNER_NAME` + `WEBSITE_RESOURCE_GROUP` + `WEBSITE_SITE_NAME` are populated by the platform), `deployment.environment.name=$WEBSITE_SLOT_NAME` (default `production`), `service.name`, and `otel.library.version` (the SDK module's runtime version). Per-invocation spans additionally carry `process.pid`, `faas.instance`, and `azure.functions.live_logs_session_id` for portal live-log correlation.
+
+The worker also emits a one-time `Go worker started` log record on cold start summarizing the SDK version, git revision, Go version, and runtime metadata. Customer queries against `message = "Go worker started"` show which build is running and whether it carries any local `replace` directive in `go.mod`.
+
+To propagate tags to the host's parent AspNetCore activity (e.g. `tenant_id`, `user_id` your handler resolves from the request), write to `ic.OutboundTraceAttributes`:
+
+```go
+func Handler(w http.ResponseWriter, r *http.Request) {
+    ic, _ := sdk.FromContext(r.Context())
+    if ic.OutboundTraceAttributes == nil {
+        ic.OutboundTraceAttributes = map[string]string{}
+    }
+    ic.OutboundTraceAttributes["tenant_id"] = tenantOf(r)
+}
+```
+
+The attributes round-trip on `InvocationResponse.TraceContextAttributes` for both gRPC-body and HTTP-streaming triggers (Flusher / SSE handlers included).
 
 The middleware is **opt-in**: importing only `sdk` and `worker` keeps the OTel SDK out of your binary entirely. The smallest setup just registers the middleware and sets the standard OTel env vars on your Function App:
 
