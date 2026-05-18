@@ -166,19 +166,16 @@ The middleware emits the same span shape the [Java worker](https://github.com/mi
 
 The worker also emits a one-time `Go worker started` log record on cold start summarizing the SDK version, git revision, Go version, and runtime metadata. Customer queries against `message = "Go worker started"` show which build is running and whether it carries any local `replace` directive in `go.mod`.
 
-To propagate tags to the host's parent AspNetCore activity (e.g. `tenant_id`, `user_id` your handler resolves from the request), write to `ic.OutboundTraceAttributes`:
+To propagate tags to the host's parent AspNetCore activity (e.g. `tenant_id`, `user_id` your handler resolves from the request), set them on the worker invocation span — `middleware/otelfunc` auto-harvests them at end-of-invocation and forwards them on `InvocationResponse.TraceContextAttributes`:
 
 ```go
 func Handler(w http.ResponseWriter, r *http.Request) {
-    ic, _ := sdk.FromContext(r.Context())
-    if ic.OutboundTraceAttributes == nil {
-        ic.OutboundTraceAttributes = map[string]string{}
-    }
-    ic.OutboundTraceAttributes["tenant_id"] = tenantOf(r)
+    span := trace.SpanFromContext(r.Context())
+    span.SetAttributes(attribute.String("tenant_id", tenantOf(r)))
 }
 ```
 
-The attributes round-trip on `InvocationResponse.TraceContextAttributes` for both gRPC-body and HTTP-streaming triggers (Flusher / SSE handlers included).
+Works identically on gRPC-body and HTTP-streaming triggers (Flusher / SSE handlers included). Matches the dotnet-isolated worker's `Activity.AddTag(...)` propagation pattern, so customers moving between runtimes see the same shape on the receiving end.
 
 The middleware is **opt-in**: importing only `sdk` and `worker` keeps the OTel SDK out of your binary entirely. The smallest setup just registers the middleware and sets the standard OTel env vars on your Function App:
 

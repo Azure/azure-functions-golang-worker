@@ -302,14 +302,13 @@ For every invocation the dispatcher builds an `sdk.InvocationContext` from the i
 
 ```go
 type InvocationContext struct {
-    InvocationID           string
-    FunctionID             string
-    FunctionName           string
-    TriggerType            string             // "httpTrigger", "timerTrigger", ...
-    TraceContext           TraceContext       // W3C trace-parent / state / baggage
-    RetryContext           RetryContext       // RetryCount, MaxRetryCount
-    TriggerMetadata        map[string]string  // host-supplied trigger metadata
-    OutboundTraceAttributes map[string]string // tags propagated back to host's parent activity
+    InvocationID    string
+    FunctionID      string
+    FunctionName    string
+    TriggerType     string             // "httpTrigger", "timerTrigger", ...
+    TraceContext    TraceContext       // W3C trace-parent / state / baggage
+    RetryContext    RetryContext       // RetryCount, MaxRetryCount
+    TriggerMetadata map[string]string  // host-supplied trigger metadata
 }
 ```
 
@@ -327,7 +326,7 @@ func TimerHandler(ctx context.Context, timer bindings.TimerInfo) error {
 
 HTTP handlers reach the same context via `r.Context()` — the dispatcher attaches the per-invocation context to the `*http.Request` it passes to the handler, so the standard `net/http` signature stays unchanged and `sdk.FromContext(r.Context())` works exactly like the timer case above.
 
-The `OutboundTraceAttributes` map on the InvocationContext is the user-facing knob for tagging the host's parent AspNetCore activity. Whatever user code or middleware writes to it round-trips on `InvocationResponse.TraceContextAttributes`, and the host copies the values onto its parent span. The dispatcher reads `OutboundTraceAttributes` off the same `ic` on both the gRPC-body invocation path and the HTTP-streaming proxy path, so the user-facing API is identical regardless of how the host forwarded the request — a Flusher / SSE handler writes to the map the same way an `r.Body`-reading handler does.
+Tagging the host's parent AspNetCore activity from inside a handler goes through the worker invocation span. Calls to `span.SetAttributes(...)` on the span obtained via `trace.SpanFromContext(ctx)` are auto-harvested by `middleware/otelfunc` at end-of-invocation, recorded on a framework-only `sdk.MiddlewareContext` (a wrapper that embeds the user-facing `*InvocationContext` and carries cross-cutting state the dispatcher reads when building the response), and forwarded on `InvocationResponse.TraceContextAttributes`. The host then applies each entry as a tag on its parent activity via `Activity.AddTag(k, v)`. Works identically on the gRPC-body and HTTP-streaming paths, so a Flusher / SSE handler tags the host span the same way an `r.Body`-reading handler does. Matches the dotnet-isolated worker's `Activity.Tags`-harvest behavior.
 
 The choice of `context.Context` as the carrier (rather than a struct parameter) means handler signatures stay short, middleware can enrich the context with span objects / baggage / cancellation, and OpenTelemetry SDKs that read trace context from `context.Context` plug in transparently.
 
