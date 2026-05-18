@@ -369,7 +369,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	//    enriched) ctx from the outer chain, propagates it into the user
 	//    function's arguments, performs the reflective call, and returns
 	//    any error result. See [sdk.App.Compose] for ordering.
-	inner := func(ctx context.Context, _ *sdk.InvocationContext) error {
+	inner := func(ctx context.Context, _ *sdk.MiddlewareContext) error {
 		injectInvocationContext(ft, args, ctx)
 		fv := reflect.ValueOf(loadedFunc.Function.Func)
 		results := fv.Call(args)
@@ -383,7 +383,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 
 	// 4. Compose the middleware chain around the inner handler and run it.
 	chain := disp.App.Compose(inner)
-	invokeErr := chain(ctx, mc.InvocationContext)
+	invokeErr := chain(ctx, mc)
 
 	// 5. Build response status from any error returned by the chain.
 	status := &pb.StatusResult{

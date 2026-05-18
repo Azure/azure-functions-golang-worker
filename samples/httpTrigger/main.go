@@ -43,9 +43,9 @@ func HTTPTriggerHandler(w http.ResponseWriter, r *http.Request) {
 // hold per-instance state would instead define its own struct type with a
 // Wrap method.
 func timingMiddleware(next sdk.Handler) sdk.Handler {
-	return func(ctx context.Context, ic *sdk.InvocationContext) error {
+	return func(ctx context.Context, mc *sdk.MiddlewareContext) error {
 		start := time.Now()
-		err := next(ctx, ic)
+		err := next(ctx, mc)
 		slog.InfoContext(ctx, "invocation finished",
 			"duration_ms", time.Since(start).Milliseconds(),
 			"err", err,

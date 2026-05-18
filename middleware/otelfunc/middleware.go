@@ -401,26 +401,26 @@ func (m *otelMiddleware) Wrap(next sdk.Handler) sdk.Handler {
 		// stay out of the way.
 		return next
 	}
-	return func(ctx context.Context, ic *sdk.InvocationContext) error {
-		ctx = m.cfg.propagator.Extract(ctx, traceContextCarrier(ic))
+	return func(ctx context.Context, mc *sdk.MiddlewareContext) error {
+		ctx = m.cfg.propagator.Extract(ctx, traceContextCarrier(mc.InvocationContext))
 
 		// Inbound baggage: hydrate ctx with the host-supplied baggage map
 		// so user code reading baggage.FromContext(ctx) sees what upstream
 		// services attached.
-		if inboundBag := buildInboundBaggage(ic.TraceContext.Baggage); inboundBag.Len() > 0 {
+		if inboundBag := buildInboundBaggage(mc.TraceContext.Baggage); inboundBag.Len() > 0 {
 			ctx = baggage.ContextWithBaggage(ctx, inboundBag)
 		}
 
 		attrs := []attribute.KeyValue{
-			semconv.FaaSInvocationID(ic.InvocationID),
-			semconv.FaaSName(ic.FunctionName),
-			attribute.String("faas.trigger", classifyTrigger(ic.TriggerType)),
+			semconv.FaaSInvocationID(mc.InvocationID),
+			semconv.FaaSName(mc.FunctionName),
+			attribute.String("faas.trigger", classifyTrigger(mc.TriggerType)),
 		}
 		// Promote select inbound RpcTraceContext attributes onto the
 		// per-invocation span. These keys match what the .NET host
 		// emits and what the Java worker surfaces, so cross-runtime
 		// dashboards filter on the same names.
-		if hostAttrs := ic.TraceContext.Attributes; len(hostAttrs) > 0 {
+		if hostAttrs := mc.TraceContext.Attributes; len(hostAttrs) > 0 {
 			if v := hostAttrs[hostAttrProcessID]; v != "" {
 				if pid, err := strconv.Atoi(v); err == nil {
 					attrs = append(attrs, semconv.ProcessPID(pid))
@@ -439,7 +439,7 @@ func (m *otelMiddleware) Wrap(next sdk.Handler) sdk.Handler {
 		}
 		attrs = append(attrs, m.cfg.extraAttrs...)
 
-		ctx, span := m.tracer.Start(ctx, m.cfg.spanName(ic),
+		ctx, span := m.tracer.Start(ctx, m.cfg.spanName(mc.InvocationContext),
 			// SpanKindInternal: the host's Microsoft.AspNetCore
 			// instrumentation already owns the SERVER-kind span for
 			// HTTP triggers, and non-HTTP triggers don't represent a
@@ -449,12 +449,12 @@ func (m *otelMiddleware) Wrap(next sdk.Handler) sdk.Handler {
 			trace.WithAttributes(attrs...),
 		)
 
-		err := next(ctx, ic)
+		err := next(ctx, mc)
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		}
-		harvestSpanAttributesToOutbound(ctx, span)
+		harvestSpanAttributesToOutbound(mc, span)
 		span.End()
 
 		// Force-flush before the worker may be frozen. Done after

@@ -338,7 +338,7 @@ func invokeHTTPHandler(arrival grpcArrival, mc *sdk.MiddlewareContext, w http.Re
 	// inner is the innermost Handler the middleware chain wraps; it forwards
 	// the (possibly enriched) ctx into the request. HTTP handlers surface
 	// errors via response status, so inner always returns nil.
-	inner := func(ctx context.Context, _ *sdk.InvocationContext) error {
+	inner := func(ctx context.Context, _ *sdk.MiddlewareContext) error {
 		handler(w, r.WithContext(ctx))
 		return nil
 	}
@@ -349,7 +349,7 @@ func invokeHTTPHandler(arrival grpcArrival, mc *sdk.MiddlewareContext, w http.Re
 		// HTTP responses are already owned by the user handler / middleware,
 		// so we only log for diagnostics; InvocationResponse status comes
 		// from notifyGRPCArrival's separate rendezvous path.
-		if err := chain(ctx, mc.InvocationContext); err != nil {
+		if err := chain(ctx, mc); err != nil {
 			log.Printf("HTTP proxy: middleware chain returned error for invocation %s: %v", mc.InvocationID, err)
 		}
 		return

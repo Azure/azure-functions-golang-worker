@@ -17,16 +17,16 @@ func TestApp_Use_RegistersMiddleware(t *testing.T) {
 
 	var calls int
 	mw := MiddlewareFunc(func(next Handler) Handler {
-		return func(ctx context.Context, ic *InvocationContext) error {
+		return func(ctx context.Context, mc *MiddlewareContext) error {
 			calls++
-			return next(ctx, ic)
+			return next(ctx, mc)
 		}
 	})
 	app.Use(mw)
 	app.Use(mw)
 
-	chain := app.Compose(func(ctx context.Context, ic *InvocationContext) error { return nil })
-	if err := chain(context.Background(), &InvocationContext{}); err != nil {
+	chain := app.Compose(func(ctx context.Context, mc *MiddlewareContext) error { return nil })
+	if err := chain(context.Background(), &MiddlewareContext{InvocationContext: &InvocationContext{}}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if calls != 2 {
@@ -42,11 +42,11 @@ func TestApp_Use_NilIgnored(t *testing.T) {
 	app.Use(nil)
 
 	called := false
-	chain := app.Compose(func(ctx context.Context, ic *InvocationContext) error {
+	chain := app.Compose(func(ctx context.Context, mc *MiddlewareContext) error {
 		called = true
 		return nil
 	})
-	if err := chain(context.Background(), &InvocationContext{}); err != nil {
+	if err := chain(context.Background(), &MiddlewareContext{InvocationContext: &InvocationContext{}}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -62,27 +62,27 @@ func TestApp_Compose_ExecutionOrder(t *testing.T) {
 	var trace []string
 
 	app.Use(MiddlewareFunc(func(next Handler) Handler {
-		return func(ctx context.Context, ic *InvocationContext) error {
+		return func(ctx context.Context, mc *MiddlewareContext) error {
 			trace = append(trace, "A:before")
-			err := next(ctx, ic)
+			err := next(ctx, mc)
 			trace = append(trace, "A:after")
 			return err
 		}
 	}))
 	app.Use(MiddlewareFunc(func(next Handler) Handler {
-		return func(ctx context.Context, ic *InvocationContext) error {
+		return func(ctx context.Context, mc *MiddlewareContext) error {
 			trace = append(trace, "B:before")
-			err := next(ctx, ic)
+			err := next(ctx, mc)
 			trace = append(trace, "B:after")
 			return err
 		}
 	}))
 
-	chain := app.Compose(func(ctx context.Context, ic *InvocationContext) error {
+	chain := app.Compose(func(ctx context.Context, mc *MiddlewareContext) error {
 		trace = append(trace, "inner")
 		return nil
 	})
-	if err := chain(context.Background(), &InvocationContext{}); err != nil {
+	if err := chain(context.Background(), &MiddlewareContext{InvocationContext: &InvocationContext{}}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -98,11 +98,11 @@ func TestApp_Compose_NoMiddleware(t *testing.T) {
 	app := FunctionApp()
 	called := false
 
-	chain := app.Compose(func(ctx context.Context, ic *InvocationContext) error {
+	chain := app.Compose(func(ctx context.Context, mc *MiddlewareContext) error {
 		called = true
 		return nil
 	})
-	if err := chain(context.Background(), &InvocationContext{}); err != nil {
+	if err := chain(context.Background(), &MiddlewareContext{InvocationContext: &InvocationContext{}}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -114,14 +114,14 @@ func TestApp_Compose_ErrorPropagation(t *testing.T) {
 	app := FunctionApp()
 	wantErr := errors.New("boom")
 	app.Use(MiddlewareFunc(func(next Handler) Handler {
-		return func(ctx context.Context, ic *InvocationContext) error {
+		return func(ctx context.Context, mc *MiddlewareContext) error {
 			// Middleware passes the error through unchanged.
-			return next(ctx, ic)
+			return next(ctx, mc)
 		}
 	}))
 
-	chain := app.Compose(func(ctx context.Context, ic *InvocationContext) error { return wantErr })
-	if gotErr := chain(context.Background(), &InvocationContext{}); !errors.Is(gotErr, wantErr) {
+	chain := app.Compose(func(ctx context.Context, mc *MiddlewareContext) error { return wantErr })
+	if gotErr := chain(context.Background(), &MiddlewareContext{InvocationContext: &InvocationContext{}}); !errors.Is(gotErr, wantErr) {
 		t.Errorf("expected wrapped error to propagate; got %v", gotErr)
 	}
 }
@@ -132,15 +132,15 @@ func TestApp_Compose_ShortCircuit(t *testing.T) {
 	app := FunctionApp()
 	gate := errors.New("gated")
 	app.Use(MiddlewareFunc(func(next Handler) Handler {
-		return func(ctx context.Context, ic *InvocationContext) error { return gate }
+		return func(ctx context.Context, mc *MiddlewareContext) error { return gate }
 	}))
 
 	innerCalled := false
-	chain := app.Compose(func(ctx context.Context, ic *InvocationContext) error {
+	chain := app.Compose(func(ctx context.Context, mc *MiddlewareContext) error {
 		innerCalled = true
 		return nil
 	})
-	if err := chain(context.Background(), &InvocationContext{}); !errors.Is(err, gate) {
+	if err := chain(context.Background(), &MiddlewareContext{InvocationContext: &InvocationContext{}}); !errors.Is(err, gate) {
 		t.Errorf("expected gate error from short-circuit; got %v", err)
 	}
 	if innerCalled {
@@ -154,20 +154,20 @@ func TestApp_Compose_ContextEnrichment(t *testing.T) {
 	app := FunctionApp()
 	type ctxKey struct{}
 	app.Use(MiddlewareFunc(func(next Handler) Handler {
-		return func(ctx context.Context, ic *InvocationContext) error {
+		return func(ctx context.Context, mc *MiddlewareContext) error {
 			ctx = context.WithValue(ctx, ctxKey{}, "enriched")
-			return next(ctx, ic)
+			return next(ctx, mc)
 		}
 	}))
 
 	var observed string
-	chain := app.Compose(func(ctx context.Context, ic *InvocationContext) error {
+	chain := app.Compose(func(ctx context.Context, mc *MiddlewareContext) error {
 		if v, ok := ctx.Value(ctxKey{}).(string); ok {
 			observed = v
 		}
 		return nil
 	})
-	if err := chain(context.Background(), &InvocationContext{}); err != nil {
+	if err := chain(context.Background(), &MiddlewareContext{InvocationContext: &InvocationContext{}}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if observed != "enriched" {

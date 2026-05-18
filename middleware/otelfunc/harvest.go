@@ -4,8 +4,6 @@
 package otelfunc
 
 import (
-	"context"
-
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -38,11 +36,9 @@ var workerSetSpanAttributeKeys = map[attribute.Key]struct{}{
 // the invocation) are preserved; the harvest only fills keys not yet set.
 //
 // Silently no-ops if the span doesn't implement [sdktrace.ReadOnlySpan]
-// (noop / custom-impl TracerProviders) or if ctx has no
-// [sdk.MiddlewareContext] attached.
-func harvestSpanAttributesToOutbound(ctx context.Context, span trace.Span) {
-	mc, ok := sdk.MiddlewareContextFrom(ctx)
-	if !ok || mc == nil {
+// (noop / custom-impl TracerProviders) or if mc is nil.
+func harvestSpanAttributesToOutbound(mc *sdk.MiddlewareContext, span trace.Span) {
+	if mc == nil {
 		return
 	}
 	ros, ok := span.(sdktrace.ReadOnlySpan)

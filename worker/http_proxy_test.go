@@ -272,9 +272,9 @@ func TestHTTPProxy_RunsMiddlewareChain(t *testing.T) {
 	// and forwards. Using sdk.MiddlewareFunc keeps the test free of
 	// otelfunc-specific machinery.
 	app.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
-		return func(ctx context.Context, ic *sdk.InvocationContext) error {
+		return func(ctx context.Context, mc *sdk.MiddlewareContext) error {
 			wrapCount++
-			return next(ctx, ic)
+			return next(ctx, mc)
 		}
 	}))
 

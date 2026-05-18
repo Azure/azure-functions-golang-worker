@@ -21,17 +21,19 @@ import "context"
 // and returns nil on success or an error that becomes the failure status on
 // the InvocationResponse.
 //
-// The InvocationContext passed in is the same one stashed on ctx via
-// NewContext; it is provided as a separate argument purely for ergonomics
-// (middleware authors avoid an extra FromContext lookup). Its fields are
-// read-only from a middleware's perspective — the dispatcher fills them
-// before the chain runs.
+// The MiddlewareContext passed in is the framework's per-invocation carrier.
+// It embeds *InvocationContext so trigger-side fields (mc.InvocationID,
+// mc.FunctionName, mc.TraceContext, etc.) are reachable directly via field
+// promotion; middleware that only reads trigger data treats it like the
+// user-facing InvocationContext. Middleware integration code (e.g.
+// auto-harvested outbound trace attributes) uses the MC-specific methods on
+// the same value.
 //
 // Note: Handler is the worker-internal function shape that middleware
 // composes around. User-facing handler signatures (HTTPHandler, TimerHandler,
 // etc.) remain unchanged; the dispatcher constructs the innermost Handler
 // from the user's typed function via reflection.
-type Handler func(ctx context.Context, ic *InvocationContext) error
+type Handler func(ctx context.Context, mc *MiddlewareContext) error
 
 // Middleware decorates a Handler with cross-cutting behavior such as
 // distributed tracing, structured logging, exception capture, or short-circuit
@@ -58,9 +60,9 @@ type Middleware interface {
 // no per-instance state is needed:
 //
 //	app.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
-//	    return func(ctx context.Context, ic *sdk.InvocationContext) error {
-//	        log.Printf("invocation %s", ic.InvocationID)
-//	        return next(ctx, ic)
+//	    return func(ctx context.Context, mc *sdk.MiddlewareContext) error {
+//	        log.Printf("invocation %s", mc.InvocationID)
+//	        return next(ctx, mc)
 //	    }
 //	}))
 //

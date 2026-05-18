@@ -111,17 +111,17 @@ func TestHandleInvocationRequest_RunsMiddlewareInOrder(t *testing.T) {
 	}
 
 	disp.App.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
-		return func(ctx context.Context, ic *sdk.InvocationContext) error {
+		return func(ctx context.Context, mc *sdk.MiddlewareContext) error {
 			add("A:before")
-			err := next(ctx, ic)
+			err := next(ctx, mc)
 			add("A:after")
 			return err
 		}
 	}))
 	disp.App.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
-		return func(ctx context.Context, ic *sdk.InvocationContext) error {
+		return func(ctx context.Context, mc *sdk.MiddlewareContext) error {
 			add("B:before")
-			err := next(ctx, ic)
+			err := next(ctx, mc)
 			add("B:after")
 			return err
 		}
@@ -147,7 +147,7 @@ func TestHandleInvocationRequest_MiddlewareCanShortCircuit(t *testing.T) {
 
 	gateErr := errors.New("not authorized")
 	disp.App.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
-		return func(ctx context.Context, ic *sdk.InvocationContext) error {
+		return func(ctx context.Context, mc *sdk.MiddlewareContext) error {
 			return gateErr
 		}
 	}))
@@ -179,9 +179,9 @@ func TestHandleInvocationRequest_MiddlewareCanEnrichContext(t *testing.T) {
 
 	type ctxKey struct{}
 	disp.App.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
-		return func(ctx context.Context, ic *sdk.InvocationContext) error {
+		return func(ctx context.Context, mc *sdk.MiddlewareContext) error {
 			ctx = context.WithValue(ctx, ctxKey{}, "from-middleware")
-			return next(ctx, ic)
+			return next(ctx, mc)
 		}
 	}))
 
