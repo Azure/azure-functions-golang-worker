@@ -39,6 +39,16 @@ OTEL_EXPORTER_OTLP_HEADERS=api-key=<token>
 OTEL_SERVICE_NAME=my-function-app
 ```
 
+`host.json` must set `"telemetryMode": "OpenTelemetry"`. This tells the Functions host to wire its own OpenTelemetry pipeline (instead of the legacy Application Insights one) and to honor the worker-advertised `WorkerOpenTelemetryEnabled` capability so worker-emitted `Function.*` log records aren't double-emitted into the host's telemetry pipeline:
+
+```json
+{
+  "version": "2.0",
+  "telemetryMode": "OpenTelemetry",
+  "extensionBundle": { ... }
+}
+```
+
 That's it. Every invocation gets an internal-kind span (named `function <FunctionName>`) correlated with the host's parent AspNetCore activity, every `slog` call inside the handler carries `trace.id`/`span.id`, and both traces and logs are force-flushed between invocations so consumption-style plans don't lose buffered batches when the container is frozen.
 
 ## What you get on every invocation

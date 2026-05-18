@@ -194,6 +194,8 @@ OTEL_EXPORTER_OTLP_HEADERS=api-key=<your_token>
 OTEL_SERVICE_NAME=my-function-app
 ```
 
+`host.json` must set `"telemetryMode": "OpenTelemetry"` for the host to wire its own OpenTelemetry pipeline and honor the worker-advertised `WorkerOpenTelemetryEnabled` capability. See [`samples/otelTracing`](samples/otelTracing) for a complete working example.
+
 For more control, build the exporters yourself and pass them as options. `WithExporter` and `WithLogExporter` can be called multiple times to fan out to several backends:
 
 ```go

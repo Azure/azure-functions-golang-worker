@@ -24,7 +24,9 @@ func main() {
 
 ## Configure
 
-Edit `local.settings.json` (for local dev) or set the same variables in the Function App's app settings (for deployed runs):
+`host.json` sets `"telemetryMode": "OpenTelemetry"`. This tells the Functions host to wire its own OpenTelemetry pipeline (instead of the legacy Application Insights one) and to honor the worker-advertised `WorkerOpenTelemetryEnabled` capability so it doesn't double-emit worker `Function.*` log records into its own telemetry. Required for OTel deployments.
+
+Then edit `local.settings.json` (for local dev) or set the same variables in the Function App's app settings (for deployed runs):
 
 ```
 OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.your-backend.example
