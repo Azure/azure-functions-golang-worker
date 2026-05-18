@@ -59,34 +59,19 @@ type pendingHTTPInvocation struct {
 }
 
 // httpResult is the payload the HTTP-side goroutine returns to the gRPC
-// dispatcher once the user handler (wrapped by the middleware chain) has
-// finished running.
-//
-// It carries the final [pb.StatusResult] AND the per-invocation
-// [sdk.MiddlewareContext] the HTTP goroutine populated. The gRPC side
+// dispatcher once the user handler has finished running. The gRPC side
 // uses mc to build the InvocationResponse the same way the gRPC-body
-// path does (reading e.g. mc.OutboundTraceAttributes() to populate
-// InvocationResponse.TraceContextAttributes). Without mc on the channel,
-// every new outbound field that the host expects on the
-// InvocationResponse would need its own ad-hoc plumbing across the
-// goroutine boundary.
+// path does (reading e.g. mc.OutboundTraceAttributes()).
 //
-// Ownership discipline: mc is exclusively mutated by the HTTP goroutine
-// up to the moment of the channel send; receipt on the gRPC side is the
-// ownership handoff (Go's memory model guarantees the receiver sees
-// every write the sender made before the send). After the send, the HTTP
-// goroutine MUST NOT touch mc. After the receive, the gRPC side treats
-// it as read-only. This mirrors the forward [grpcArrival] handoff and
-// matches how the gRPC-body path naturally works (single goroutine,
-// sequential mutation then serialization).
+// Ownership: the HTTP goroutine exclusively mutates mc up to the channel
+// send; the receive is the handoff. After the send, mc is read-only to
+// the gRPC side.
 //
-// mc is non-nil for every code path where the HTTP request was paired
-// with a gRPC arrival (including the user-handler-panicked path: mc is
-// constructed before invokeHTTPHandler runs and survives the panic
-// unwind, so partial mutations made before the panic still reach the
-// gRPC side -- matching the gRPC-body path's behavior). mc is nil only
-// on the early-return "client disconnected before gRPC arrival" branch,
-// where there is no [grpcArrival] to build it from; the gRPC side
+// mc is non-nil for every code path that paired with a gRPC arrival,
+// including the user-handler-panicked path (mc is constructed before
+// invokeHTTPHandler runs, so partial mutations made before the panic
+// still reach the gRPC side). mc is nil only on the early-return
+// "client disconnected before gRPC arrival" branch; the gRPC side
 // nil-checks as a safety belt.
 type httpResult struct {
 	status *pb.StatusResult
@@ -333,14 +318,10 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 // chunked transfer encoding, hijacking, and trailers all work as in any
 // standard Go HTTP server.
 //
-// mc is built by the caller (so partial mutations the user handler /
-// middleware made survive a panic and still reach the gRPC side); we
-// attach it to r.Context() and run the call through arrival.app.Compose,
-// so middleware registered via App.Use (most notably otelfunc.Middleware
-// for distributed tracing) wraps the HTTP-streaming path uniformly with
-// the gRPC-body path. Without this, otel spans / faas.* attributes
-// would only attach to invocations that went through the legacy
-// gRPC-body HTTP path.
+// mc is built by the caller so partial mutations the user handler made
+// survive a panic. We attach it to r.Context() and run the call through
+// arrival.app.Compose, so App.Use middleware wraps the HTTP-streaming
+// path uniformly with the gRPC-body path.
 func invokeHTTPHandler(arrival grpcArrival, mc *sdk.MiddlewareContext, w http.ResponseWriter, r *http.Request) {
 	handler, ok := arrival.fn.Function.Func.(func(http.ResponseWriter, *http.Request))
 	if !ok {
@@ -354,11 +335,9 @@ func invokeHTTPHandler(arrival grpcArrival, mc *sdk.MiddlewareContext, w http.Re
 
 	ctx := sdk.ContextWithMiddleware(r.Context(), mc)
 
-	// inner is the innermost Handler that the middleware chain wraps. It
-	// receives the (possibly enriched) ctx and runs the user handler with
-	// it attached to the request. http.HandlerFunc cannot return errors,
-	// so the inner always returns nil; user handlers that need to surface
-	// errors should write the HTTP status themselves.
+	// inner is the innermost Handler the middleware chain wraps; it forwards
+	// the (possibly enriched) ctx into the request. HTTP handlers surface
+	// errors via response status, so inner always returns nil.
 	inner := func(ctx context.Context, _ *sdk.InvocationContext) error {
 		handler(w, r.WithContext(ctx))
 		return nil
@@ -366,13 +345,10 @@ func invokeHTTPHandler(arrival grpcArrival, mc *sdk.MiddlewareContext, w http.Re
 
 	if arrival.app != nil {
 		chain := arrival.app.Compose(inner)
-		// Middleware may surface a non-nil error (e.g. an auth middleware
-		// short-circuiting before the handler runs). HTTP responses are
-		// already owned by the user handler / middleware -- they're
-		// expected to write status codes themselves -- so we only log
-		// the chain error here for diagnostics. The host pipeline does
-		// not see this error; HTTP-streaming InvocationResponse status
-		// comes from notifyGRPCArrival's separate rendezvous path.
+		// Middleware may return a non-nil error (e.g. auth short-circuit).
+		// HTTP responses are already owned by the user handler / middleware,
+		// so we only log for diagnostics; InvocationResponse status comes
+		// from notifyGRPCArrival's separate rendezvous path.
 		if err := chain(ctx, mc.InvocationContext); err != nil {
 			log.Printf("HTTP proxy: middleware chain returned error for invocation %s: %v", mc.InvocationID, err)
 		}
@@ -396,20 +372,13 @@ func tryWriteError(w http.ResponseWriter, msg string) {
 
 // notifyGRPCArrival is called from the gRPC dispatcher when an HTTP-trigger
 // InvocationRequest is received. It hands the loaded function plus the
-// originating InvocationRequest to the HTTP handler goroutine (so the
-// handler can build a per-invocation sdk.MiddlewareContext and run the
-// user code through the App.Compose middleware chain) and blocks until
-// the handler reports completion.
+// request to the HTTP handler goroutine and blocks until the handler
+// reports completion.
 //
 // Returns the final status plus the [sdk.MiddlewareContext] the HTTP
-// goroutine populated. The caller reads e.g. mc.OutboundTraceAttributes()
-// to populate the corresponding InvocationResponse fields, matching the
-// gRPC-body path which reads them off the mc it built locally. mc is
-// non-nil whenever the HTTP request was successfully paired with a gRPC
-// arrival (including the user-handler-panicked case); it is nil only on
-// the early-return "client disconnected before gRPC arrival" branch in
-// [handle], where no mc was ever constructed. The caller must nil-check
-// before dereferencing.
+// goroutine populated. mc is nil only on the early-return "client
+// disconnected before gRPC arrival" branch in [handle]; the caller must
+// nil-check before dereferencing.
 func (p *httpProxy) notifyGRPCArrival(req *pb.InvocationRequest, lf *LoadedFunction, app *sdk.App) (*pb.StatusResult, *sdk.MiddlewareContext, error) {
 	invocationID := req.GetInvocationId()
 	pending := p.getOrCreatePending(invocationID)

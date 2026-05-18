@@ -247,27 +247,19 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	}
 	loadedFunc := val.(*LoadedFunction)
 
-	// HTTP streaming path: when the host is forwarding HTTP via the
-	// "HttpUri" capability, the user handler runs against the live
-	// http.ResponseWriter inside the embedded HTTP proxy. The gRPC
-	// side waits for completion via notifyGRPCArrival, which returns
-	// the post-invocation [sdk.MiddlewareContext] alongside the status
-	// so we can populate the InvocationResponse the same way the
-	// gRPC-body path does below -- reading invocation-output fields
-	// (OutboundTraceAttributes today; future fields automatically) off
-	// the mc. Pass disp.App so the proxy can compose the registered
-	// middleware chain (notably otelfunc) around the user handler;
-	// without this, HTTP-streaming invocations would bypass middleware
-	// entirely.
+	// HTTP streaming path: when the host forwards HTTP via the "HttpUri"
+	// capability, the user handler runs against the live ResponseWriter
+	// inside the embedded proxy. The gRPC side waits for completion via
+	// notifyGRPCArrival, which returns the post-invocation
+	// [sdk.MiddlewareContext] so we populate the response the same way the
+	// gRPC-body path does below. disp.App is passed so the proxy can
+	// compose the registered middleware chain around the user handler.
 	if disp.HTTPProxy != nil && isHTTPHandler(loadedFunc) && isHTTPProxiedInvocation(req) {
 		status, mc, err := disp.HTTPProxy.notifyGRPCArrival(req, loadedFunc, disp.App)
 		if err != nil {
-			// Don't return a Go error — handleBidiStream treats those as
-			// fatal. A rendezvous failure (timeout, cancelled HTTP request)
-			// is a transient per-invocation problem, not a worker-level
-			// crash. Surface it to the host as a Failure InvocationResponse
-			// so this invocation reports an error and the worker stays up
-			// to serve the next one.
+			// Surface the error as a Failure InvocationResponse instead of
+			// returning a Go error (handleBidiStream would treat that as fatal).
+			// Rendezvous failures are per-invocation transients, not worker crashes.
 			disp.SystemLogger().Error("HTTP proxy rendezvous failed",
 				"invocation_id", req.GetInvocationId(), "err", err)
 			status = &pb.StatusResult{
@@ -279,12 +271,9 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 			}
 		}
 		// mc is nil only on the early-return "client disconnected before
-		// gRPC arrival" branch in the proxy's handle(): no [grpcArrival]
-		// means no [sdk.MiddlewareContext] to copy onto the response. In
-		// that case the InvocationResponse carries just the status. The
-		// nil-check is a safety belt; every other code path produces a
-		// non-nil mc (including user-handler panics, where the mc was
-		// constructed before the panic).
+		// gRPC arrival" branch in the proxy's handle(). Nil-check as a
+		// safety belt; every other path produces a non-nil mc (including
+		// user-handler panics).
 		var outboundTA map[string]string
 		if mc != nil {
 			outboundTA = mc.OutboundTraceAttributes()
@@ -301,14 +290,9 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 		}, nil
 	}
 
-	// Build the per-invocation context that user handlers and middleware will
-	// see. The MiddlewareContext wraps the InvocationContext and carries
-	// framework-only state (outbound trace attributes harvested by
-	// middleware/otelfunc, etc.); the worker dispatcher reads from it when
-	// building the InvocationResponse. Stash it on context.Context — every
-	// handler that takes a context.Context can retrieve the embedded
-	// InvocationContext via sdk.FromContext; middleware that needs the
-	// wrapper itself calls sdk.MiddlewareContextFrom.
+	// Build the MiddlewareContext for this invocation and attach it to ctx.
+	// Handlers retrieve the embedded InvocationContext via sdk.FromContext;
+	// middleware that needs the wrapper calls sdk.MiddlewareContextFrom.
 	mc := buildMiddlewareContext(req, &loadedFunc.Function)
 	ctx := sdk.ContextWithMiddleware(context.Background(), mc)
 
@@ -450,17 +434,9 @@ var httpRequestPtrType = reflect.TypeOf((*http.Request)(nil))
 
 // buildMiddlewareContext converts a gRPC InvocationRequest plus the
 // resolved RegisteredFunction into the [sdk.MiddlewareContext] that flows
-// through the middleware chain for this invocation. Centralized so the
-// HTTP-streaming path (which receives invocations via the embedded
-// loopback HTTP server instead of the gRPC body) can construct the same
-// value.
-//
-// HTTP-streaming integration: the streaming code in http_proxy.go must
-// build a MiddlewareContext via this helper, stash it on r.Context() via
-// sdk.ContextWithMiddleware, and run the user http.HandlerFunc inside an
-// inner Handler wrapped by disp.App.Compose(inner). This ensures
-// middleware (notably otelfunc.Middleware) wraps both the gRPC-body and
-// HttpUri-proxied invocation paths uniformly.
+// through the middleware chain. Centralized so the HTTP-streaming path
+// (which receives invocations via the loopback HTTP server instead of
+// the gRPC body) can construct the same value.
 func buildMiddlewareContext(req *pb.InvocationRequest, fn *sdk.RegisteredFunction) *sdk.MiddlewareContext {
 	return &sdk.MiddlewareContext{
 		InvocationContext: &sdk.InvocationContext{

@@ -78,11 +78,6 @@
 // defer cleanup() line in main(). User-supplied providers (passed via
 // [WithTracerProvider] / [WithLoggerProvider]) are NOT shut down — they
 // remain the user's lifecycle to manage.
-//
-// Design follows aws-lambda-go's otellambda package: a thin Middleware
-// that (a) extracts the host's W3C trace context from
-// sdk.InvocationContext, (b) starts a server-kind span around the user
-// handler, and (c) force-flushes telemetry after each invocation.
 package otelfunc
 
 import (
@@ -188,10 +183,6 @@ const (
 // The standard go.opentelemetry.io/otel/sdk/trace.TracerProvider satisfies
 // Flusher via its ForceFlush method, so by default the Middleware uses
 // the configured TracerProvider as the flusher (see [Middleware]).
-//
-// Force-flushing is essential on consumption-style plans (Flex
-// Consumption, Linux Consumption) where the host may freeze the process
-// between invocations and lose buffered batches.
 type Flusher interface {
 	ForceFlush(ctx context.Context) error
 }
@@ -317,8 +308,8 @@ func WithoutFlusher() Option {
 }
 
 // WithSpanNameFormatter overrides the function used to compute the span
-// name from the invocation. The default returns ic.FunctionName, matching
-// otellambda's behavior of using the function name as the span name.
+// name from the invocation. The default returns "function <FunctionName>",
+// matching the dotnet-isolated and Java workers.
 func WithSpanNameFormatter(fn func(*sdk.InvocationContext) string) Option {
 	return optionFunc(func(c *config) {
 		if fn != nil {
@@ -328,8 +319,8 @@ func WithSpanNameFormatter(fn func(*sdk.InvocationContext) string) Option {
 }
 
 // WithAttributes adds extra attributes to every span produced by the
-// Middleware. Useful for resource-level tags that aren't captured by the
-// TracerProvider's Resource — e.g. deployment slot, region overrides.
+// Middleware. Use this for span-level annotations (e.g. deployment slot,
+// region override). For Resource-level attributes, use [WithResource].
 func WithAttributes(attrs ...attribute.KeyValue) Option {
 	return optionFunc(func(c *config) {
 		c.extraAttrs = append(c.extraAttrs, attrs...)
@@ -413,12 +404,9 @@ func (m *otelMiddleware) Wrap(next sdk.Handler) sdk.Handler {
 	return func(ctx context.Context, ic *sdk.InvocationContext) error {
 		ctx = m.cfg.propagator.Extract(ctx, traceContextCarrier(ic))
 
-		// Inbound baggage: hydrate ctx with the host-supplied baggage
-		// map so user code reading baggage.FromContext(ctx) sees what
-		// upstream services attached. The user can then propagate this
-		// baggage to their own downstream calls by using the standard
-		// otelhttp / otelgrpc instrumentations, which read baggage off
-		// ctx at call time.
+		// Inbound baggage: hydrate ctx with the host-supplied baggage map
+		// so user code reading baggage.FromContext(ctx) sees what upstream
+		// services attached.
 		if inboundBag := buildInboundBaggage(ic.TraceContext.Baggage); inboundBag.Len() > 0 {
 			ctx = baggage.ContextWithBaggage(ctx, inboundBag)
 		}
@@ -442,10 +430,10 @@ func (m *otelMiddleware) Wrap(next sdk.Handler) sdk.Handler {
 				attrs = append(attrs, semconv.FaaSInstance(v))
 			}
 			if v := hostAttrs[hostAttrLiveLogsSessionID]; v != "" {
-				// Not OTel-standard; the azure.functions.* prefix
-				// signals this is an Azure-Functions-specific extension.
-				// Used by the host's portal live-log feature to
-				// correlate stream sessions with telemetry.
+				// The azure.functions.* prefix marks this as an Azure-
+				// Functions-specific extension; used by the portal
+				// live-log feature to correlate stream sessions with
+				// telemetry.
 				attrs = append(attrs, attribute.String("azure.functions.live_logs_session_id", v))
 			}
 		}
@@ -506,24 +494,17 @@ func (m *otelMiddleware) Capabilities() map[string]string {
 }
 
 // Middleware returns an [sdk.Middleware] that traces every function
-// invocation as an OpenTelemetry server-kind span. The returned value also
-// implements [sdk.CapabilityProvider]; the worker dispatcher reads the
-// capability map at App.Use time and forwards it to the host via
-// WorkerInitResponse.Capabilities.
+// invocation as an OpenTelemetry internal-kind span named
+// "function <FunctionName>" (matching the dotnet-isolated and Java
+// workers). The returned value also implements [sdk.CapabilityProvider];
+// the worker dispatcher reads the capability map at App.Use time and
+// forwards it to the host via WorkerInitResponse.Capabilities.
 //
-// On each invocation the Middleware:
-//
-//  1. Extracts incoming W3C trace context from sdk.InvocationContext.TraceContext
-//     and attaches the resulting SpanContext to ctx via the configured
-//     propagator. Spans the user starts inside their handler with
-//     tracer.Start(ctx, ...) thus correlate with the host's parent span.
-//  2. Starts a server-kind span named after the function (override via
-//     [WithSpanNameFormatter]) with FaaS attributes:
-//     faas.invocation_id, faas.name, faas.trigger.
-//  3. Records any error returned by the inner Handler on the span and sets
-//     the span status to Error.
-//  4. Calls Flusher.ForceFlush before returning, so telemetry is pushed
-//     before the host may freeze the worker on consumption-style plans.
+// On each invocation the Middleware extracts the host's inbound W3C
+// trace context, hydrates baggage onto ctx, starts the worker invocation
+// span, runs the inner Handler, records any error, harvests user-set
+// span attributes onto the [sdk.MiddlewareContext] for the host
+// (see harvest.go), and force-flushes telemetry before returning.
 //
 // The middleware becomes a pass-through (no spans, no capability
 // advertising) when:
@@ -1086,11 +1067,8 @@ var resolveSDKVersion = sync.OnceValue(func() string {
 })
 
 // otelLogObserverOnce ensures the slog->OTel observer is registered at
-// most once per process. Registering more than once would fan each user
-// log record into the OTel LoggerProvider N times for N Middleware
-// constructions, which is incorrect (we'd see duplicate records in the
-// configured backend) and breaks the observer's "exactly one delivery"
-// contract.
+// most once per process. Multiple registrations would duplicate every
+// user log record N times in the configured backend.
 var otelLogObserverOnce sync.Once
 
 // registerOTelLogObserverOnce installs an observer on the worker's user

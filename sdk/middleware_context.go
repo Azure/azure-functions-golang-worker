@@ -23,18 +23,12 @@ import (
 //	    fmt.Println(mc.FunctionName)                    // promoted from InvocationContext
 //	}
 //
-// User code should not normally reach for the wrapper. The intended
-// pattern for user-visible behavior is to call the standard APIs (slog,
-// span.SetAttributes via OpenTelemetry); middleware/otelfunc and the
-// worker dispatcher coordinate through MiddlewareContext on the user's
-// behalf. The wrapper is exported so authors of custom middleware can
-// reach state the worker dispatcher needs (e.g. outbound trace
-// attributes) without going through ad-hoc plumbing.
+// Authors of custom middleware can use the wrapper to reach state the
+// worker dispatcher reads (e.g. outbound trace attributes). User code
+// should call the standard observability APIs (slog, span.SetAttributes)
+// instead; middleware/otelfunc coordinates through MiddlewareContext on
+// the user's behalf.
 type MiddlewareContext struct {
-	// InvocationContext is the user-facing trigger metadata for this
-	// invocation. Embedded so callers can write mc.InvocationID rather
-	// than mc.InvocationContext.InvocationID, matching Java's
-	// MiddlewareContext-extends-ExecutionContext shape.
 	*InvocationContext
 
 	mu                 sync.Mutex
@@ -42,21 +36,13 @@ type MiddlewareContext struct {
 }
 
 // ContextWithMiddleware returns a context that carries the given
-// MiddlewareContext.
+// MiddlewareContext. The name mirrors context.WithValue / context.WithCancel:
+// a derived context.Context carrying the supplied value.
 //
-// User code does not call this directly; the worker dispatcher builds the
-// MiddlewareContext once per invocation, before the middleware chain
-// runs. Tests and library authors who need to fabricate the carrier (for
-// example, to unit-test a Middleware that writes outbound state) can
-// call ContextWithMiddleware with a pre-built MC.
-//
-// Most test cases that don't care about MiddlewareContext-specific state
-// should use [NewContext] instead — it wraps the given InvocationContext
-// in a fresh MiddlewareContext implicitly.
-//
-// The name mirrors the standard library's context.WithValue /
-// context.WithCancel convention: a function whose return type is a
-// context.Context derived from parent, carrying the given value.
+// The worker dispatcher calls this once per invocation, before the
+// middleware chain runs. Most tests should use [NewContext] instead —
+// it wraps the given InvocationContext in a fresh MiddlewareContext
+// implicitly.
 func ContextWithMiddleware(parent context.Context, mc *MiddlewareContext) context.Context {
 	if parent == nil {
 		parent = context.Background()
@@ -81,22 +67,17 @@ func MiddlewareContextFrom(ctx context.Context) (*MiddlewareContext, bool) {
 	return mc, ok && mc != nil
 }
 
-// SetOutboundTraceAttribute records a key/value pair on the per-
-// invocation outbound trace attribute set. The worker dispatcher
-// forwards the accumulated entries on InvocationResponse.
-// TraceContextAttributes; the host applies each entry as a tag on its
-// parent activity via Activity.AddTag(k, v), surfacing them as span
-// attributes on the host-emitted "request" record in Application
+// SetOutboundTraceAttribute records a key/value pair to forward to the
+// host on InvocationResponse.TraceContextAttributes. The host applies
+// each entry as a tag on its parent activity via Activity.AddTag(k, v),
+// surfacing them on the host-emitted "request" record in Application
 // Insights.
 //
-// Intended for middleware integration (the middleware/otelfunc package
-// calls this to forward harvested span attributes to the host's parent
-// activity). User code that wants to tag the host's parent span should
-// call span.SetAttributes(...) on the worker invocation span instead
-// and let otelfunc auto-harvest.
+// Intended for middleware integration. User code that wants to tag the
+// host's parent span should call span.SetAttributes on the worker
+// invocation span instead and let middleware/otelfunc auto-harvest.
 //
-// Safe to call from multiple goroutines (e.g. middleware that fans
-// invocation work out to parallel sub-tasks).
+// Safe to call from multiple goroutines.
 func (mc *MiddlewareContext) SetOutboundTraceAttribute(key, value string) {
 	if mc == nil {
 		return
@@ -110,14 +91,11 @@ func (mc *MiddlewareContext) SetOutboundTraceAttribute(key, value string) {
 }
 
 // OutboundTraceAttributes returns the recorded outbound trace
-// attributes for this invocation. Returns nil when no attributes have
-// been recorded.
+// attributes, or nil when none have been recorded. The returned map is
+// the live backing store; callers needing an immutable snapshot should
+// copy it.
 //
-// Intended for the worker dispatcher's response builder. The returned
-// map is the live backing store; callers that need an immutable
-// snapshot should copy it. Reads are serialized against concurrent
-// [SetOutboundTraceAttribute] writes via the same mutex, so the
-// returned reference points at a stable map header.
+// Intended for the worker dispatcher's response builder.
 func (mc *MiddlewareContext) OutboundTraceAttributes() map[string]string {
 	if mc == nil {
 		return nil

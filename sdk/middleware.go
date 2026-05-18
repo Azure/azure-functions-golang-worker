@@ -5,26 +5,14 @@
 // # Middleware extensibility
 //
 // The Middleware interface (Wrap(next Handler) -> Handler) is deliberately
-// minimal, matching the shape established by net/http (Handler/HandlerFunc),
-// gRPC interceptors, and aws-lambda-go's otellambda. It supports the full
-// range of cross-cutting concerns: distributed tracing, structured logging,
-// authentication, retry policies, panic recovery, and request/response
-// validation.
+// minimal, matching the shape established by net/http (Handler/HandlerFunc)
+// and gRPC interceptors. It supports the full range of cross-cutting
+// concerns: distributed tracing, structured logging, authentication, retry
+// policies, panic recovery, and request/response validation.
 //
-// Middleware that needs to *replace* function execution entirely (for
-// example, a hypothetical Durable Functions runtime that performs
-// orchestration replay rather than direct invocation) is not supported by
-// a typed extension point today. Such middleware can either:
-//
-//   - Short-circuit the chain (skip next()) and reimplement reflective
-//     handler dispatch internally, or
-//   - Wait for a future framework-side feature mechanism, designed when
-//     a concrete need emerges.
-//
-// We deliberately defer adding such a mechanism (analogous to
-// IInvocationFeatures in the .NET isolated worker) until a real consumer
-// appears, to avoid committing to an API shape that may not match the
-// actual requirements.
+// Middleware that wants to replace function execution entirely (e.g.
+// orchestration replay) can short-circuit the chain by skipping next();
+// no separate extension point is provided today.
 package sdk
 
 import "context"
@@ -60,10 +48,6 @@ type Handler func(ctx context.Context, ic *InvocationContext) error
 // as [CapabilityProvider] without forcing every middleware to be the same
 // concrete type. Plain function middleware can wrap itself in [MiddlewareFunc]
 // to satisfy the interface — exactly the net/http Handler/HandlerFunc pattern.
-//
-// Third-party modules can author and ship Middleware implementations against
-// this interface without any coordination with the worker; the bundled
-// middleware/otelfunc package is itself a regular consumer of this API.
 type Middleware interface {
 	// Wrap returns a Handler that decorates next.
 	Wrap(next Handler) Handler
@@ -199,12 +183,9 @@ func (app *App) Capabilities() map[string]string {
 // Handler. Middleware order matches Use's contract: the first registered
 // Middleware is outermost and runs first/last around the chain.
 //
-// Compose is the only sanctioned way for code outside the sdk package (notably
-// the worker dispatcher and the HTTP-streaming bridge) to obtain the
-// per-invocation chain. The raw middleware slice is intentionally not
-// exported; this keeps the registration list internal so it can evolve
-// (for example, to introduce a separate framework-middleware pool) without
-// breaking external consumers.
+// Compose is the only sanctioned way for code outside the sdk package
+// (the worker dispatcher and the HTTP-streaming bridge) to obtain the
+// per-invocation chain.
 //
 // Compose returns inner unchanged when no Middleware are registered.
 func (app *App) Compose(inner Handler) Handler {
