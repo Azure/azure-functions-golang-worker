@@ -246,21 +246,23 @@ func TestHandleInvocationRequest_NoMiddleware_StillRuns(t *testing.T) {
 }
 
 func TestHandleInvocationRequest_OutboundTraceAttributes_ForwardedToResponse(t *testing.T) {
-	// Verifies the dispatcher copies user-set ic.OutboundTraceAttributes to
-	// InvocationResponse.TraceContextAttributes verbatim (no auto-population
-	// or filtering) so the host can apply them as tags on its parent span.
+	// Verifies the dispatcher copies the MiddlewareContext's outbound
+	// trace attributes onto InvocationResponse.TraceContextAttributes
+	// verbatim (no auto-population or filtering at the dispatcher layer)
+	// so the host can apply them as tags on its parent span. The handler
+	// simulates a middleware writer via
+	// [sdk.MiddlewareContext.SetOutboundTraceAttribute]; the dispatcher
+	// itself doesn't care who wrote the entries.
 	disp := newTestDispatcher("req-tags")
 
 	rf := loadFunc(t, disp, "TagSetter", func(ctx context.Context, _ bindings.TimerInfo) error {
-		ic, ok := sdk.FromContext(ctx)
+		mc, ok := sdk.MiddlewareContextFrom(ctx)
 		if !ok {
-			t.Errorf("expected InvocationContext on ctx")
+			t.Errorf("expected MiddlewareContext on ctx")
 			return nil
 		}
-		ic.OutboundTraceAttributes = map[string]string{
-			"tenant":      "contoso",
-			"result.kind": "ok",
-		}
+		mc.SetOutboundTraceAttribute("tenant", "contoso")
+		mc.SetOutboundTraceAttribute("result.kind", "ok")
 		return nil
 	})
 

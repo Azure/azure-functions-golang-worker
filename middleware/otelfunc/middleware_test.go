@@ -614,28 +614,113 @@ func TestMiddleware_InboundBaggage_VisibleToHandler(t *testing.T) {
 	}
 }
 
-func TestMiddleware_DoesNotTouchOutboundTraceAttributes(t *testing.T) {
-	// otelfunc deliberately does not auto-populate OutboundTraceAttributes.
-	// Span attributes the user sets via span.SetAttributes are exported by
-	// the worker's own TracerProvider; the OutboundTraceAttributes channel
-	// is reserved for the niche case where the user wants a tag on the
-	// host's parent activity span and writes to the field directly.
+func TestMiddleware_AutoHarvestsSpanAttributesToOutbound(t *testing.T) {
+	// User code calls span.SetAttributes inside the handler; the
+	// middleware harvests those at end-of-invocation and records them on
+	// the MiddlewareContext so the worker dispatcher forwards them on
+	// InvocationResponse.TraceContextAttributes. Matches the
+	// dotnet-isolated worker's Activity.Tags propagation behavior.
 	tp, _ := newTestProvider()
 	mw := Middleware(WithTracerProvider(tp))
 
-	chain := mw.Wrap(func(ctx context.Context, ic *sdk.InvocationContext) error {
-		// User adds a span attribute the standard way; this should NOT
-		// leak into OutboundTraceAttributes.
-		trace.SpanFromContext(ctx).SetAttributes(attribute.String("user.id", "u-42"))
+	chain := mw.Wrap(func(ctx context.Context, _ *sdk.InvocationContext) error {
+		trace.SpanFromContext(ctx).SetAttributes(
+			attribute.String("user.id", "u-42"),
+			attribute.String("tenant", "contoso"),
+		)
 		return nil
 	})
 
 	ic := &sdk.InvocationContext{FunctionName: "fn", InvocationID: "id-1"}
-	if err := chain(context.Background(), ic); err != nil {
+	mc := &sdk.MiddlewareContext{InvocationContext: ic}
+	ctx := sdk.ContextWithMiddleware(context.Background(), mc)
+	if err := chain(ctx, ic); err != nil {
 		t.Fatalf("chain returned error: %v", err)
 	}
-	if len(ic.OutboundTraceAttributes) != 0 {
-		t.Errorf("expected OutboundTraceAttributes to remain empty, got %v", ic.OutboundTraceAttributes)
+
+	got := mc.OutboundTraceAttributes()
+	if got["user.id"] != "u-42" {
+		t.Errorf("user.id: got %q, want %q (full map: %v)", got["user.id"], "u-42", got)
+	}
+	if got["tenant"] != "contoso" {
+		t.Errorf("tenant: got %q, want %q (full map: %v)", got["tenant"], "contoso", got)
+	}
+}
+
+func TestMiddleware_AutoHarvestFiltersWorkerSetKeys(t *testing.T) {
+	// The middleware itself sets faas.invocation_id / faas.name /
+	// faas.trigger (plus optional process.pid, faas.instance,
+	// azure.functions.live_logs_session_id) on the worker invocation
+	// span. Those keys must NOT leak into OutboundTraceAttributes,
+	// otherwise the host's parent activity would have its own keys
+	// silently overwritten by the worker's value. Matches the
+	// dotnet-isolated worker's KnownAttributes filter.
+	tp, _ := newTestProvider()
+	mw := Middleware(WithTracerProvider(tp))
+
+	chain := mw.Wrap(func(ctx context.Context, _ *sdk.InvocationContext) error {
+		// User attempts (intentionally or otherwise) to set keys the
+		// middleware itself owns. These must be dropped on harvest.
+		trace.SpanFromContext(ctx).SetAttributes(
+			attribute.String("faas.invocation_id", "user-supplied"),
+			attribute.String("faas.name", "user-supplied"),
+			attribute.String("faas.trigger", "user-supplied"),
+			attribute.String("process.pid", "user-supplied"),
+			attribute.String("faas.instance", "user-supplied"),
+			attribute.String("azure.functions.live_logs_session_id", "user-supplied"),
+			// A non-worker-set key should still survive the filter.
+			attribute.String("custom.key", "user-value"),
+		)
+		return nil
+	})
+
+	ic := &sdk.InvocationContext{FunctionName: "fn", InvocationID: "id-1"}
+	mc := &sdk.MiddlewareContext{InvocationContext: ic}
+	ctx := sdk.ContextWithMiddleware(context.Background(), mc)
+	if err := chain(ctx, ic); err != nil {
+		t.Fatalf("chain returned error: %v", err)
+	}
+
+	got := mc.OutboundTraceAttributes()
+	for _, k := range []string{
+		"faas.invocation_id", "faas.name", "faas.trigger",
+		"process.pid", "faas.instance",
+		"azure.functions.live_logs_session_id",
+	} {
+		if _, present := got[k]; present {
+			t.Errorf("worker-set key %q must be filtered out of OutboundTraceAttributes; full map: %v", k, got)
+		}
+	}
+	if got["custom.key"] != "user-value" {
+		t.Errorf("custom.key: got %q, want %q (full map: %v)", got["custom.key"], "user-value", got)
+	}
+}
+
+func TestMiddleware_AutoHarvestExplicitSetterWinsOnCollision(t *testing.T) {
+	// "Fill if absent" precedence: when middleware (or other framework
+	// code) calls MiddlewareContext.SetOutboundTraceAttribute during the
+	// invocation AND the span has the same key, the explicit setter
+	// wins. The span-derived value only fills keys not already present.
+	tp, _ := newTestProvider()
+	mw := Middleware(WithTracerProvider(tp))
+
+	chain := mw.Wrap(func(ctx context.Context, _ *sdk.InvocationContext) error {
+		mc, _ := sdk.MiddlewareContextFrom(ctx)
+		mc.SetOutboundTraceAttribute("tenant", "explicit-value")
+		trace.SpanFromContext(ctx).SetAttributes(
+			attribute.String("tenant", "span-value"),
+		)
+		return nil
+	})
+
+	ic := &sdk.InvocationContext{FunctionName: "fn", InvocationID: "id-1"}
+	mc := &sdk.MiddlewareContext{InvocationContext: ic}
+	ctx := sdk.ContextWithMiddleware(context.Background(), mc)
+	if err := chain(ctx, ic); err != nil {
+		t.Fatalf("chain returned error: %v", err)
+	}
+	if got := mc.OutboundTraceAttributes()["tenant"]; got != "explicit-value" {
+		t.Errorf("tenant: explicit setter must win on collision; got %q, want %q", got, "explicit-value")
 	}
 }
 

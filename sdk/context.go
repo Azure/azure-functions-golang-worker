@@ -46,33 +46,6 @@ type InvocationContext struct {
 	// parameters). Values are flattened to strings for ergonomic access;
 	// non-string TypedData values are skipped.
 	TriggerMetadata map[string]string
-
-	// OutboundTraceAttributes are tags the worker wants added to the
-	// host's parent activity span representing this invocation. The
-	// host copies each entry to its own current Activity via
-	// Activity.AddTag(k, v), surfacing them as span attributes on the
-	// host-emitted "request" record in Application Insights.
-	//
-	// This is rarely needed in normal OpenTelemetry usage: when the
-	// otelfunc middleware is active and a real exporter is wired up,
-	// the user's standard span.SetAttributes calls land on the worker
-	// span and are exported directly to the OTel backend — no extra
-	// plumbing required. Use this field only when you need a tag to
-	// appear on the host's parent span specifically (e.g. for KQL
-	// queries against the App Insights "requests" table that filter
-	// or group by a custom dimension).
-	//
-	// The otelfunc middleware does NOT auto-populate this field; the
-	// user writes to it directly. The dispatcher forwards the map
-	// verbatim to InvocationResponse.TraceContextAttributes.
-	//
-	// Not a baggage propagation channel. To propagate baggage to your
-	// own downstream calls, use the standard OpenTelemetry baggage
-	// API (baggage.ContextWithBaggage) plus an instrumented HTTP /
-	// gRPC client (otelhttp, otelgrpc) — those read baggage off ctx
-	// at call time. The host protocol does not support baggage
-	// propagation back to the host itself.
-	OutboundTraceAttributes map[string]string
 }
 
 // TraceContext mirrors the fields of pb.RpcTraceContext that the Functions
@@ -123,8 +96,14 @@ type RetryContext struct {
 }
 
 // invocationContextKey is the unexported context key used for stashing
-// *InvocationContext. The empty-struct-key pattern prevents collisions with
-// other packages and is unallocatable.
+// the per-invocation [MiddlewareContext]. The empty-struct-key pattern
+// prevents collisions with other packages and is unallocatable.
+//
+// The carrier stored under this key is always a *MiddlewareContext (not
+// a bare *InvocationContext); [FromContext] returns its embedded
+// *InvocationContext so user-facing callers see the simpler type, while
+// [MiddlewareContextFrom] returns the wrapper for framework / middleware
+// integration code.
 type invocationContextKey struct{}
 
 // NewContext returns a new context that carries the given *InvocationContext.
@@ -134,11 +113,17 @@ type invocationContextKey struct{}
 // Tests and library authors who need to fabricate an invocation context (for
 // example, to unit-test a Middleware in isolation) can use NewContext to
 // produce a context with predetermined values.
+//
+// Internally NewContext wraps ic in a fresh [MiddlewareContext] so the same
+// ctx can be used by middleware that needs to write outbound state (e.g.
+// outbound trace attributes harvested by middleware/otelfunc). Callers who
+// already have a *MiddlewareContext should use [ContextWithMiddleware]
+// directly to preserve any outbound state they've recorded.
 func NewContext(parent context.Context, ic *InvocationContext) context.Context {
 	if parent == nil {
 		parent = context.Background()
 	}
-	return context.WithValue(parent, invocationContextKey{}, ic)
+	return context.WithValue(parent, invocationContextKey{}, &MiddlewareContext{InvocationContext: ic})
 }
 
 // FromContext returns the *InvocationContext stored in ctx, if any.
@@ -147,10 +132,17 @@ func NewContext(parent context.Context, ic *InvocationContext) context.Context {
 // (for example, in unit tests that pass context.Background() directly to a
 // handler). User code should check the boolean and handle the missing case
 // gracefully.
+//
+// FromContext is the user-facing accessor. Middleware and framework code
+// that needs the [MiddlewareContext] wrapper (e.g. to record outbound
+// trace attributes) should call [MiddlewareContextFrom] instead.
 func FromContext(ctx context.Context) (*InvocationContext, bool) {
 	if ctx == nil {
 		return nil, false
 	}
-	ic, ok := ctx.Value(invocationContextKey{}).(*InvocationContext)
-	return ic, ok
+	mc, ok := ctx.Value(invocationContextKey{}).(*MiddlewareContext)
+	if !ok || mc == nil {
+		return nil, false
+	}
+	return mc.InvocationContext, mc.InvocationContext != nil
 }

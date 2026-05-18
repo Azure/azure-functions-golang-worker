@@ -466,6 +466,7 @@ func (m *otelMiddleware) Wrap(next sdk.Handler) sdk.Handler {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		}
+		harvestSpanAttributesToOutbound(ctx, span)
 		span.End()
 
 		// Force-flush before the worker may be frozen. Done after

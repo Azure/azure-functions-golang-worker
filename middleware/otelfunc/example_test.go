@@ -145,32 +145,30 @@ func ExampleMiddleware_inboundBaggage() {
 	_ = app
 }
 
-// ExampleInvocationContext_outboundTraceAttributes shows the niche use
-// case for ic.OutboundTraceAttributes: tagging the host's parent activity
-// span (the one that becomes a "request" record in App Insights). Most
-// users do not need this — span attributes set via span.SetAttributes are
-// exported by the worker's own TracerProvider and land in the same OTel
-// backend.
+// ExampleInvocationContext_outboundTraceAttributes shows how to tag the
+// host's parent activity span (the one that becomes a "request" record
+// in App Insights) with values resolved at handler time.
 //
-// Use this only when you need a tag to appear on the host's "requests"
-// table specifically (e.g. for a KQL filter like
-// `requests | where customDimensions.tenant == "contoso"`).
+// The standard pattern is to call span.SetAttributes on the worker
+// invocation span — the otelfunc middleware harvests those at end-of-
+// invocation and forwards them to the host via
+// InvocationResponse.TraceContextAttributes. The host then applies each
+// entry as a tag on its parent activity via Activity.AddTag.
+//
+// This works for both the gRPC-body and HTTP-streaming invocation paths.
 func ExampleInvocationContext_outboundTraceAttributes() {
 	app := sdk.FunctionApp()
 	app.HTTP("hello", func(w http.ResponseWriter, r *http.Request) {
-		ic, _ := sdk.FromContext(r.Context())
-
-		// Standard OTel pattern for span attrs (worker span -> App Insights):
+		// Tag the worker invocation span. otelfunc auto-harvests these
+		// onto OutboundTraceAttributes at end-of-invocation, so the host
+		// applies them to its parent activity (visible as
+		// customDimensions on the App Insights "requests" record).
 		span := trace.SpanFromContext(r.Context())
-		span.SetAttributes(attribute.String("user.id", "u-42"))
+		span.SetAttributes(
+			attribute.String("tenant", r.Header.Get("X-Tenant")),
+			attribute.String("result.kind", "ok"),
+		)
 
-		// Niche escape hatch for host parent-span tags:
-		if ic != nil {
-			ic.OutboundTraceAttributes = map[string]string{
-				"tenant":      r.Header.Get("X-Tenant"),
-				"result.kind": "ok",
-			}
-		}
 		w.WriteHeader(http.StatusOK)
 	})
 	_ = app

@@ -251,16 +251,16 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	// "HttpUri" capability, the user handler runs against the live
 	// http.ResponseWriter inside the embedded HTTP proxy. The gRPC
 	// side waits for completion via notifyGRPCArrival, which returns
-	// the post-invocation [sdk.InvocationContext] alongside the status
+	// the post-invocation [sdk.MiddlewareContext] alongside the status
 	// so we can populate the InvocationResponse the same way the
 	// gRPC-body path does below -- reading invocation-output fields
 	// (OutboundTraceAttributes today; future fields automatically) off
-	// the ic. Pass disp.App so the proxy can compose the registered
+	// the mc. Pass disp.App so the proxy can compose the registered
 	// middleware chain (notably otelfunc) around the user handler;
 	// without this, HTTP-streaming invocations would bypass middleware
 	// entirely.
 	if disp.HTTPProxy != nil && isHTTPHandler(loadedFunc) && isHTTPProxiedInvocation(req) {
-		status, ic, err := disp.HTTPProxy.notifyGRPCArrival(req, loadedFunc, disp.App)
+		status, mc, err := disp.HTTPProxy.notifyGRPCArrival(req, loadedFunc, disp.App)
 		if err != nil {
 			// Don't return a Go error — handleBidiStream treats those as
 			// fatal. A rendezvous failure (timeout, cancelled HTTP request)
@@ -278,16 +278,16 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 				},
 			}
 		}
-		// ic is nil only on the early-return "client disconnected before
+		// mc is nil only on the early-return "client disconnected before
 		// gRPC arrival" branch in the proxy's handle(): no [grpcArrival]
-		// means no [sdk.InvocationContext] to copy onto the response. In
+		// means no [sdk.MiddlewareContext] to copy onto the response. In
 		// that case the InvocationResponse carries just the status. The
 		// nil-check is a safety belt; every other code path produces a
-		// non-nil ic (including user-handler panics, where the ic was
+		// non-nil mc (including user-handler panics, where the mc was
 		// constructed before the panic).
 		var outboundTA map[string]string
-		if ic != nil {
-			outboundTA = ic.OutboundTraceAttributes
+		if mc != nil {
+			outboundTA = mc.OutboundTraceAttributes()
 		}
 		return &pb.StreamingMessage{
 			RequestId: requestId,
@@ -302,18 +302,23 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	}
 
 	// Build the per-invocation context that user handlers and middleware will
-	// see. Stash it on context.Context — every handler that takes a
-	// context.Context can retrieve it via sdk.FromContext.
-	ic := buildInvocationContext(req, &loadedFunc.Function)
-	ctx := sdk.NewContext(context.Background(), ic)
+	// see. The MiddlewareContext wraps the InvocationContext and carries
+	// framework-only state (outbound trace attributes harvested by
+	// middleware/otelfunc, etc.); the worker dispatcher reads from it when
+	// building the InvocationResponse. Stash it on context.Context — every
+	// handler that takes a context.Context can retrieve the embedded
+	// InvocationContext via sdk.FromContext; middleware that needs the
+	// wrapper itself calls sdk.MiddlewareContextFrom.
+	mc := buildMiddlewareContext(req, &loadedFunc.Function)
+	ctx := sdk.ContextWithMiddleware(context.Background(), mc)
 
 	// Emit a system log with the inbound trace_parent so OTel correlation
 	// can be debugged from production logs without instrumenting user code.
 	disp.SystemLogger().Debug("InvocationRequest trace context",
-		"invocation_id", ic.InvocationID,
-		"trace_parent", ic.TraceContext.TraceParent,
-		"trace_state", ic.TraceContext.TraceState,
-		"baggage_count", len(ic.TraceContext.Baggage),
+		"invocation_id", mc.InvocationID,
+		"trace_parent", mc.TraceContext.TraceParent,
+		"trace_state", mc.TraceContext.TraceState,
+		"baggage_count", len(mc.TraceContext.Baggage),
 	)
 
 	ft := reflect.TypeOf(loadedFunc.Function.Func)
@@ -358,7 +363,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 			}
 		}
 
-		clientVal, err := loadedFunc.Function.ClientFactory(config, ic.TriggerMetadata)
+		clientVal, err := loadedFunc.Function.ClientFactory(config, mc.TriggerMetadata)
 		if err != nil {
 			return nil, fmt.Errorf("client factory error: %v", err)
 		}
@@ -394,7 +399,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 
 	// 4. Compose the middleware chain around the inner handler and run it.
 	chain := disp.App.Compose(inner)
-	invokeErr := chain(ctx, ic)
+	invokeErr := chain(ctx, mc.InvocationContext)
 
 	// 5. Build response status from any error returned by the chain.
 	status := &pb.StatusResult{
@@ -429,7 +434,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 				InvocationId:           req.InvocationId,
 				ReturnValue:            returnValue,
 				Result:                 status,
-				TraceContextAttributes: ic.OutboundTraceAttributes,
+				TraceContextAttributes: mc.OutboundTraceAttributes(),
 			},
 		},
 	}, nil
@@ -443,27 +448,30 @@ var errorType = reflect.TypeOf((*error)(nil)).Elem()
 // use when injecting an enriched context.Context into HTTP handler args.
 var httpRequestPtrType = reflect.TypeOf((*http.Request)(nil))
 
-// buildInvocationContext converts a gRPC InvocationRequest plus the
-// resolved RegisteredFunction into the public sdk.InvocationContext that
-// user handlers and middleware see. Centralized so the HTTP-streaming
-// path (which receives invocations via the embedded loopback HTTP server
-// instead of the gRPC body) can construct the same value.
+// buildMiddlewareContext converts a gRPC InvocationRequest plus the
+// resolved RegisteredFunction into the [sdk.MiddlewareContext] that flows
+// through the middleware chain for this invocation. Centralized so the
+// HTTP-streaming path (which receives invocations via the embedded
+// loopback HTTP server instead of the gRPC body) can construct the same
+// value.
 //
 // HTTP-streaming integration: the streaming code in http_proxy.go must
-// build an InvocationContext via this helper, stash it on r.Context() via
-// sdk.NewContext, and run the user http.HandlerFunc inside an inner
-// Handler wrapped by disp.App.Compose(inner).
-// This ensures middleware (notably otelfunc.Middleware) wraps both the
-// gRPC-body and HttpUri-proxied invocation paths uniformly.
-func buildInvocationContext(req *pb.InvocationRequest, fn *sdk.RegisteredFunction) *sdk.InvocationContext {
-	return &sdk.InvocationContext{
-		InvocationID:    req.GetInvocationId(),
-		FunctionID:      req.GetFunctionId(),
-		FunctionName:    fn.FuncName,
-		TriggerType:     fn.TriggerType,
-		TraceContext:    convertTraceContext(req.GetTraceContext()),
-		RetryContext:    convertRetryContext(req.GetRetryContext()),
-		TriggerMetadata: flattenTriggerMetadata(req.GetTriggerMetadata()),
+// build a MiddlewareContext via this helper, stash it on r.Context() via
+// sdk.ContextWithMiddleware, and run the user http.HandlerFunc inside an
+// inner Handler wrapped by disp.App.Compose(inner). This ensures
+// middleware (notably otelfunc.Middleware) wraps both the gRPC-body and
+// HttpUri-proxied invocation paths uniformly.
+func buildMiddlewareContext(req *pb.InvocationRequest, fn *sdk.RegisteredFunction) *sdk.MiddlewareContext {
+	return &sdk.MiddlewareContext{
+		InvocationContext: &sdk.InvocationContext{
+			InvocationID:    req.GetInvocationId(),
+			FunctionID:      req.GetFunctionId(),
+			FunctionName:    fn.FuncName,
+			TriggerType:     fn.TriggerType,
+			TraceContext:    convertTraceContext(req.GetTraceContext()),
+			RetryContext:    convertRetryContext(req.GetRetryContext()),
+			TriggerMetadata: flattenTriggerMetadata(req.GetTriggerMetadata()),
+		},
 	}
 }
 
