@@ -112,7 +112,7 @@ import (
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -123,8 +123,11 @@ const ScopeName = "github.com/azure/azure-functions-golang-worker/middleware/ote
 // SchemaVersion is the OpenTelemetry semantic conventions schema version
 // the middleware advertises to the host through the
 // WorkerOpenTelemetrySchemaVersion capability. It must match the version
-// of the imported semconv package — currently v1.27.0.
-const SchemaVersion = "1.27.0"
+// of the imported semconv package — currently v1.37.0. This matches the
+// dotnet-isolated worker's default schema version, so the host's known-
+// attribute filter list (keyed on the advertised schema version) lines
+// up across runtimes.
+const SchemaVersion = "1.37.0"
 
 // CapabilityWorkerOpenTelemetryEnabled is the worker-level capability key
 // the middleware advertises when an active (non-noop) TracerProvider is
@@ -164,10 +167,10 @@ const envWebsiteSiteName = "WEBSITE_SITE_NAME"
 // OpenTelemetry Resource attributes that match what the Java worker
 // emits, so cross-runtime dashboards filter on the same keys.
 const (
-	envRegionName          = "REGION_NAME"            // e.g. "eastus2"
+	envRegionName           = "REGION_NAME"            // e.g. "eastus2"
 	envWebsiteResourceGroup = "WEBSITE_RESOURCE_GROUP" // e.g. "my-rg"
-	envWebsiteOwnerName    = "WEBSITE_OWNER_NAME"     // "<subscriptionId>+<stamp>..."
-	envWebsiteSlotName     = "WEBSITE_SLOT_NAME"      // "production" / "staging" / etc.
+	envWebsiteOwnerName     = "WEBSITE_OWNER_NAME"     // "<subscriptionId>+<stamp>..."
+	envWebsiteSlotName      = "WEBSITE_SLOT_NAME"      // "production" / "staging" / etc.
 )
 
 // Inbound RpcTraceContext.Attributes keys the host sends on every
@@ -367,15 +370,15 @@ func WithResource(attrs ...attribute.KeyValue) Option {
 }
 
 type config struct {
-	tp          trace.TracerProvider
-	exporters   []sdktrace.SpanExporter
-	lp          olog.LoggerProvider
-	logExporters []sdklog.Exporter
-	propagator  propagation.TextMapPropagator
-	flusher     Flusher
-	flusherSet  bool // tracks whether the user explicitly set a flusher (or disabled it)
-	spanName    func(*sdk.InvocationContext) string
-	extraAttrs  []attribute.KeyValue
+	tp            trace.TracerProvider
+	exporters     []sdktrace.SpanExporter
+	lp            olog.LoggerProvider
+	logExporters  []sdklog.Exporter
+	propagator    propagation.TextMapPropagator
+	flusher       Flusher
+	flusherSet    bool // tracks whether the user explicitly set a flusher (or disabled it)
+	spanName      func(*sdk.InvocationContext) string
+	extraAttrs    []attribute.KeyValue
 	resourceAttrs []attribute.KeyValue // appended to default Resource when middleware builds the providers
 }
 
@@ -780,7 +783,16 @@ func classifyTrigger(t string) string {
 func buildDefaultResource(extra ...attribute.KeyValue) *resource.Resource {
 	attrs := []attribute.KeyValue{
 		semconv.CloudProviderAzure,
-		semconv.CloudPlatformAzureFunctions,
+		// cloud.platform is hardcoded rather than sourced from
+		// semconv.CloudPlatformAzureFunctions because the v1.37.0
+		// semconv generator changed the value from "azure_functions"
+		// to "azure.functions". The OpenTelemetry spec registry and
+		// the dotnet-isolated / Java workers all still emit the
+		// underscore form, so we hardcode it here to preserve
+		// cross-runtime dashboard filtering. If/when OTel's spec
+		// settles on the dotted form across the ecosystem, this can
+		// revert to using the semconv constant.
+		attribute.String("cloud.platform", "azure_functions"),
 	}
 	if name := serviceNameFromEnv(); name != "" {
 		attrs = append(attrs, semconv.ServiceName(name))
