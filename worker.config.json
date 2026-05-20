@@ -3,7 +3,7 @@
         "language": "golang",
         "supportedOperatingSystems":["LINUX", "OSX", "WINDOWS"],
         "supportedArchitectures":["X64"],
-        "defaultExecutablePath": "app.exe",
+        "defaultExecutablePath": "app",
         "workerIndexing": "true"
 
     },

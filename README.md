@@ -19,11 +19,11 @@ The `azure-functions-golang-worker` repository provides the SDK and worker imple
 ### Prerequisites
 
 * [Go 1.24+](https://go.dev/dl/)
-* Custom [Azure Functions Core Tools](https://www.npmjs.com/package/@gaaguiar/azure-functions-core-tools) with Go worker support
+* [Azure Functions Core Tools](https://www.npmjs.com/package/azure-functions-core-tools) v4.12.0-preview.1 or later (includes Go worker support)
 
 ```bash
-# Install the specialized core tools to run locally
-npm i -g @gaaguiar/azure-functions-core-tools
+# Install Azure Functions Core Tools
+npm i -g azure-functions-core-tools@4 --unsafe-perm true
 ```
 
 ### Writing Your First Function

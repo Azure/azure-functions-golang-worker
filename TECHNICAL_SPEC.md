@@ -61,7 +61,6 @@ A Go Function App is a standard Go module. With worker-driven indexing, there ar
 my-function-app/
 ├── host.json
 ├── local.settings.json
-├── worker.config.json
 ├── go.mod
 ├── go.sum
 └── main.go               <-- Entry point
@@ -315,7 +314,7 @@ go build -o app .    # or app.exe on Windows
 
 The deployment artifact contains:
 
-1. `app` or `app.exe` (the compiled user binary)
+1. `app` (the compiled user binary)
 2. `worker.config.json`
 3. `host.json`
 
@@ -323,8 +322,8 @@ The deployment artifact contains:
 
 The deployment artifact contains:
 
-1. `app` or `app.exe` (the compiled user binary)
-2. `proxy` or `proxy.exe` (the platform interface)
+1. `app` (the compiled user binary)
+2. `proxy` (the platform interface)
 3. `worker.config.json` (points `defaultExecutablePath` to the proxy)
 4. `host.json`
 
@@ -369,14 +368,14 @@ For consumption with proxy, `defaultExecutablePath` points to the proxy:
 Initializes a new Go Function App project, generating:
 
 - `host.json` with extension bundle configuration
-- `local.settings.json` with `FUNCTIONS_WORKER_RUNTIME` set to `"golang"`
+- `local.settings.json` with `FUNCTIONS_WORKER_RUNTIME` set to `"native"`
 - `main.go` with a sample HTTP trigger function
 - `go.mod` via `go mod init`
 
 ### 6.2 `func start`
 
 Core tools:
-1. Detects `FUNCTIONS_WORKER_RUNTIME = "golang"` from `local.settings.json`.
+1. Invoked as `func start --worker-runtime go` to select the Go worker.
 2. Runs `go build -o app .` (or `app.exe` on Windows) to compile the project.
 3. Starts the Azure Functions Host, which reads `worker.config.json` and launches `app`.
 4. The host and worker communicate over gRPC.
