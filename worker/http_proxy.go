@@ -297,98 +297,83 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 	// Strip the correlation header so user code doesn't see it.
 	r.Header.Del(invocationCorrelationHeader)
 
-	status := &pb.StatusResult{Status: pb.StatusResult_Success}
-
 	// Build the per-invocation MiddlewareContext up here (not inside
 	// invokeHTTPHandler) so that if the user handler panics, the mc we've
 	// already populated up to the point of the panic still reaches the
 	// gRPC side via the rendezvous channel. The gRPC-body path has this
 	// property naturally because it builds the carrier locally and runs
 	// the handler on the same goroutine; we replicate the property here by
-	// hoisting construction above the panic-recover block.
+	// hoisting construction above the invocation call.
 	mc := buildMiddlewareContext(arrival.req, &arrival.fn.Function)
 
-	// Recover from panics so the gRPC side still gets a response and the
-	// host doesn't time out the invocation.
-	func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				if arrival.systemLogger != nil {
-					arrival.systemLogger.LogAttrs(context.Background(), slog.LevelError, "HTTP proxy: handler panicked",
-						slog.String("invocation_id", invocationID),
-						slog.Any("panic_value", rec),
-					)
-				}
-				status = &pb.StatusResult{
-					Status: pb.StatusResult_Failure,
-					Exception: &pb.RpcException{
-						Message: fmt.Sprintf("%v", rec),
-						Source:  "User function",
-					},
-				}
-				// If headers haven't been written, surface the error.
-				// If they have, we can't do much; the connection just ends.
-				tryWriteError(w, fmt.Sprintf("%v", rec))
-			}
-		}()
-
-		invokeHTTPHandler(arrival, mc, w, r)
-	}()
+	// Run the user handler via the shared invocation pipeline so both the
+	// HTTP-streaming path and the gRPC-body path produce identical
+	// StatusResult shapes for panics and errors. runUserInvocation
+	// composes the middleware chain, executes it, and converts any panic
+	// into a recovered value the caller can inspect.
+	invokeErr, recovered, stack := invokeHTTPHandler(arrival, mc, w, r)
+	if recovered != nil {
+		if arrival.systemLogger != nil {
+			arrival.systemLogger.LogAttrs(context.Background(), slog.LevelError, "HTTP proxy: handler panicked",
+				slog.String("invocation_id", invocationID),
+				slog.Any("panic", recovered),
+				slog.String("stack", stack),
+			)
+		}
+		// If headers haven't been written, surface the error.
+		// If they have, we can't do much; the connection just ends.
+		tryWriteError(w, fmt.Sprintf("%v", recovered))
+	} else if invokeErr != nil {
+		// Middleware short-circuit (e.g. auth) returned an error. HTTP
+		// responses are owned by the user handler / middleware, so we only
+		// log for diagnostics — InvocationResponse status comes from the
+		// rendezvous channel back to the gRPC side.
+		if arrival.systemLogger != nil {
+			arrival.systemLogger.LogAttrs(context.Background(), slog.LevelError, "HTTP proxy: middleware chain returned error",
+				slog.String("invocation_id", invocationID),
+				slog.Any("err", invokeErr),
+			)
+		}
+	}
+	status := statusFromInvocation(invokeErr, recovered, stack)
 
 	pending.done <- httpResult{status: status, mc: mc}
 	p.deletePending(invocationID)
 }
 
-// invokeHTTPHandler runs the user's net/http handler. The handler receives
-// the live ResponseWriter from the embedded server, so http.Flusher,
-// chunked transfer encoding, hijacking, and trailers all work as in any
-// standard Go HTTP server.
+// invokeHTTPHandler runs the user's net/http handler through the shared
+// invocation pipeline. The handler receives the live ResponseWriter from
+// the embedded server, so http.Flusher, chunked transfer encoding,
+// hijacking, and trailers all work as in any standard Go HTTP server.
 //
 // mc is built by the caller so partial mutations the user handler made
 // survive a panic. We attach it to r.Context() and run the call through
-// arrival.app.Compose, so App.Use middleware wraps the HTTP-streaming
-// path uniformly with the gRPC-body path.
-func invokeHTTPHandler(arrival grpcArrival, mc *sdk.MiddlewareContext, w http.ResponseWriter, r *http.Request) {
+// [runUserInvocation], which composes arrival.app's middleware chain and
+// recovers panics — keeping panic/error semantics identical to the
+// gRPC-body path in [handleInvocationRequest].
+func invokeHTTPHandler(arrival grpcArrival, mc *sdk.MiddlewareContext, w http.ResponseWriter, r *http.Request) (err error, recovered any, stack string) {
 	handler, ok := arrival.fn.Function.Func.(func(http.ResponseWriter, *http.Request))
 	if !ok {
 		if h, ok2 := arrival.fn.Function.Func.(http.HandlerFunc); ok2 {
 			handler = h
 		} else {
 			http.Error(w, "registered handler is not an http.HandlerFunc", http.StatusInternalServerError)
-			return
+			return nil, nil, ""
 		}
 	}
 
 	ctx := sdk.ContextWithMiddleware(r.Context(), mc)
 
-	// inner is the innermost Handler the middleware chain wraps; it forwards
-	// the (possibly enriched) ctx into the request. HTTP handlers surface
-	// errors via response status, so inner always returns nil.
+	// inner is the innermost Handler the middleware chain wraps; it
+	// forwards the (possibly enriched) ctx into the request. HTTP
+	// handlers surface errors via response status, so inner always
+	// returns nil — only middleware can produce a non-nil error.
 	inner := func(ctx context.Context, _ *sdk.MiddlewareContext) error {
 		handler(w, r.WithContext(ctx))
 		return nil
 	}
 
-	if arrival.app != nil {
-		chain := arrival.app.Compose(inner)
-		// Middleware may return a non-nil error (e.g. auth short-circuit).
-		// HTTP responses are already owned by the user handler / middleware,
-		// so we only log for diagnostics; InvocationResponse status comes
-		// from notifyGRPCArrival's separate rendezvous path.
-		if err := chain(ctx, mc); err != nil {
-			if arrival.systemLogger != nil {
-				arrival.systemLogger.LogAttrs(ctx, slog.LevelError, "HTTP proxy: middleware chain returned error",
-					slog.String("invocation_id", mc.InvocationID),
-					slog.Any("err", err),
-				)
-			}
-		}
-		return
-	}
-	// Defensive: a nil App means the worker bootstrapped without
-	// registering anything via app.Use. Skip composition and run the
-	// handler directly.
-	handler(w, r.WithContext(ctx))
+	return runUserInvocation(ctx, mc, arrival.app, inner)
 }
 
 // tryWriteError writes an error response only if headers haven't been sent

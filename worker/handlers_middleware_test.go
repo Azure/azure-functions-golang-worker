@@ -222,6 +222,47 @@ func TestHandleInvocationRequest_UserErrorBecomesFailureStatus(t *testing.T) {
 	}
 }
 
+// TestHandleInvocationRequest_UserPanicBecomesFailureStatus is the
+// regression test for the gRPC-body panic-recovery path. Before issue #8
+// was fixed, a panicking user function would unwind into the dispatcher
+// goroutine, which only logged the panic — the host then timed out the
+// invocation because no InvocationResponse ever shipped. The shared
+// runUserInvocation helper now turns panics into Failure responses.
+func TestHandleInvocationRequest_UserPanicBecomesFailureStatus(t *testing.T) {
+	disp := newTestDispatcher("req-panic")
+
+	rf := loadFunc(t, disp, "PanickyFn", func(ctx context.Context, _ bindings.TimerInfo) error {
+		panic("boom: user code blew up")
+	})
+
+	resp, err := handleInvocationRequest(invokeRequest(rf.FuncId, "inv-panic"), disp, "req-panic")
+	if err != nil {
+		t.Fatalf("expected nil outer error so the host receives a response; got %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil InvocationResponse so the host does not time out")
+	}
+	status := resp.GetInvocationResponse().Result
+	if status.Status != pb.StatusResult_Failure {
+		t.Fatalf("expected Failure on panic; got %v", status.Status)
+	}
+	if status.Exception == nil {
+		t.Fatal("expected RpcException populated from recovered panic; got nil")
+	}
+	if status.Exception.Message != "boom: user code blew up" {
+		t.Errorf("expected panic message in exception; got %q", status.Exception.Message)
+	}
+	if status.Exception.Source != "User function" {
+		t.Errorf("expected Source=User function; got %q", status.Exception.Source)
+	}
+	if !status.Exception.IsUserException {
+		t.Errorf("expected IsUserException=true for user-code panic")
+	}
+	if status.Exception.StackTrace == "" {
+		t.Errorf("expected non-empty stack trace on recovered panic")
+	}
+}
+
 func TestHandleInvocationRequest_NoMiddleware_StillRuns(t *testing.T) {
 	// Smoke test: with no middleware registered the user function is still
 	// called exactly once and Success is reported.

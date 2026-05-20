@@ -226,19 +226,16 @@ func handleBidiStream(
 		}
 
 		go func(msg *pb.StreamingMessage) {
-			// Recover from any panic the user handler raises so one
-			// misbehaving function doesn't crash the worker. The host
-			// will see no response for the affected invocation (or
-			// time it out). Other in-flight goroutines are unaffected
-			// because Go panics are goroutine-local.
-			//
-			// We deliberately don't try to construct a Failure
-			// InvocationResponse from the recovered value: the panicking
-			// path is far from the normal response-building code and
-			// reconstructing the InvocationId, RequestId, etc. here
-			// duplicates logic in handleInvocationRequest. The host
-			// already handles the missing-response case; surfacing the
-			// panic via the system logger is the most useful action.
+			// Defense-in-depth panic recovery. The invocation path
+			// recovers user-function panics inside [handleInvocationRequest]
+			// (via runUserInvocation) and converts them into a Failure
+			// InvocationResponse, so the host receives a proper response
+			// instead of timing out. This outer recover only fires for
+			// panics that originate outside user code -- e.g. a bug in
+			// dispatcher logic, proto unmarshaling, or the message router.
+			// Surfacing those via the system logger is the most useful
+			// action; the goroutine then exits so the rest of the worker
+			// keeps running (panics are goroutine-local).
 			defer func() {
 				if rec := recover(); rec != nil {
 					disp.systemLogger.LogAttrs(context.Background(), slog.LevelError, "panic in message dispatch goroutine",

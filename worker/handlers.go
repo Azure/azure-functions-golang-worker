@@ -382,22 +382,22 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	}
 
 	// 4. Compose the middleware chain around the inner handler and run it.
-	chain := disp.App.Compose(inner)
-	invokeErr := chain(ctx, mc)
+	//    runUserInvocation centralizes panic-recovery so a panicking user
+	//    handler produces a Failure InvocationResponse instead of leaving
+	//    the host to time out the invocation. The outer goroutine-level
+	//    recover in handleBidiStream remains as defense-in-depth for
+	//    panics originating outside user code.
+	invokeErr, recovered, stack := runUserInvocation(ctx, mc, disp.App, inner)
+	if recovered != nil {
+		disp.SystemLogger().LogAttrs(ctx, slog.LevelError, "panic recovered in user function",
+			slog.String("invocation_id", mc.InvocationID),
+			slog.Any("panic", recovered),
+			slog.String("stack", stack),
+		)
+	}
 
-	// 5. Build response status from any error returned by the chain.
-	status := &pb.StatusResult{
-		Status: pb.StatusResult_Success,
-	}
-	if invokeErr != nil {
-		status = &pb.StatusResult{
-			Status: pb.StatusResult_Failure,
-			Exception: &pb.RpcException{
-				Message: invokeErr.Error(),
-				Source:  "User function",
-			},
-		}
-	}
+	// 5. Build response status from any error or panic captured above.
+	status := statusFromInvocation(invokeErr, recovered, stack)
 
 	// 6. Extract HTTP response if applicable
 	var returnValue *pb.TypedData
