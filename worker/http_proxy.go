@@ -97,10 +97,10 @@ type grpcArrival struct {
 // httpProxy is the in-process HTTP server that the host forwards trigger
 // requests to. There is at most one per worker process.
 type httpProxy struct {
-	url           string
-	server        *http.Server
-	listener      net.Listener
-	systemLogger  *slog.Logger
+	url          string
+	server       *http.Server
+	listener     net.Listener
+	systemLogger *slog.Logger
 
 	mu      sync.Mutex
 	pending map[string]*pendingHTTPInvocation // keyed by invocation id
@@ -311,7 +311,7 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 	// StatusResult shapes for panics and errors. runUserInvocation
 	// composes the middleware chain, executes it, and converts any panic
 	// into a recovered value the caller can inspect.
-	invokeErr, recovered, stack := invokeHTTPHandler(arrival, mc, w, r)
+	recovered, stack, invokeErr := invokeHTTPHandler(arrival, mc, w, r)
 	if recovered != nil {
 		if arrival.systemLogger != nil {
 			arrival.systemLogger.LogAttrs(context.Background(), slog.LevelError, "HTTP proxy: handler panicked",
@@ -335,7 +335,7 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 	}
-	status := statusFromInvocation(invokeErr, recovered, stack)
+	status := statusFromInvocation(recovered, stack, invokeErr)
 
 	pending.done <- httpResult{status: status, mc: mc}
 	p.deletePending(invocationID)
@@ -351,14 +351,14 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 // [runUserInvocation], which composes arrival.app's middleware chain and
 // recovers panics — keeping panic/error semantics identical to the
 // gRPC-body path in [handleInvocationRequest].
-func invokeHTTPHandler(arrival grpcArrival, mc *sdk.MiddlewareContext, w http.ResponseWriter, r *http.Request) (err error, recovered any, stack string) {
+func invokeHTTPHandler(arrival grpcArrival, mc *sdk.MiddlewareContext, w http.ResponseWriter, r *http.Request) (recovered any, stack string, err error) {
 	handler, ok := arrival.fn.Function.Func.(func(http.ResponseWriter, *http.Request))
 	if !ok {
 		if h, ok2 := arrival.fn.Function.Func.(http.HandlerFunc); ok2 {
 			handler = h
 		} else {
 			http.Error(w, "registered handler is not an http.HandlerFunc", http.StatusInternalServerError)
-			return nil, nil, ""
+			return nil, "", nil
 		}
 	}
 

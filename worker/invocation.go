@@ -17,16 +17,16 @@ import (
 // inline, gRPC let the panic propagate to the dispatch goroutine). This
 // helper centralizes the contract:
 //
-//   - If the user code returns an error, it is returned as err.
 //   - If the user code panics, recovered carries the recovered value
 //     and stack contains the formatted stack trace captured at recover
 //     time. err is nil.
+//   - If the user code returns an error, it is returned as err.
 //   - On success, all three return values are zero.
 //
 // app may be nil (defensive: a worker without registered middleware
 // passes a nil App). In that case the inner handler is invoked directly.
 func runUserInvocation(ctx context.Context, mc *sdk.MiddlewareContext, app *sdk.App,
-	inner sdk.Handler) (err error, recovered any, stack string) {
+	inner sdk.Handler) (recovered any, stack string, err error) {
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -36,22 +36,22 @@ func runUserInvocation(ctx context.Context, mc *sdk.MiddlewareContext, app *sdk.
 	}()
 
 	if app == nil {
-		return inner(ctx, mc), nil, ""
+		return nil, "", inner(ctx, mc)
 	}
 	chain := app.Compose(inner)
-	return chain(ctx, mc), nil, ""
+	return nil, "", chain(ctx, mc)
 }
 
-// statusFromInvocation converts the (err, recovered, stack) triple
+// statusFromInvocation converts the (recovered, stack, err) triple
 // returned by [runUserInvocation] into the StatusResult that goes on the
 // InvocationResponse. Panics take precedence over errors because a panic
 // indicates the user code never returned normally, so any returned error
 // would be uninitialized.
 //
 // The Source field is set to "User function" for both panic and error
-// cases — the host uses it to attribute the failure in the Functions
+// cases -- the host uses it to attribute the failure in the Functions
 // portal / App Insights.
-func statusFromInvocation(err error, recovered any, stack string) *pb.StatusResult {
+func statusFromInvocation(recovered any, stack string, err error) *pb.StatusResult {
 	switch {
 	case recovered != nil:
 		return &pb.StatusResult{

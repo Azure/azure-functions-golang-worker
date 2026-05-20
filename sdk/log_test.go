@@ -186,8 +186,8 @@ func TestNewLogHandler_WithAttrsPreservedAcrossSwap(t *testing.T) {
 
 // countingHandler is a tiny stub that records the number of Handle calls.
 type countingHandler struct {
-	mu   sync.Mutex
-	cnt  int
+	mu  sync.Mutex
+	cnt int
 }
 
 func (h *countingHandler) count() int {
@@ -399,4 +399,3 @@ func TestNewLogHandler_EmptyGroupIsNoop(t *testing.T) {
 		t.Errorf("empty group should not have produced a top-level empty key: %v", rec)
 	}
 }
-

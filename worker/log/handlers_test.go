@@ -343,4 +343,3 @@ func TestBuildRpcLog_EmptyGroupIsNoop(t *testing.T) {
 		}
 	}
 }
-

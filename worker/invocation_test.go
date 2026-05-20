@@ -15,9 +15,9 @@ import (
 // Success without extra branches.
 func TestRunUserInvocation_Success(t *testing.T) {
 	inner := func(_ context.Context, _ *sdk.MiddlewareContext) error { return nil }
-	err, rec, stack := runUserInvocation(context.Background(), &sdk.MiddlewareContext{}, nil, inner)
+	rec, stack, err := runUserInvocation(context.Background(), &sdk.MiddlewareContext{}, nil, inner)
 	if err != nil || rec != nil || stack != "" {
-		t.Errorf("expected (nil, nil, \"\"); got (%v, %v, %q)", err, rec, stack)
+		t.Errorf("expected (nil, \"\", nil); got (%v, %q, %v)", rec, stack, err)
 	}
 }
 
@@ -26,7 +26,7 @@ func TestRunUserInvocation_Success(t *testing.T) {
 func TestRunUserInvocation_Error(t *testing.T) {
 	wantErr := errors.New("boom")
 	inner := func(_ context.Context, _ *sdk.MiddlewareContext) error { return wantErr }
-	err, rec, stack := runUserInvocation(context.Background(), &sdk.MiddlewareContext{}, nil, inner)
+	rec, stack, err := runUserInvocation(context.Background(), &sdk.MiddlewareContext{}, nil, inner)
 	if !errors.Is(err, wantErr) {
 		t.Errorf("err = %v; want %v", err, wantErr)
 	}
@@ -43,7 +43,7 @@ func TestRunUserInvocation_Panic(t *testing.T) {
 	inner := func(_ context.Context, _ *sdk.MiddlewareContext) error {
 		panic("nope")
 	}
-	err, rec, stack := runUserInvocation(context.Background(), &sdk.MiddlewareContext{}, nil, inner)
+	rec, stack, err := runUserInvocation(context.Background(), &sdk.MiddlewareContext{}, nil, inner)
 	if err != nil {
 		t.Errorf("err = %v; want nil on panic", err)
 	}
@@ -61,7 +61,7 @@ func TestRunUserInvocation_Panic(t *testing.T) {
 // shape is the host-visible contract.
 func TestStatusFromInvocation(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		s := statusFromInvocation(nil, nil, "")
+		s := statusFromInvocation(nil, "", nil)
 		if s.Status != pb.StatusResult_Success {
 			t.Errorf("status = %v; want Success", s.Status)
 		}
@@ -71,7 +71,7 @@ func TestStatusFromInvocation(t *testing.T) {
 	})
 
 	t.Run("error", func(t *testing.T) {
-		s := statusFromInvocation(errors.New("oops"), nil, "")
+		s := statusFromInvocation(nil, "", errors.New("oops"))
 		if s.Status != pb.StatusResult_Failure {
 			t.Errorf("status = %v; want Failure", s.Status)
 		}
@@ -89,7 +89,7 @@ func TestStatusFromInvocation(t *testing.T) {
 	t.Run("panic_takes_precedence_over_error", func(t *testing.T) {
 		// Defense: if both surface (it shouldn't), the panic shape wins
 		// because that indicates the user code never returned normally.
-		s := statusFromInvocation(errors.New("shadowed"), "real_cause", "stack-frames-here")
+		s := statusFromInvocation("real_cause", "stack-frames-here", errors.New("shadowed"))
 		if s.Status != pb.StatusResult_Failure {
 			t.Errorf("status = %v; want Failure", s.Status)
 		}

@@ -60,9 +60,9 @@
 //
 // Most callers only need:
 //
-//	- [NewBootstrap] - stderr handler used before the gRPC stream is open.
-//	- [NewWriter]    - the gRPC RpcLog sender.
-//	- [NewUser]      - user-category slog.Handler that wraps a Writer.
-//	- [NewSystem]    - System-category slog.Handler for worker-internal logs.
-//	- [RegisterObserver] / [Observer] - the otelfunc integration seam.
+//   - [NewBootstrap] - stderr handler used before the gRPC stream is open.
+//   - [NewWriter]    - the gRPC RpcLog sender.
+//   - [NewUser]      - user-category slog.Handler that wraps a Writer.
+//   - [NewSystem]    - System-category slog.Handler for worker-internal logs.
+//   - [RegisterObserver] / [Observer] - the otelfunc integration seam.
 package log

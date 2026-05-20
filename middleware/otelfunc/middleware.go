@@ -749,7 +749,7 @@ func classifyTrigger(t string) string {
 //   - cloud.platform              = azure_functions
 //   - cloud.region                = $REGION_NAME (when present)
 //   - cloud.resource_id           = full ARM resource ID (when WEBSITE_OWNER_NAME +
-//                                    WEBSITE_RESOURCE_GROUP + WEBSITE_SITE_NAME present)
+//     WEBSITE_RESOURCE_GROUP + WEBSITE_SITE_NAME present)
 //   - deployment.environment.name = $WEBSITE_SLOT_NAME (default "production")
 //   - service.name                = OTEL_SERVICE_NAME / WEBSITE_SITE_NAME / "azure-functions"
 //   - any extras supplied via [WithResource] (highest precedence)

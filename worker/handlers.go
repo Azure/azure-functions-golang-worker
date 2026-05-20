@@ -260,8 +260,10 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 			// Surface the error as a Failure InvocationResponse instead of
 			// returning a Go error (handleBidiStream would treat that as fatal).
 			// Rendezvous failures are per-invocation transients, not worker crashes.
-			disp.SystemLogger().Error("HTTP proxy rendezvous failed",
-				"invocation_id", req.GetInvocationId(), "err", err)
+			disp.SystemLogger().LogAttrs(context.Background(), slog.LevelError, "HTTP proxy rendezvous failed",
+				slog.String("invocation_id", req.GetInvocationId()),
+				slog.Any("err", err),
+			)
 			status = &pb.StatusResult{
 				Status: pb.StatusResult_Failure,
 				Exception: &pb.RpcException{
@@ -298,11 +300,11 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 
 	// Emit a system log with the inbound trace_parent so OTel correlation
 	// can be debugged from production logs without instrumenting user code.
-	disp.SystemLogger().Debug("InvocationRequest trace context",
-		"invocation_id", mc.InvocationID,
-		"trace_parent", mc.TraceContext.TraceParent,
-		"trace_state", mc.TraceContext.TraceState,
-		"baggage_count", len(mc.TraceContext.Baggage),
+	disp.SystemLogger().LogAttrs(ctx, slog.LevelDebug, "InvocationRequest trace context",
+		slog.String("invocation_id", mc.InvocationID),
+		slog.String("trace_parent", mc.TraceContext.TraceParent),
+		slog.String("trace_state", mc.TraceContext.TraceState),
+		slog.Int("baggage_count", len(mc.TraceContext.Baggage)),
 	)
 
 	ft := reflect.TypeOf(loadedFunc.Function.Func)
@@ -387,7 +389,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	//    the host to time out the invocation. The outer goroutine-level
 	//    recover in handleBidiStream remains as defense-in-depth for
 	//    panics originating outside user code.
-	invokeErr, recovered, stack := runUserInvocation(ctx, mc, disp.App, inner)
+	recovered, stack, invokeErr := runUserInvocation(ctx, mc, disp.App, inner)
 	if recovered != nil {
 		disp.SystemLogger().LogAttrs(ctx, slog.LevelError, "panic recovered in user function",
 			slog.String("invocation_id", mc.InvocationID),
@@ -397,7 +399,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	}
 
 	// 5. Build response status from any error or panic captured above.
-	status := statusFromInvocation(invokeErr, recovered, stack)
+	status := statusFromInvocation(recovered, stack, invokeErr)
 
 	// 6. Extract HTTP response if applicable
 	var returnValue *pb.TypedData
