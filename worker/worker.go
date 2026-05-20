@@ -38,7 +38,8 @@ import (
 //
 // Start blocks until the gRPC bidi stream closes or returns an error.
 func Start(app *sdk.App) {
-	bootstrap := slog.New(log.NewBootstrap(os.Stderr))
+	bootstrapHandler := log.NewBootstrap(os.Stderr)
+	bootstrap := slog.New(bootstrapHandler)
 
 	config, err := GetWorkerStartupConfig()
 	if err != nil {
@@ -65,7 +66,11 @@ func Start(app *sdk.App) {
 	// a feedback loop through the writer we are setting up.
 	send, stopSender, senderDone := startSender(client, bootstrap)
 
-	logWriter := log.NewWriter(send, log.NewBootstrap(os.Stderr))
+	// Reuse the same bootstrap handler instance for both pre-gRPC logs and
+	// the post-gRPC fallback path. Using a single handler ensures all
+	// stderr writes are serialized by a single mutex, preventing byte-level
+	// interleaving of concurrent log lines.
+	logWriter := log.NewWriter(send, bootstrapHandler)
 
 	// SDK's default base handler is upgraded so user-side slog calls now
 	// route through the gRPC stream as User-category logs.
@@ -85,6 +90,11 @@ func Start(app *sdk.App) {
 	// falls back to the gRPC-buffered HTTP path. The dispatcher detects
 	// nil and skips advertising HttpUri in WorkerInitResponse.
 	dispatcher.HTTPProxy = startHTTPProxy(app)
+	if dispatcher.HTTPProxy != nil {
+		// Wire the system logger into the HTTP proxy so all logging is
+		// consistent and participates in the RpcLog pipeline.
+		dispatcher.HTTPProxy.systemLogger = dispatcher.systemLogger
+	}
 
 	// Emit a one-time record summarizing the worker build so customers
 	// can correlate observed behavior with the SDK version and the git

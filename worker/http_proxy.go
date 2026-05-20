@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -80,24 +80,27 @@ type httpResult struct {
 
 // grpcArrival carries everything the HTTP handler needs from the gRPC
 // side: the loaded function, the originating InvocationRequest (used to
-// build the per-invocation sdk.InvocationContext), and the App reference
-// (used to compose the registered Middleware chain around the handler).
+// build the per-invocation sdk.InvocationContext), the App reference
+// (used to compose the registered Middleware chain around the handler),
+// and a logger for system-level events.
 //
 // This is the integration point that ensures HTTP-streaming invocations
 // run through the same App.Compose chain as gRPC-body invocations, so
 // middleware like otelfunc wraps both paths uniformly.
 type grpcArrival struct {
-	fn  *LoadedFunction
-	req *pb.InvocationRequest
-	app *sdk.App
+	fn           *LoadedFunction
+	req          *pb.InvocationRequest
+	app          *sdk.App
+	systemLogger *slog.Logger
 }
 
 // httpProxy is the in-process HTTP server that the host forwards trigger
 // requests to. There is at most one per worker process.
 type httpProxy struct {
-	url      string
-	server   *http.Server
-	listener net.Listener
+	url           string
+	server        *http.Server
+	listener      net.Listener
+	systemLogger  *slog.Logger
 
 	mu      sync.Mutex
 	pending map[string]*pendingHTTPInvocation // keyed by invocation id
@@ -122,7 +125,10 @@ const disableHTTPProxyEnvVar = "FUNCTIONS_GO_DISABLE_HTTP_PROXY"
 // gRPC-buffered HTTP path.
 func startHTTPProxy(app *sdk.App) *httpProxy {
 	if v := os.Getenv(disableHTTPProxyEnvVar); v != "" && v != "0" && !strings.EqualFold(v, "false") {
-		log.Printf("HTTP proxy: disabled via %s=%s, using gRPC body for HTTP triggers", disableHTTPProxyEnvVar, v)
+		slog.InfoContext(context.Background(), "HTTP proxy: disabled, using gRPC body for HTTP triggers",
+			slog.String("env_var", disableHTTPProxyEnvVar),
+			slog.String("env_value", v),
+		)
 		return nil
 	}
 
@@ -132,7 +138,9 @@ func startHTTPProxy(app *sdk.App) *httpProxy {
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		log.Printf("HTTP proxy: failed to open loopback listener, falling back to gRPC body: %v", err)
+		slog.ErrorContext(context.Background(), "HTTP proxy: failed to open loopback listener, falling back to gRPC body",
+			slog.Any("err", err),
+		)
 		return nil
 	}
 
@@ -154,11 +162,15 @@ func startHTTPProxy(app *sdk.App) *httpProxy {
 
 	go func() {
 		if err := p.server.Serve(lis); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("HTTP proxy: server stopped: %v", err)
+			slog.ErrorContext(context.Background(), "HTTP proxy: server stopped",
+				slog.Any("err", err),
+			)
 		}
 	}()
 
-	log.Printf("HTTP proxy: listening on %s", p.url)
+	slog.InfoContext(context.Background(), "HTTP proxy: listening on loopback",
+		slog.String("url", p.url),
+	)
 	return p
 }
 
@@ -254,7 +266,11 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 		//
 		// ic is nil here because no user handler ran -- nothing for the
 		// gRPC side to copy onto the InvocationResponse.
-		log.Printf("HTTP proxy: client disconnected before gRPC trigger arrived for invocation %s", invocationID)
+		if arrival.systemLogger != nil {
+			arrival.systemLogger.LogAttrs(context.Background(), slog.LevelWarn, "HTTP proxy: client disconnected before gRPC trigger arrived",
+				slog.String("invocation_id", invocationID),
+			)
+		}
 		pending.done <- httpResult{
 			status: &pb.StatusResult{
 				Status: pb.StatusResult_Failure,
@@ -267,7 +283,12 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 		p.deletePending(invocationID)
 		return
 	case <-timeout.C:
-		log.Printf("HTTP proxy: invocation %s timed out after %v waiting for gRPC trigger", invocationID, httpInvocationWaitTimeout)
+		if arrival.systemLogger != nil {
+			arrival.systemLogger.LogAttrs(context.Background(), slog.LevelWarn, "HTTP proxy: gRPC trigger did not arrive before timeout",
+				slog.String("invocation_id", invocationID),
+				slog.Duration("timeout", httpInvocationWaitTimeout),
+			)
+		}
 		p.deletePending(invocationID)
 		http.Error(w, "timed out waiting for gRPC trigger", http.StatusGatewayTimeout)
 		return
@@ -292,7 +313,12 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 	func() {
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Printf("HTTP proxy: handler panicked for invocation %s: %v", invocationID, rec)
+				if arrival.systemLogger != nil {
+					arrival.systemLogger.LogAttrs(context.Background(), slog.LevelError, "HTTP proxy: handler panicked",
+						slog.String("invocation_id", invocationID),
+						slog.Any("panic_value", rec),
+					)
+				}
 				status = &pb.StatusResult{
 					Status: pb.StatusResult_Failure,
 					Exception: &pb.RpcException{
@@ -350,7 +376,12 @@ func invokeHTTPHandler(arrival grpcArrival, mc *sdk.MiddlewareContext, w http.Re
 		// so we only log for diagnostics; InvocationResponse status comes
 		// from notifyGRPCArrival's separate rendezvous path.
 		if err := chain(ctx, mc); err != nil {
-			log.Printf("HTTP proxy: middleware chain returned error for invocation %s: %v", mc.InvocationID, err)
+			if arrival.systemLogger != nil {
+				arrival.systemLogger.LogAttrs(ctx, slog.LevelError, "HTTP proxy: middleware chain returned error",
+					slog.String("invocation_id", mc.InvocationID),
+					slog.Any("err", err),
+				)
+			}
 		}
 		return
 	}
@@ -383,7 +414,7 @@ func (p *httpProxy) notifyGRPCArrival(req *pb.InvocationRequest, lf *LoadedFunct
 	invocationID := req.GetInvocationId()
 	pending := p.getOrCreatePending(invocationID)
 
-	pending.grpc <- grpcArrival{fn: lf, req: req, app: app}
+	pending.grpc <- grpcArrival{fn: lf, req: req, app: app, systemLogger: p.systemLogger}
 
 	// time.NewTimer + defer t.Stop() so the timer is reclaimed promptly on
 	// the success path; time.After would keep the timer alive for the full
@@ -395,7 +426,12 @@ func (p *httpProxy) notifyGRPCArrival(req *pb.InvocationRequest, lf *LoadedFunct
 	case result := <-pending.done:
 		return result.status, result.mc, nil
 	case <-timeout.C:
-		log.Printf("HTTP proxy: invocation %s timed out after %v waiting for HTTP request", invocationID, httpInvocationWaitTimeout)
+		if p.systemLogger != nil {
+			p.systemLogger.LogAttrs(context.Background(), slog.LevelError, "HTTP proxy: invocation timed out waiting for HTTP request",
+				slog.String("invocation_id", invocationID),
+				slog.Duration("timeout", httpInvocationWaitTimeout),
+			)
+		}
 		p.deletePending(invocationID)
 		return nil, nil, fmt.Errorf("timed out waiting for HTTP request for invocation %s", invocationID)
 	}

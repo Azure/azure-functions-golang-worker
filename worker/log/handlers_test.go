@@ -3,6 +3,7 @@ package log
 import (
 	"context"
 	"log/slog"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +109,7 @@ func TestSlogValueToTypedData(t *testing.T) {
 		{"int", slog.IntValue(42), "", 42, 0, "int"},
 		{"int64", slog.Int64Value(-7), "", -7, 0, "int"},
 		{"uint64", slog.Uint64Value(9), "", 9, 0, "int"},
+		{"uint64_overflow", slog.Uint64Value(uint64(math.MaxInt64) + 1), "9223372036854775808", 0, 0, "string"},
 		{"float", slog.Float64Value(3.14), "", 0, 3.14, "double"},
 		{"bool_true", slog.BoolValue(true), "true", 0, 0, "string"},
 		{"bool_false", slog.BoolValue(false), "false", 0, 0, "string"},

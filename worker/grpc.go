@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 
@@ -88,38 +89,59 @@ func startSender(client grpc.BidiStreamingClient[pb.StreamingMessage, pb.Streami
 	queue := make(chan *pb.StreamingMessage, outboundQueueSize)
 	finished := make(chan struct{})
 
+	// stop is a close-once channel that signals shutdown to all senders.
+	// It allows multiple concurrent readers (sendFn calls) to detect shutdown
+	// without races. The sender goroutine drains the queue after stop is
+	// closed, ensuring no messages are lost.
+	stopChan := make(chan struct{})
+	var stopOnce sync.Once
+	var closed atomic.Bool
+
 	go func() {
 		defer close(finished)
-		for msg := range queue {
-			if err := client.Send(msg); err != nil {
-				errLogger.LogAttrs(context.Background(), slog.LevelError, "gRPC send failed; sender exiting",
-					slog.Any("err", err),
-				)
-				// Drain remaining messages to unblock producers that
-				// are mid-send on the buffered channel. Once we return
-				// and the deferred close(finished) fires, subsequent
-				// producers exit via the <-finished arm of the select
-				// in sendFn and get io.ErrClosedPipe.
-				for range queue {
-				}
+		// Sender goroutine: dequeue and forward messages until stopChan closes
+		// or a gRPC send error occurs.
+		for {
+			select {
+			case <-stopChan:
+				closed.Store(true)
 				return
+			case msg := <-queue:
+				if msg == nil {
+					closed.Store(true)
+					return
+				}
+				if err := client.Send(msg); err != nil {
+					errLogger.LogAttrs(context.Background(), slog.LevelError, "gRPC send failed; sender exiting",
+						slog.Any("err", err),
+					)
+					closed.Store(true)
+					return
+				}
 			}
 		}
 	}()
 
-	// stopOnce makes stopFn safe for concurrent and repeated calls; only
-	// the first invocation closes the queue. Without this the bool flag
-	// would race between two callers (e.g. signal handler and Start's
-	// normal-exit path) and produce a "close of closed channel" panic.
-	var stopOnce sync.Once
 	stopFn := func() {
 		stopOnce.Do(func() {
-			close(queue)
+			closed.Store(true)
+			close(stopChan)
 		})
 	}
 
 	sendFn := func(m *pb.StreamingMessage) error {
+		if closed.Load() {
+			return io.ErrClosedPipe
+		}
 		select {
+		case <-stopChan:
+			return io.ErrClosedPipe
+		default:
+		}
+		select {
+		case <-stopChan:
+			// Shutdown has started; return immediately without queuing.
+			return io.ErrClosedPipe
 		case queue <- m:
 			return nil
 		case <-finished:

@@ -3,6 +3,7 @@ package log
 import (
 	"context"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -343,7 +344,12 @@ func slogValueToTypedData(v slog.Value) *pb.TypedData {
 	case slog.KindInt64:
 		return &pb.TypedData{Data: &pb.TypedData_Int{Int: v.Int64()}}
 	case slog.KindUint64:
-		return &pb.TypedData{Data: &pb.TypedData_Int{Int: int64(v.Uint64())}}
+		val := v.Uint64()
+		if val <= math.MaxInt64 {
+			return &pb.TypedData{Data: &pb.TypedData_Int{Int: int64(val)}}
+		}
+		// uint64 value exceeds int64 range; represent as string to avoid overflow.
+		return &pb.TypedData{Data: &pb.TypedData_String_{String_: strconv.FormatUint(val, 10)}}
 	case slog.KindFloat64:
 		return &pb.TypedData{Data: &pb.TypedData_Double{Double: v.Float64()}}
 	case slog.KindBool:
@@ -359,12 +365,9 @@ func slogValueToTypedData(v slog.Value) *pb.TypedData {
 	}
 }
 
-// stringValue extracts a string from an slog.Value, handling the common
-// kinds (String, Int64, Bool, Time) gracefully and falling back to the
-// fmt-style representation otherwise.
+// stringValue extracts a string representation from an slog.Value.
+// The slog.Value.String() method handles all Go types sensibly (integers,
+// bools, times, durations, etc.), so no special-case logic is required.
 func stringValue(v slog.Value) string {
-	if v.Kind() == slog.KindString {
-		return v.String()
-	}
 	return v.String()
 }
