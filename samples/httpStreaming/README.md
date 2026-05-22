@@ -2,6 +2,12 @@
 
 An Azure Function that streams a server-sent events (SSE) response over HTTP.
 
+## What this sample demonstrates
+
+- Forcing the host's HTTP-streaming path by calling `http.Flusher` after each chunk. The host's `HttpUri` capability forwards the request directly to the worker's loopback listener so chunked transfer / `text/event-stream` / `http.Flusher.Flush()` work natively.
+- Using `slog.InfoContext(r.Context(), ...)` (not stdlib `log.Println`) so each record correlates to the invocation via trace.id / span.id and structured attrs (invocation_id, function_name, trigger_type) when `middleware/otelfunc` is in use.
+- `span.SetAttributes(...)` on the worker invocation span (reachable via `trace.SpanFromContext(r.Context())`) is auto-harvested by `middleware/otelfunc` and forwarded to the host's parent AspNetCore activity. Works the same on streaming as on gRPC-body — the user-facing API doesn't change between transports.
+
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)

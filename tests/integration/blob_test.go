@@ -47,7 +47,7 @@ func TestBlobTriggerFires(t *testing.T) {
 	}
 
 	// Blob trigger uses polling — can take up to 60 seconds
-	proc.AssertLogContains("Blob Trigger Executed for:", 90*time.Second)
+	proc.AssertLogContains("blob trigger executed", 90*time.Second)
 	proc.AssertLogContains("Executing 'Functions.blobTrigger'", 5*time.Second)
 
 	// Verify the ClientFactory created a real *blob.Client with a valid endpoint

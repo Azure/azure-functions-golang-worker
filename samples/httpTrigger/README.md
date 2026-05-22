@@ -2,6 +2,13 @@
 
 An Azure Function with an HTTP trigger that responds to GET and POST requests.
 
+## What this sample demonstrates
+
+- The idiomatic Go HTTP handler signature (`func(w http.ResponseWriter, r *http.Request)`) used directly as a Functions trigger handler — no SDK-specific types.
+- Reading per-invocation metadata via [`sdk.FromContext(r.Context())`](../../sdk/context.go) — `InvocationContext` is attached to the standard `*http.Request` context.
+- Emitting structured logs with [`slog.InfoContext`](https://pkg.go.dev/log/slog) that automatically carry `invocation_id`, `function_name`, and `trigger_type`.
+- A small in-line [`sdk.Middleware`](../../sdk/middleware.go) example (`timingMiddleware`) that measures invocation duration and logs the result. The same middleware seam is how `middleware/otelfunc` plugs in distributed tracing.
+
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)

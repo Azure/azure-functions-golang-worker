@@ -4,9 +4,15 @@ run:
 linters:
   disable-all: true
   enable:
-    - govet # Always keep the default govet enabled
+    - govet # Always keep the default govet enabled (includes the slog analyzer
+            # that catches BADKEY / odd-arg variadic-slog mistakes at vet time).
     - gofmt # Checks code is formatted with go fmt
     - revive # Checks variable/struct names
+    - sloglint # Catches slog usage hazards: no-mixed-args avoids
+               # accidentally mixing variadic key/value pairs with slog.Attrs,
+               # static-msg keeps the message argument a literal so backends can
+               # group on it, and key-naming-case=snake matches the rest of the
+               # codebase (invocation_id, function_name, etc.).
     - stylecheck # Checks Go style guide rules
     - tagliatelle # Checks struct tags
 
@@ -25,6 +31,21 @@ linters-settings:
           # Allowed initialisms (adds to the default list like ID, HTTP, etc)
           - - "VM"
             - "API"
+
+  sloglint:
+    # Forbid mixing variadic "key", value pairs with slog.Attr values in a
+    # single call -- that combination is the most common source of silent
+    # BADKEY records, because the runtime can't disambiguate which arg slot
+    # the slog.Attr belongs to.
+    no-mixed-args: true
+    # Require the slog message argument to be a static string. Dynamic
+    # messages defeat aggregation in Application Insights / New Relic and
+    # the structured-attribute form should carry the variable payload
+    # instead.
+    static-msg: true
+    # Match the existing codebase convention (invocation_id, function_name,
+    # trigger_type, sdk_version, etc.).
+    key-naming-case: snake
 
   stylecheck:
     # ST1003: Poorly chosen identifier (enforces Initialisms)

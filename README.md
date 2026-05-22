@@ -145,7 +145,83 @@ Historically, Go was only supported on Azure Functions via "Custom Handlers" (an
 ---
 
 ## Telemetry & Observability
-The Azure Functions Go worker contains built-in observability features that integrate automatically with Azure Application Insights. See the [developer manual](TECHNICAL_SPEC.md) for details.
+
+The worker emits structured logs and distributed traces with minimal setup.
+
+### Structured logging
+
+The SDK installs an [`slog`](https://pkg.go.dev/log/slog) handler at package init that routes every record over the gRPC log channel back to the host. Each entry automatically carries `invocation_id`, `function_name`, and `trigger_type`, so logs in Application Insights are correlated to the right invocation without any user wiring:
+
+```go
+slog.InfoContext(ctx, "processing item", "item_id", id, "size_bytes", n)
+```
+
+The default handler honors the host's per-category log levels and the `--verbose` flag. Call `slog.SetDefault` yourself if you need a different backend.
+
+### OpenTelemetry distributed tracing
+
+The [`middleware/otelfunc`](middleware/otelfunc) package provides an `sdk.Middleware` that creates an internal-kind span (`function <FunctionName>`) around every invocation, extracts the host's W3C trace context so user spans correlate end-to-end, advertises the `WorkerOpenTelemetryEnabled` capability so the host stops forwarding the worker's user log records (`Function.*` categories) into its own OpenTelemetry pipeline, and force-flushes after each invocation (critical on consumption-style plans where the worker may be frozen).
+
+The middleware emits the same span shape the [Java worker](https://github.com/microsoft/ApplicationInsights-Java/tree/main/agent/instrumentation/azure-functions) does, so cross-runtime dashboards filter on one set of keys. The default Resource carries `cloud.provider=azure`, `cloud.platform=azure_functions`, `cloud.region=$REGION_NAME`, `cloud.resource_id=/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Web/sites/<site>` (when `WEBSITE_OWNER_NAME` + `WEBSITE_RESOURCE_GROUP` + `WEBSITE_SITE_NAME` are populated by the platform), `deployment.environment.name=$WEBSITE_SLOT_NAME` (default `production`), `service.name`, and `otel.library.version` (the SDK module's runtime version). Per-invocation spans additionally carry `process.pid`, `faas.instance`, and `azure.functions.live_logs_session_id` for portal live-log correlation.
+
+The worker also emits a one-time `Go worker started` log record on cold start summarizing the SDK version, git revision, Go version, and runtime metadata. Customer queries against `message = "Go worker started"` show which build is running and whether it carries any local `replace` directive in `go.mod`.
+
+To propagate tags to the host's parent AspNetCore activity (e.g. `tenant_id`, `user_id` your handler resolves from the request), set them on the worker invocation span — `middleware/otelfunc` auto-harvests them at end-of-invocation and forwards them on `InvocationResponse.TraceContextAttributes`:
+
+```go
+func Handler(w http.ResponseWriter, r *http.Request) {
+    span := trace.SpanFromContext(r.Context())
+    span.SetAttributes(attribute.String("tenant_id", tenantOf(r)))
+}
+```
+
+Works identically on gRPC-body and HTTP-streaming triggers (Flusher / SSE handlers included). Matches the dotnet-isolated worker's `Activity.AddTag(...)` propagation pattern, so customers moving between runtimes see the same shape on the receiving end.
+
+The middleware is **opt-in**: importing only `sdk` and `worker` keeps the OTel SDK out of your binary entirely. The smallest setup just registers the middleware and sets the standard OTel env vars on your Function App:
+
+```go
+import (
+    "github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
+)
+
+app := sdk.FunctionApp()
+app.Use(otelfunc.Middleware())
+```
+
+```
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.your-backend.example
+OTEL_EXPORTER_OTLP_HEADERS=api-key=<your_token>
+OTEL_SERVICE_NAME=my-function-app
+```
+
+`host.json` must set `"telemetryMode": "OpenTelemetry"` for the host to wire its own OpenTelemetry pipeline and honor the worker-advertised `WorkerOpenTelemetryEnabled` capability. See [`samples/otelTracing`](samples/otelTracing) for a complete working example.
+
+For more control, build the exporters yourself and pass them as options. `WithExporter` and `WithLogExporter` can be called multiple times to fan out to several backends:
+
+```go
+import (
+    "github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+    "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+)
+
+otlpExp, _ := otlptracehttp.New(ctx)
+debugExp, _ := stdouttrace.New(stdouttrace.WithWriter(os.Stderr))
+
+app := sdk.FunctionApp()
+app.Use(otelfunc.Middleware(
+    otelfunc.WithExporter(otlpExp),
+    otelfunc.WithExporter(debugExp),
+    otelfunc.WithResource(
+        semconv.ServiceVersion(buildVersion),
+        semconv.DeploymentEnvironmentName("production"),
+    ),
+))
+```
+
+Inbound W3C baggage is hydrated onto `ctx` automatically — read with `baggage.FromContext(ctx)`, propagate to your downstream calls with `otelhttp.NewTransport(...)` / `otelgrpc` interceptors. See `package otelfunc` godoc for full options including `WithTracerProvider`, `WithPropagator`, custom span names, and the `AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED` kill switch.
+
+For a deeper architectural overview see the [developer manual](TECHNICAL_SPEC.md).
 
 ## Contributing
 

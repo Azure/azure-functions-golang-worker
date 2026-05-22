@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"runtime"
@@ -21,6 +21,20 @@ type Option func(*RegisteredFunction)
 // App represents the function application and its registered functions.
 type App struct {
 	registeredFunctions *sync.Map
+	// middlewares are appended in registration order. Composed by the worker
+	// dispatcher into the per-invocation chain. See [App.Use] for ordering
+	// semantics.
+	middlewares []Middleware
+	// capabilities is the merged capability map collected from every
+	// [Middleware] that implements [CapabilityProvider] at registration
+	// time. The worker dispatcher copies this into
+	// WorkerInitResponse.Capabilities. See [App.Capabilities].
+	capabilities map[string]string
+	// shutdowns are cleanup callbacks contributed by middlewares that
+	// implement [ShutdownProvider]. The worker invokes them sequentially
+	// in registration order after the gRPC stream closes; see
+	// [App.RunShutdowns].
+	shutdowns []func(context.Context) error
 }
 
 // FunctionApp creates a new App instance.
@@ -164,7 +178,11 @@ func (app *App) Blob(name string, f any, opts ...Option) *RegisteredFunction {
 	if factory, ok := GetClientFactory(string(bindings.BlobTriggerType)); ok {
 		rf.ClientFactory = factory
 	} else {
-		log.Printf("WARNING: no ClientFactory registered for %s — did you forget to import triggers/blob?", bindings.BlobTriggerType)
+		slog.LogAttrs(context.Background(), slog.LevelWarn,
+			"no ClientFactory registered for blob trigger; did you forget to import triggers/blob?",
+			slog.String("trigger_type", string(bindings.BlobTriggerType)),
+			slog.String("function_name", name),
+		)
 	}
 
 	return rf

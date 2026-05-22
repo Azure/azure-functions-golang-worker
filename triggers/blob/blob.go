@@ -107,19 +107,19 @@ var (
 //
 // Auth detection follows the Azure Functions host convention:
 //
-// 1. Connection string: If the env var value contains "AccountKey=",
-//    "DefaultEndpointsProtocol=", or "UseDevelopmentStorage=true", it's
-//    treated as a connection string.
+//  1. Connection string: If the env var value contains "AccountKey=",
+//     "DefaultEndpointsProtocol=", or "UseDevelopmentStorage=true", it's
+//     treated as a connection string.
 //
-// 2. Identity-based (managed identity): If the env var is empty or not a
-//    connection string, the function checks for __-suffixed env vars:
-//      - {connection}__accountName   → builds https://{name}.blob.core.windows.net
-//      - {connection}__blobServiceUri → uses as-is
-//      - {connection}__serviceUri     → uses as-is (fallback)
-//      - {connection}__clientId       → user-assigned managed identity client ID
+//  2. Identity-based (managed identity): If the env var is empty or not a
+//     connection string, the function checks for __-suffixed env vars:
+//     - {connection}__accountName   → builds https://{name}.blob.core.windows.net
+//     - {connection}__blobServiceUri → uses as-is
+//     - {connection}__serviceUri     → uses as-is (fallback)
+//     - {connection}__clientId       → user-assigned managed identity client ID
 //
-// 3. Direct URL: If the env var value is a URL (not a connection string),
-//    it's used as the endpoint with DefaultAzureCredential.
+//  3. Direct URL: If the env var value is a URL (not a connection string),
+//     it's used as the endpoint with DefaultAzureCredential.
 func createServiceClient(connectionSetting string) (*azblob.Client, error) {
 	value := os.Getenv(connectionSetting)
 

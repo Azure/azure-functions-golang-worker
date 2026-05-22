@@ -2,6 +2,11 @@
 
 An Azure Function that triggers when messages arrive on an Azure Service Bus topic subscription.
 
+## What this sample demonstrates
+
+- A typed Service Bus topic handler that receives a deserialized message body plus host-supplied trigger metadata (subscription name, delivery count, lock token).
+- Structured logging via `slog.InfoContext` carrying message metadata alongside the auto-attached invocation attributes.
+
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)

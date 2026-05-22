@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/azure/azure-functions-golang-worker/sdk"
@@ -15,8 +15,12 @@ import (
 // BlobHandler handles blob trigger events using a *blob.Client.
 // The client is scoped to the specific blob that triggered the function,
 // supporting streaming access for blobs of any size.
+//
+// All log records are routed through the SDK's slog handler (auto-installed
+// at package init), so each entry carries invocation_id, function_name,
+// and trigger_type alongside the user-supplied attributes.
 func BlobHandler(ctx context.Context, client *blob.Client) error {
-	log.Printf("Blob Trigger Executed for: %s", client.URL())
+	slog.InfoContext(ctx, "blob trigger executed", "url", client.URL())
 
 	// Download the blob content
 	get, err := client.DownloadStream(ctx, nil)
@@ -30,11 +34,16 @@ func BlobHandler(ctx context.Context, client *blob.Client) error {
 	}
 	get.Body.Close()
 
-	log.Printf("Blob content length: %d bytes", len(data))
 	if len(data) <= 1024 {
-		log.Printf("Blob content: %s", string(data))
+		slog.InfoContext(ctx, "blob content read",
+			"length", len(data),
+			"content", string(data),
+		)
 	} else {
-		log.Printf("Blob content (first 100 bytes): %s...", string(data[:100]))
+		slog.InfoContext(ctx, "blob content read",
+			"length", len(data),
+			"content_preview", string(data[:100]),
+		)
 	}
 
 	return nil

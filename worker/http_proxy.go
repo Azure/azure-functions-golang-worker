@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -54,16 +54,53 @@ const httpInvocationWaitTimeout = 4 * time.Minute
 // Buffered channels of size 1 mean that whichever side arrives first never
 // blocks on the send, so order of arrival is irrelevant.
 type pendingHTTPInvocation struct {
-	grpc chan *LoadedFunction  // gRPC side delivers the function to invoke
-	done chan *pb.StatusResult // HTTP side delivers the final invocation status
+	grpc chan grpcArrival // gRPC side delivers the function + invocation request
+	done chan httpResult  // HTTP side delivers the final status + the post-invocation mc
+}
+
+// httpResult is the payload the HTTP-side goroutine returns to the gRPC
+// dispatcher once the user handler has finished running. The gRPC side
+// uses mc to build the InvocationResponse the same way the gRPC-body
+// path does (reading e.g. mc.OutboundTraceAttributes()).
+//
+// Ownership: the HTTP goroutine exclusively mutates mc up to the channel
+// send; the receive is the handoff. After the send, mc is read-only to
+// the gRPC side.
+//
+// mc is non-nil for every code path that paired with a gRPC arrival,
+// including the user-handler-panicked path (mc is constructed before
+// invokeHTTPHandler runs, so partial mutations made before the panic
+// still reach the gRPC side). mc is nil only on the early-return
+// "client disconnected before gRPC arrival" branch; the gRPC side
+// nil-checks as a safety belt.
+type httpResult struct {
+	status *pb.StatusResult
+	mc     *sdk.MiddlewareContext
+}
+
+// grpcArrival carries everything the HTTP handler needs from the gRPC
+// side: the loaded function, the originating InvocationRequest (used to
+// build the per-invocation sdk.InvocationContext), the App reference
+// (used to compose the registered Middleware chain around the handler),
+// and a logger for system-level events.
+//
+// This is the integration point that ensures HTTP-streaming invocations
+// run through the same App.Compose chain as gRPC-body invocations, so
+// middleware like otelfunc wraps both paths uniformly.
+type grpcArrival struct {
+	fn           *LoadedFunction
+	req          *pb.InvocationRequest
+	app          *sdk.App
+	systemLogger *slog.Logger
 }
 
 // httpProxy is the in-process HTTP server that the host forwards trigger
 // requests to. There is at most one per worker process.
 type httpProxy struct {
-	url      string
-	server   *http.Server
-	listener net.Listener
+	url          string
+	server       *http.Server
+	listener     net.Listener
+	systemLogger *slog.Logger
 
 	mu      sync.Mutex
 	pending map[string]*pendingHTTPInvocation // keyed by invocation id
@@ -88,7 +125,10 @@ const disableHTTPProxyEnvVar = "FUNCTIONS_GO_DISABLE_HTTP_PROXY"
 // gRPC-buffered HTTP path.
 func startHTTPProxy(app *sdk.App) *httpProxy {
 	if v := os.Getenv(disableHTTPProxyEnvVar); v != "" && v != "0" && !strings.EqualFold(v, "false") {
-		log.Printf("HTTP proxy: disabled via %s=%s, using gRPC body for HTTP triggers", disableHTTPProxyEnvVar, v)
+		slog.InfoContext(context.Background(), "HTTP proxy: disabled, using gRPC body for HTTP triggers",
+			slog.String("env_var", disableHTTPProxyEnvVar),
+			slog.String("env_value", v),
+		)
 		return nil
 	}
 
@@ -98,7 +138,9 @@ func startHTTPProxy(app *sdk.App) *httpProxy {
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		log.Printf("HTTP proxy: failed to open loopback listener, falling back to gRPC body: %v", err)
+		slog.ErrorContext(context.Background(), "HTTP proxy: failed to open loopback listener, falling back to gRPC body",
+			slog.Any("err", err),
+		)
 		return nil
 	}
 
@@ -120,11 +162,15 @@ func startHTTPProxy(app *sdk.App) *httpProxy {
 
 	go func() {
 		if err := p.server.Serve(lis); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("HTTP proxy: server stopped: %v", err)
+			slog.ErrorContext(context.Background(), "HTTP proxy: server stopped",
+				slog.Any("err", err),
+			)
 		}
 	}()
 
-	log.Printf("HTTP proxy: listening on %s", p.url)
+	slog.InfoContext(context.Background(), "HTTP proxy: listening on loopback",
+		slog.String("url", p.url),
+	)
 	return p
 }
 
@@ -174,8 +220,8 @@ func (p *httpProxy) getOrCreatePending(invocationID string) *pendingHTTPInvocati
 		return pi
 	}
 	pi := &pendingHTTPInvocation{
-		grpc: make(chan *LoadedFunction, 1),
-		done: make(chan *pb.StatusResult, 1),
+		grpc: make(chan grpcArrival, 1),
+		done: make(chan httpResult, 1),
 	}
 	p.pending[invocationID] = pi
 	return pi
@@ -208,27 +254,41 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 	timeout := time.NewTimer(httpInvocationWaitTimeout)
 	defer timeout.Stop()
 
-	var loadedFunc *LoadedFunction
+	var arrival grpcArrival
 	select {
-	case loadedFunc = <-pending.grpc:
+	case arrival = <-pending.grpc:
 	case <-r.Context().Done():
 		// Client disconnected (or YARP timed out) before the gRPC trigger
 		// arrived. If gRPC arrives later it will block on <-pending.done
 		// until the 4-minute hard timeout, so push a Failure status now to
 		// unblock it immediately. The buffered channel absorbs the send
 		// even if no goroutine is currently receiving.
-		log.Printf("HTTP proxy: client disconnected before gRPC trigger arrived for invocation %s", invocationID)
-		pending.done <- &pb.StatusResult{
-			Status: pb.StatusResult_Failure,
-			Exception: &pb.RpcException{
-				Message: "client disconnected before invocation could start",
-				Source:  "HTTP proxy",
+		//
+		// ic is nil here because no user handler ran -- nothing for the
+		// gRPC side to copy onto the InvocationResponse.
+		if arrival.systemLogger != nil {
+			arrival.systemLogger.LogAttrs(context.Background(), slog.LevelWarn, "HTTP proxy: client disconnected before gRPC trigger arrived",
+				slog.String("invocation_id", invocationID),
+			)
+		}
+		pending.done <- httpResult{
+			status: &pb.StatusResult{
+				Status: pb.StatusResult_Failure,
+				Exception: &pb.RpcException{
+					Message: "client disconnected before invocation could start",
+					Source:  "HTTP proxy",
+				},
 			},
 		}
 		p.deletePending(invocationID)
 		return
 	case <-timeout.C:
-		log.Printf("HTTP proxy: invocation %s timed out after %v waiting for gRPC trigger", invocationID, httpInvocationWaitTimeout)
+		if arrival.systemLogger != nil {
+			arrival.systemLogger.LogAttrs(context.Background(), slog.LevelWarn, "HTTP proxy: gRPC trigger did not arrive before timeout",
+				slog.String("invocation_id", invocationID),
+				slog.Duration("timeout", httpInvocationWaitTimeout),
+			)
+		}
 		p.deletePending(invocationID)
 		http.Error(w, "timed out waiting for gRPC trigger", http.StatusGatewayTimeout)
 		return
@@ -237,47 +297,83 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 	// Strip the correlation header so user code doesn't see it.
 	r.Header.Del(invocationCorrelationHeader)
 
-	status := &pb.StatusResult{Status: pb.StatusResult_Success}
+	// Build the per-invocation MiddlewareContext up here (not inside
+	// invokeHTTPHandler) so that if the user handler panics, the mc we've
+	// already populated up to the point of the panic still reaches the
+	// gRPC side via the rendezvous channel. The gRPC-body path has this
+	// property naturally because it builds the carrier locally and runs
+	// the handler on the same goroutine; we replicate the property here by
+	// hoisting construction above the invocation call.
+	mc := buildMiddlewareContext(arrival.req, &arrival.fn.Function)
 
-	// Recover from panics so the gRPC side still gets a response and the
-	// host doesn't time out the invocation.
-	func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				log.Printf("HTTP proxy: handler panicked for invocation %s: %v", invocationID, rec)
-				status = &pb.StatusResult{
-					Status: pb.StatusResult_Failure,
-					Exception: &pb.RpcException{
-						Message: fmt.Sprintf("%v", rec),
-						Source:  "User function",
-					},
-				}
-				// If headers haven't been written, surface the error.
-				// If they have, we can't do much; the connection just ends.
-				tryWriteError(w, fmt.Sprintf("%v", rec))
-			}
-		}()
+	// Run the user handler via the shared invocation pipeline so both the
+	// HTTP-streaming path and the gRPC-body path produce identical
+	// StatusResult shapes for panics and errors. runUserInvocation
+	// composes the middleware chain, executes it, and converts any panic
+	// into a recovered value the caller can inspect.
+	recovered, stack, invokeErr := invokeHTTPHandler(arrival, mc, w, r)
+	if recovered != nil {
+		if arrival.systemLogger != nil {
+			arrival.systemLogger.LogAttrs(context.Background(), slog.LevelError, "HTTP proxy: handler panicked",
+				slog.String("invocation_id", invocationID),
+				slog.Any("panic", recovered),
+				slog.String("stack", stack),
+			)
+		}
+		// If headers haven't been written, surface the error.
+		// If they have, we can't do much; the connection just ends.
+		tryWriteError(w, fmt.Sprintf("%v", recovered))
+	} else if invokeErr != nil {
+		// Middleware short-circuit (e.g. auth) returned an error. HTTP
+		// responses are owned by the user handler / middleware, so we only
+		// log for diagnostics — InvocationResponse status comes from the
+		// rendezvous channel back to the gRPC side.
+		if arrival.systemLogger != nil {
+			arrival.systemLogger.LogAttrs(context.Background(), slog.LevelError, "HTTP proxy: middleware chain returned error",
+				slog.String("invocation_id", invocationID),
+				slog.Any("err", invokeErr),
+			)
+		}
+	}
+	status := statusFromInvocation(recovered, stack, invokeErr)
 
-		invokeHTTPHandler(loadedFunc, w, r)
-	}()
-
-	pending.done <- status
+	pending.done <- httpResult{status: status, mc: mc}
 	p.deletePending(invocationID)
 }
 
-// invokeHTTPHandler runs the user's net/http handler. The handler receives
-// the live ResponseWriter from the embedded server, so http.Flusher,
-// chunked transfer encoding, hijacking, and trailers all work as in any
-// standard Go HTTP server.
-func invokeHTTPHandler(lf *LoadedFunction, w http.ResponseWriter, r *http.Request) {
-	switch h := lf.Function.Func.(type) {
-	case http.HandlerFunc:
-		h(w, r)
-	case func(http.ResponseWriter, *http.Request):
-		h(w, r)
-	default:
-		http.Error(w, "registered handler is not an http.HandlerFunc", http.StatusInternalServerError)
+// invokeHTTPHandler runs the user's net/http handler through the shared
+// invocation pipeline. The handler receives the live ResponseWriter from
+// the embedded server, so http.Flusher, chunked transfer encoding,
+// hijacking, and trailers all work as in any standard Go HTTP server.
+//
+// mc is built by the caller so partial mutations the user handler made
+// survive a panic. We attach it to r.Context() and run the call through
+// [runUserInvocation], which composes arrival.app's middleware chain and
+// recovers panics — keeping panic/error semantics identical to the
+// gRPC-body path in [handleInvocationRequest].
+func invokeHTTPHandler(arrival grpcArrival, mc *sdk.MiddlewareContext, w http.ResponseWriter, r *http.Request) (recovered any, stack string, err error) {
+	handler, ok := arrival.fn.Function.Func.(func(http.ResponseWriter, *http.Request))
+	if !ok {
+		if h, ok2 := arrival.fn.Function.Func.(http.HandlerFunc); ok2 {
+			handler = h
+		} else {
+			http.Error(w, "registered handler is not an http.HandlerFunc", http.StatusInternalServerError)
+			return nil, "", nil
+		}
 	}
+
+	ctx := sdk.ContextWithMiddleware(r.Context(), mc)
+
+	// inner is the innermost Handler the middleware chain wraps; it
+	// forwards the (possibly enriched) ctx into the request. HTTP
+	// handlers surface errors via response status, so inner always
+	// returns nil — only middleware can produce a non-nil error.
+	inner := func(ctx context.Context, _ *sdk.MiddlewareContext) error {
+		handler(w, r.WithContext(ctx))
+		return nil
+	}
+
+	return runUserInvocation(ctx, mc, arrival.app, inner)
 }
 
 // tryWriteError writes an error response only if headers haven't been sent
@@ -291,15 +387,19 @@ func tryWriteError(w http.ResponseWriter, msg string) {
 }
 
 // notifyGRPCArrival is called from the gRPC dispatcher when an HTTP-trigger
-// InvocationRequest is received. It hands the loaded function to the HTTP
-// handler goroutine and blocks until the handler reports completion.
+// InvocationRequest is received. It hands the loaded function plus the
+// request to the HTTP handler goroutine and blocks until the handler
+// reports completion.
 //
-// Returns the final status to send back in the InvocationResponse.
-func (p *httpProxy) notifyGRPCArrival(req *pb.InvocationRequest, lf *LoadedFunction) (*pb.StatusResult, error) {
+// Returns the final status plus the [sdk.MiddlewareContext] the HTTP
+// goroutine populated. mc is nil only on the early-return "client
+// disconnected before gRPC arrival" branch in [handle]; the caller must
+// nil-check before dereferencing.
+func (p *httpProxy) notifyGRPCArrival(req *pb.InvocationRequest, lf *LoadedFunction, app *sdk.App) (*pb.StatusResult, *sdk.MiddlewareContext, error) {
 	invocationID := req.GetInvocationId()
 	pending := p.getOrCreatePending(invocationID)
 
-	pending.grpc <- lf
+	pending.grpc <- grpcArrival{fn: lf, req: req, app: app, systemLogger: p.systemLogger}
 
 	// time.NewTimer + defer t.Stop() so the timer is reclaimed promptly on
 	// the success path; time.After would keep the timer alive for the full
@@ -308,12 +408,17 @@ func (p *httpProxy) notifyGRPCArrival(req *pb.InvocationRequest, lf *LoadedFunct
 	defer timeout.Stop()
 
 	select {
-	case status := <-pending.done:
-		return status, nil
+	case result := <-pending.done:
+		return result.status, result.mc, nil
 	case <-timeout.C:
-		log.Printf("HTTP proxy: invocation %s timed out after %v waiting for HTTP request", invocationID, httpInvocationWaitTimeout)
+		if p.systemLogger != nil {
+			p.systemLogger.LogAttrs(context.Background(), slog.LevelError, "HTTP proxy: invocation timed out waiting for HTTP request",
+				slog.String("invocation_id", invocationID),
+				slog.Duration("timeout", httpInvocationWaitTimeout),
+			)
+		}
 		p.deletePending(invocationID)
-		return nil, fmt.Errorf("timed out waiting for HTTP request for invocation %s", invocationID)
+		return nil, nil, fmt.Errorf("timed out waiting for HTTP request for invocation %s", invocationID)
 	}
 }
 

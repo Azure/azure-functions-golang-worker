@@ -2,6 +2,11 @@
 
 An Azure Function that triggers when documents are created or updated in an Azure Cosmos DB container.
 
+## What this sample demonstrates
+
+- A typed CosmosDB-trigger handler `func(ctx context.Context, docs []bindings.CosmosDocument) error` — documents are deserialized directly from the gRPC `InvocationRequest` into the `CosmosDocument` slice, no SDK client needed (the **core trigger** model in [`TECHNICAL_SPEC.md`](../../TECHNICAL_SPEC.md) section 4).
+- Per-document structured logging with `slog.InfoContext` so every emitted record carries `invocation_id` and `function_name` plus user-supplied document attributes.
+
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)

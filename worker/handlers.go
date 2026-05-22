@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"reflect"
 
@@ -18,7 +18,10 @@ type LoadedFunction struct {
 }
 
 func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *Dispatcher) *pb.StreamingMessage {
-	log.Printf("Received WorkerInitRequest: RequestId=%s", requestId)
+	logger := disp.SystemLogger()
+	logger.LogAttrs(context.Background(), slog.LevelInfo, "Received WorkerInitRequest",
+		slog.String("request_id", requestId),
+	)
 
 	// Capabilities the Go worker advertises. These mirror what the Functions
 	// host expects from a modern out-of-proc worker (Python / dotnet-isolated
@@ -36,12 +39,24 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *
 		"HandlesWorkerTerminateMessage":     "true",
 	}
 
+	// Merge in capabilities advertised by the user app (e.g. middleware that
+	// implements sdk.CapabilityProvider). Middleware-supplied keys win over
+	// the static base on collision so users can opt out of a default if they
+	// have a reason to.
+	if disp != nil && disp.App != nil {
+		for k, v := range disp.App.Capabilities() {
+			capabilities[k] = v
+		}
+	}
+
 	if disp != nil && disp.HTTPProxy != nil {
 		capabilities["HttpUri"] = disp.HTTPProxy.url
 		// Required so route parameters still flow via gRPC trigger metadata
 		// when the body is being proxied over HTTP.
 		capabilities["RequiresRouteParameters"] = "true"
-		log.Printf("Advertising HttpUri=%s for streaming HTTP triggers", disp.HTTPProxy.url)
+		logger.LogAttrs(context.Background(), slog.LevelInfo, "Advertising HttpUri for streaming HTTP triggers",
+			slog.String("http_uri", disp.HTTPProxy.url),
+		)
 	}
 
 	return &pb.StreamingMessage{
@@ -52,15 +67,15 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *
 					Status: pb.StatusResult_Success,
 					Result: "Success",
 				},
-				WorkerVersion: "1.0.0",
-				Capabilities:  capabilities,
+				WorkerVersion:  "1.0.0",
+				Capabilities:   capabilities,
+				WorkerMetadata: buildWorkerMetadata(),
 			},
 		},
 	}
 }
 
 func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.App, requestId string) *pb.StreamingMessage {
-	log.Printf("Received FunctionsMetadataRequest: RequestId=%s", requestId)
 	var functions []*pb.RpcFunctionMetadata
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*sdk.RegisteredFunction)
@@ -118,7 +133,6 @@ func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.A
 }
 
 func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, requestId string) *pb.StreamingMessage {
-	log.Printf("Received FunctionLoadRequest: RequestId=%s, FunctionId=%s", requestId, req.FunctionId)
 	funcID := req.FunctionId
 	val, ok := disp.App.GetRegisteredFunctions().Load(funcID)
 	if !ok {
@@ -194,8 +208,16 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, re
 		argIndex++
 	}
 
+	logger := disp.SystemLogger()
 	for k, v := range fields {
-		log.Printf("Debug: Field Mapping - Name: %s, Pos: %d, Type: %v, Dir: %s, Arg: %v", k, v.Position, v.Type, v.Direction, v.IsArgument)
+		logger.LogAttrs(context.Background(), slog.LevelDebug, "FunctionLoad field mapping",
+			slog.String("function_id", funcID),
+			slog.String("name", k),
+			slog.Int("position", v.Position),
+			slog.String("type", v.Type.String()),
+			slog.String("direction", v.Direction),
+			slog.Bool("is_argument", v.IsArgument),
+		)
 	}
 
 	disp.LoadedFunctions.Store(funcID, &LoadedFunction{
@@ -218,7 +240,6 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, re
 }
 
 func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, requestId string) (*pb.StreamingMessage, error) {
-	log.Printf("Received InvocationRequest: RequestId=%s, InvocationId=%s, FunctionId=%s", requestId, req.InvocationId, req.FunctionId)
 	funcID := req.FunctionId
 	val, ok := disp.LoadedFunctions.Load(funcID)
 	if !ok {
@@ -226,20 +247,23 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	}
 	loadedFunc := val.(*LoadedFunction)
 
-	// HTTP streaming path: when the host is forwarding HTTP via the
-	// "HttpUri" capability, the user handler runs against the live
-	// http.ResponseWriter inside the embedded HTTP proxy. The gRPC side
-	// just waits for completion and returns a minimal InvocationResponse.
+	// HTTP streaming path: when the host forwards HTTP via the "HttpUri"
+	// capability, the user handler runs against the live ResponseWriter
+	// inside the embedded proxy. The gRPC side waits for completion via
+	// notifyGRPCArrival, which returns the post-invocation
+	// [sdk.MiddlewareContext] so we populate the response the same way the
+	// gRPC-body path does below. disp.App is passed so the proxy can
+	// compose the registered middleware chain around the user handler.
 	if disp.HTTPProxy != nil && isHTTPHandler(loadedFunc) && isHTTPProxiedInvocation(req) {
-		status, err := disp.HTTPProxy.notifyGRPCArrival(req, loadedFunc)
+		status, mc, err := disp.HTTPProxy.notifyGRPCArrival(req, loadedFunc, disp.App)
 		if err != nil {
-			// Don't return a Go error — handleBidiStream treats those as
-			// fatal. A rendezvous failure (timeout, cancelled HTTP request)
-			// is a transient per-invocation problem, not a worker-level
-			// crash. Surface it to the host as a Failure InvocationResponse
-			// so this invocation reports an error and the worker stays up
-			// to serve the next one.
-			log.Printf("HTTP proxy: rendezvous failed for invocation %s: %v", req.GetInvocationId(), err)
+			// Surface the error as a Failure InvocationResponse instead of
+			// returning a Go error (handleBidiStream would treat that as fatal).
+			// Rendezvous failures are per-invocation transients, not worker crashes.
+			disp.SystemLogger().LogAttrs(context.Background(), slog.LevelError, "HTTP proxy rendezvous failed",
+				slog.String("invocation_id", req.GetInvocationId()),
+				slog.Any("err", err),
+			)
 			status = &pb.StatusResult{
 				Status: pb.StatusResult_Failure,
 				Exception: &pb.RpcException{
@@ -248,25 +272,52 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 				},
 			}
 		}
+		// mc is nil only on the early-return "client disconnected before
+		// gRPC arrival" branch in the proxy's handle(). Nil-check as a
+		// safety belt; every other path produces a non-nil mc (including
+		// user-handler panics).
+		var outboundTA map[string]string
+		if mc != nil {
+			outboundTA = mc.OutboundTraceAttributes()
+		}
 		return &pb.StreamingMessage{
 			RequestId: requestId,
 			Content: &pb.StreamingMessage_InvocationResponse{
 				InvocationResponse: &pb.InvocationResponse{
-					InvocationId: req.InvocationId,
-					Result:       status,
+					InvocationId:           req.InvocationId,
+					Result:                 status,
+					TraceContextAttributes: outboundTA,
 				},
 			},
 		}, nil
 	}
 
+	// Build the MiddlewareContext for this invocation and attach it to ctx.
+	// Handlers retrieve the embedded InvocationContext via sdk.FromContext;
+	// middleware that needs the wrapper calls sdk.MiddlewareContextFrom.
+	mc := buildMiddlewareContext(req, &loadedFunc.Function)
+	ctx := sdk.ContextWithMiddleware(context.Background(), mc)
+
+	// Emit a system log with the inbound trace_parent so OTel correlation
+	// can be debugged from production logs without instrumenting user code.
+	disp.SystemLogger().LogAttrs(ctx, slog.LevelDebug, "InvocationRequest trace context",
+		slog.String("invocation_id", mc.InvocationID),
+		slog.String("trace_parent", mc.TraceContext.TraceParent),
+		slog.String("trace_state", mc.TraceContext.TraceState),
+		slog.Int("baggage_count", len(mc.TraceContext.Baggage)),
+	)
+
 	ft := reflect.TypeOf(loadedFunc.Function.Func)
 	args := make([]reflect.Value, ft.NumIn())
 
-	// 1. Pre-allocate arguments
+	// 1. Pre-allocate arguments. context.Context arguments are seeded with
+	//    the per-invocation ctx; middleware running between this point and
+	//    the actual user-function call can swap in an enriched ctx via the
+	//    inner handler below.
 	for i := 0; i < ft.NumIn(); i++ {
 		t := ft.In(i)
 		if t.Implements(contextType) {
-			args[i] = reflect.ValueOf(context.Background())
+			args[i] = reflect.ValueOf(ctx)
 			continue
 		}
 
@@ -298,15 +349,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 			}
 		}
 
-		// Extract trigger metadata as strings
-		triggerMeta := make(map[string]string)
-		for k, v := range req.GetTriggerMetadata() {
-			if s := v.GetString_(); s != "" {
-				triggerMeta[k] = s
-			}
-		}
-
-		clientVal, err := loadedFunc.Function.ClientFactory(config, triggerMeta)
+		clientVal, err := loadedFunc.Function.ClientFactory(config, mc.TriggerMetadata)
 		if err != nil {
 			return nil, fmt.Errorf("client factory error: %v", err)
 		}
@@ -323,31 +366,42 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 		}
 	}
 
-	// 3. Invoke handler
-	fv := reflect.ValueOf(loadedFunc.Function.Func)
-	results := fv.Call(args)
-
-	// 4. Build response
-	status := &pb.StatusResult{
-		Status: pb.StatusResult_Success,
-	}
-
-	// Check for error return
-	for _, r := range results {
-		if r.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) && !r.IsNil() {
-			e := r.Interface().(error)
-			status = &pb.StatusResult{
-				Status: pb.StatusResult_Failure,
-				Exception: &pb.RpcException{
-					Message: e.Error(),
-					Source:  "User function",
-				},
+	// 3. Build the innermost Handler — this is what every Middleware
+	//    registered via App.Use ultimately wraps. It receives the (possibly
+	//    enriched) ctx from the outer chain, propagates it into the user
+	//    function's arguments, performs the reflective call, and returns
+	//    any error result. See [sdk.App.Compose] for ordering.
+	inner := func(ctx context.Context, _ *sdk.MiddlewareContext) error {
+		injectInvocationContext(ft, args, ctx)
+		fv := reflect.ValueOf(loadedFunc.Function.Func)
+		results := fv.Call(args)
+		for _, r := range results {
+			if r.Type().Implements(errorType) && !r.IsNil() {
+				return r.Interface().(error)
 			}
-			break
 		}
+		return nil
 	}
 
-	// 5. Extract HTTP response if applicable
+	// 4. Compose the middleware chain around the inner handler and run it.
+	//    runUserInvocation centralizes panic-recovery so a panicking user
+	//    handler produces a Failure InvocationResponse instead of leaving
+	//    the host to time out the invocation. The outer goroutine-level
+	//    recover in handleBidiStream remains as defense-in-depth for
+	//    panics originating outside user code.
+	recovered, stack, invokeErr := runUserInvocation(ctx, mc, disp.App, inner)
+	if recovered != nil {
+		disp.SystemLogger().LogAttrs(ctx, slog.LevelError, "panic recovered in user function",
+			slog.String("invocation_id", mc.InvocationID),
+			slog.Any("panic", recovered),
+			slog.String("stack", stack),
+		)
+	}
+
+	// 5. Build response status from any error or panic captured above.
+	status := statusFromInvocation(recovered, stack, invokeErr)
+
+	// 6. Extract HTTP response if applicable
 	var returnValue *pb.TypedData
 	for _, field := range loadedFunc.Fields {
 		if field.Direction == "out" && field.IsWriter && field.Name == "$return" {
@@ -363,12 +417,110 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 		RequestId: requestId,
 		Content: &pb.StreamingMessage_InvocationResponse{
 			InvocationResponse: &pb.InvocationResponse{
-				InvocationId: req.InvocationId,
-				ReturnValue:  returnValue,
-				Result:       status,
+				InvocationId:           req.InvocationId,
+				ReturnValue:            returnValue,
+				Result:                 status,
+				TraceContextAttributes: mc.OutboundTraceAttributes(),
 			},
 		},
 	}, nil
+}
+
+// errorType is the reflected type of the standard error interface, cached
+// for use in the reflective invocation path.
+var errorType = reflect.TypeOf((*error)(nil)).Elem()
+
+// httpRequestPtrType is the reflected type of *http.Request, cached for
+// use when injecting an enriched context.Context into HTTP handler args.
+var httpRequestPtrType = reflect.TypeOf((*http.Request)(nil))
+
+// buildMiddlewareContext converts a gRPC InvocationRequest plus the
+// resolved RegisteredFunction into the [sdk.MiddlewareContext] that flows
+// through the middleware chain. Centralized so the HTTP-streaming path
+// (which receives invocations via the loopback HTTP server instead of
+// the gRPC body) can construct the same value.
+func buildMiddlewareContext(req *pb.InvocationRequest, fn *sdk.RegisteredFunction) *sdk.MiddlewareContext {
+	return &sdk.MiddlewareContext{
+		InvocationContext: &sdk.InvocationContext{
+			InvocationID:    req.GetInvocationId(),
+			FunctionID:      req.GetFunctionId(),
+			FunctionName:    fn.FuncName,
+			TriggerType:     fn.TriggerType,
+			TraceContext:    convertTraceContext(req.GetTraceContext()),
+			RetryContext:    convertRetryContext(req.GetRetryContext()),
+			TriggerMetadata: flattenTriggerMetadata(req.GetTriggerMetadata()),
+		},
+	}
+}
+
+// injectInvocationContext propagates ctx into all argument slots that need it
+// before the user function is called. This runs after middleware has had a
+// chance to enrich ctx (for example, by attaching an OpenTelemetry span via
+// otelfunc.Middleware).
+//
+// Two slot kinds receive ctx:
+//   - context.Context arguments (covers all non-HTTP triggers): the slot is
+//     overwritten with the latest ctx.
+//   - *http.Request arguments (HTTP triggers, which take http.HandlerFunc and
+//     have no separate context.Context arg): the existing request is replaced
+//     with req.WithContext(ctx) so that downstream code calling r.Context()
+//     observes the enriched context.
+func injectInvocationContext(ft reflect.Type, args []reflect.Value, ctx context.Context) {
+	for i := 0; i < ft.NumIn(); i++ {
+		t := ft.In(i)
+		switch {
+		case t.Implements(contextType):
+			args[i] = reflect.ValueOf(ctx)
+		case t == httpRequestPtrType:
+			if r, ok := args[i].Interface().(*http.Request); ok && r != nil {
+				args[i] = reflect.ValueOf(r.WithContext(ctx))
+			}
+		}
+	}
+}
+
+// flattenTriggerMetadata reduces the host's TypedData metadata map to a
+// simple string→string map for ergonomic consumption by user code and
+// middleware. Non-string values are skipped (they are rare in practice;
+// most trigger metadata fields are already strings).
+func flattenTriggerMetadata(in map[string]*pb.TypedData) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if s := v.GetString_(); s != "" {
+			out[k] = s
+		}
+	}
+	return out
+}
+
+// convertTraceContext maps the host's RpcTraceContext to the SDK's
+// public TraceContext type. A nil input produces a zero-valued result so
+// callers (and middleware) can safely read the fields without nil checks.
+func convertTraceContext(tc *pb.RpcTraceContext) sdk.TraceContext {
+	if tc == nil {
+		return sdk.TraceContext{}
+	}
+	return sdk.TraceContext{
+		TraceParent: tc.GetTraceParent(),
+		TraceState:  tc.GetTraceState(),
+		Attributes:  tc.GetAttributes(),
+		Baggage:     tc.GetBaggage(),
+	}
+}
+
+// convertRetryContext maps the host's RetryContext to the SDK's public
+// RetryContext type. A nil input produces a zero-valued result.
+func convertRetryContext(rc *pb.RetryContext) sdk.RetryContext {
+	if rc == nil {
+		return sdk.RetryContext{}
+	}
+	return sdk.RetryContext{
+		RetryCount:    rc.GetRetryCount(),
+		MaxRetryCount: rc.GetMaxRetryCount(),
+	}
 }
 
 func handleWorkerStatusRequest(requestId string, req *pb.WorkerStatusRequest) (*pb.StreamingMessage, error) {
@@ -393,6 +545,7 @@ func handleFunctionEnvironmentReloadRequest(requestId string, req *pb.FunctionEn
 					Status: pb.StatusResult_Success,
 					Result: "Success",
 				},
+				WorkerMetadata: buildWorkerMetadata(),
 			},
 		},
 	}, nil

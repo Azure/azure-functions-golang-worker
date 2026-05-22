@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
@@ -11,16 +11,13 @@ import (
 
 // EventHubHandler handles EventHub trigger events using a typed data struct.
 func EventHubHandler(ctx context.Context, event bindings.EventHubMessage) error {
-	log.Printf("EventHub Trigger Executed")
-	log.Printf("Body: %s", string(event.Body))
-	log.Printf("Sequence Number: %d", event.SequenceNumber)
-	log.Printf("Offset: %s", event.Offset)
-	log.Printf("Enqueued Time: %s", event.EnqueuedTimeUtc)
-
-	if event.PartitionKey != "" {
-		log.Printf("Partition Key: %s", event.PartitionKey)
-	}
-
+	slog.InfoContext(ctx, "eventhub trigger executed",
+		"body", string(event.Body),
+		"sequence_number", event.SequenceNumber,
+		"offset", event.Offset,
+		"enqueued_time", event.EnqueuedTimeUtc,
+		"partition_key", event.PartitionKey,
+	)
 	return nil
 }
 

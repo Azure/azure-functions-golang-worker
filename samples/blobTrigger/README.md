@@ -2,6 +2,13 @@
 
 An Azure Function that triggers when a blob is created or updated in Azure Storage. Uses the Azure Blob SDK client for type-safe blob access.
 
+## What this sample demonstrates
+
+- A blob-trigger handler that receives a ready-to-use authenticated `*blob.Client` scoped to the triggering blob — the **extension trigger** model documented in [`TECHNICAL_SPEC.md`](../../TECHNICAL_SPEC.md) section 4. No raw bytes flow through gRPC; the handler can `DownloadStream` blobs of arbitrary size.
+- Blank-import of `triggers/blob` to register the `ClientFactory` (`database/sql`-style driver registration).
+- Configuration via `sdk.WithSource("EventGrid")` to use Event Grid-backed blob notifications instead of the legacy polling source.
+- Structured logging via `slog.InfoContext` carrying both the blob URL and the auto-attached invocation metadata.
+
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)

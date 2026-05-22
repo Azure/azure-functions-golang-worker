@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -10,9 +10,15 @@ import (
 	"github.com/azure/azure-functions-golang-worker/worker"
 )
 
-// StreamHandler handles streaming HTTP responses
+// StreamHandler handles streaming HTTP responses. Use slog.*Context
+// (not stdlib log.Println) so each record carries trace.id / span.id
+// and the per-invocation invocation_id / function_name / trigger_type
+// attrs the SDK adds via FromContext. Without ctx, log records reach
+// the host as opaque stderr text -- no correlation, no structured
+// attrs. See README.md observability section.
 func StreamHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("Starting streaming response...")
+	ctx := r.Context()
+	slog.InfoContext(ctx, "streaming response starting")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -30,7 +36,7 @@ func StreamHandler(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(1 * time.Second)
 	}
 
-	log.Println("Streaming complete.")
+	slog.InfoContext(ctx, "streaming response complete", "events_sent", 5)
 }
 
 func main() {
