@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 )
 
@@ -92,6 +93,33 @@ func TestDecodeProto_NilData(t *testing.T) {
 	}
 	if v.String() != "" {
 		t.Errorf("expected empty string for nil data, got %q", v.String())
+	}
+}
+
+func TestDecodeProto_BoolFromString(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     *pb.TypedData
+		expected bool
+	}{
+		{"True string", &pb.TypedData{Data: &pb.TypedData_String_{String_: "True"}}, true},
+		{"true string", &pb.TypedData{Data: &pb.TypedData_String_{String_: "true"}}, true},
+		{"False string", &pb.TypedData{Data: &pb.TypedData_String_{String_: "False"}}, false},
+		{"false string", &pb.TypedData{Data: &pb.TypedData_String_{String_: "false"}}, false},
+		{"int nonzero", &pb.TypedData{Data: &pb.TypedData_Int{Int: 1}}, true},
+		{"int zero", &pb.TypedData{Data: &pb.TypedData_Int{Int: 0}}, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := decodeProto(tc.data, reflect.TypeOf(false))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if v.Bool() != tc.expected {
+				t.Errorf("expected %v, got %v", tc.expected, v.Bool())
+			}
+		})
 	}
 }
 
@@ -206,6 +234,37 @@ func TestConvertToTypeValue_StructWithTriggerMetadata(t *testing.T) {
 	}
 	if result.MessageId != "msg-123" {
 		t.Errorf("expected messageId %q, got %q", "msg-123", result.MessageId)
+	}
+}
+
+func TestConvertToTypeValue_TimerInfo_StringJSON(t *testing.T) {
+	timerJSON := `{"Schedule":{"AdjustForDST":true},"ScheduleStatus":{"Last":"2026-05-15T17:40:00+00:00","Next":"2026-05-15T17:45:00+00:00","LastUpdated":"2026-05-15T17:40:00+00:00"},"IsPastDue":false}`
+	data := &pb.TypedData{Data: &pb.TypedData_String_{String_: timerJSON}}
+	metadata := map[string]*pb.TypedData{
+		"isPastDue": {Data: &pb.TypedData_String_{String_: "False"}},
+	}
+
+	v, err := convertToTypeValue(reflect.TypeOf(bindings.TimerInfo{}), data, metadata)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	result := v.Interface().(bindings.TimerInfo)
+
+	if result.ScheduleStatus.Last != "2026-05-15T17:40:00+00:00" {
+		t.Errorf("expected ScheduleStatus.Last %q, got %q",
+			"2026-05-15T17:40:00+00:00", result.ScheduleStatus.Last)
+	}
+	if result.ScheduleStatus.Next != "2026-05-15T17:45:00+00:00" {
+		t.Errorf("expected ScheduleStatus.Next %q, got %q",
+			"2026-05-15T17:45:00+00:00", result.ScheduleStatus.Next)
+	}
+	if result.ScheduleStatus.LastUpdated != "2026-05-15T17:40:00+00:00" {
+		t.Errorf("expected ScheduleStatus.LastUpdated %q, got %q",
+			"2026-05-15T17:40:00+00:00", result.ScheduleStatus.LastUpdated)
+	}
+	if result.Schedule.AdjustForDST != true {
+		t.Errorf("expected Schedule.AdjustForDST true, got %v", result.Schedule.AdjustForDST)
 	}
 }
 

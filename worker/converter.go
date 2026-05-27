@@ -55,8 +55,12 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 
 	// If struct, try JSON decoding first, then fall back to TriggerMetadata field matching
 	if t.Kind() == reflect.Struct {
-		// Try direct JSON unmarshal from input data first
-		if jsonStr := data.GetJson(); jsonStr != "" {
+		// Try direct JSON unmarshal from input data (TypedData_Json or TypedData_String_)
+		jsonStr := data.GetJson()
+		if jsonStr == "" {
+			jsonStr = data.GetString_()
+		}
+		if jsonStr != "" {
 			target := reflect.New(t).Interface()
 			if err := json.Unmarshal([]byte(jsonStr), target); err == nil {
 				val := reflect.ValueOf(target).Elem()
@@ -141,6 +145,11 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 	switch t.Kind() {
 	case reflect.String:
 		return reflect.ValueOf(data.GetString_()), nil
+	case reflect.Bool:
+		if val := data.GetString_(); val != "" {
+			return reflect.ValueOf(strings.EqualFold(val, "true")), nil
+		}
+		return reflect.ValueOf(data.GetInt() != 0), nil
 	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
 			if len(data.GetBytes()) == 0 {
