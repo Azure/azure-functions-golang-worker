@@ -1,0 +1,47 @@
+# Embedded OTel Collector configuration for Azure Functions.
+#
+# The collector receives OTLP from both the Functions host and the Go worker
+# on localhost:4318, authenticates to Azure Monitor using managed identity,
+# and exports traces + logs to the DCE/DCR endpoints.
+#
+# Environment variables (set in local.settings.json or app settings):
+#   OTEL_DCE_TRACES_ENDPOINT - DCE traces endpoint URL
+#   OTEL_DCE_LOGS_ENDPOINT   - DCE logs endpoint URL
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: localhost:4317
+      http:
+        endpoint: localhost:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 256
+
+extensions:
+  azureauth:
+    use_default: true
+    scopes:
+      - https://monitor.azure.com/.default
+
+exporters:
+  otlphttp/azuremonitor:
+    traces_endpoint: ${env:OTEL_DCE_TRACES_ENDPOINT}
+    logs_endpoint: ${env:OTEL_DCE_LOGS_ENDPOINT}
+    auth:
+      authenticator: azureauth
+
+service:
+  extensions: [azureauth]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/azuremonitor]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/azuremonitor]
