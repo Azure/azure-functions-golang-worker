@@ -94,12 +94,11 @@ import (
 	"github.com/azure/azure-functions-golang-worker/worker/log"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
+	"go.opentelemetry.io/contrib/exporters/autoexport"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	olog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/global"
 	lognoop "go.opentelemetry.io/otel/log/noop"
@@ -971,7 +970,7 @@ func buildOTLPTracerProvider(extraResource ...attribute.KeyValue) (*sdktrace.Tra
 	if !hasOTLPEndpoint() {
 		return nil, nil
 	}
-	exporter, err := otlptracehttp.New(context.Background())
+	exporter, err := autoexport.NewSpanExporter(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -989,7 +988,7 @@ func buildOTLPLoggerProvider(extraResource ...attribute.KeyValue) (*sdklog.Logge
 	if !hasOTLPEndpoint() {
 		return nil, nil
 	}
-	exporter, err := otlploghttp.New(context.Background())
+	exporter, err := autoexport.NewLogExporter(context.Background())
 	if err != nil {
 		return nil, err
 	}

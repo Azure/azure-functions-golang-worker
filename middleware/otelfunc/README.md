@@ -86,7 +86,7 @@ That's it. Every invocation gets an internal-kind span (named `function <Functio
 When no explicit `WithTracerProvider` is supplied, the middleware tries to build or acquire a TracerProvider in this order:
 
 1. **`WithExporter(e)`** — build owned TracerProvider around the supplied exporters.
-2. **`OTEL_EXPORTER_OTLP_ENDPOINT`** — auto-build an OTLP HTTP TracerProvider with the default Resource.
+2. **`OTEL_EXPORTER_OTLP_ENDPOINT`** — auto-build an OTLP TracerProvider with the default Resource. The transport (gRPC vs `http/protobuf`, default `http/protobuf`) is selected from `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` via the contrib `autoexport` package, so traces and logs can use different protocols.
 3. **`otel.GetTracerProvider()`** — fall back to the OTel global if non-noop.
 
 The same order applies to `LoggerProvider` (with `WithLogExporter` / `OTEL_EXPORTER_OTLP_*` / `global.GetLoggerProvider()`).
