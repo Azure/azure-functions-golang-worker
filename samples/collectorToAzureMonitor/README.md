@@ -32,6 +32,8 @@ OTEL_DCE_LOGS_ENDPOINT=<dce>/.../logs
 OTEL_DCE_METRICS_ENDPOINT=<dce>/.../metrics
 ```
 
+> The `OTEL_DCE_*` values in [`local.settings.json`](local.settings.json) are placeholders (`<your-dce>` / `<dcr-immutable-id>`). Replace them with the ingestion endpoints for your own Data Collection Endpoint and Data Collection Rule before running. See [OTLP ingestion](https://learn.microsoft.com/azure/azure-monitor/containers/opentelemetry-protocol-ingestion) for how to obtain them.
+
 To customize the pipeline, drop an `otel-collector-config.yaml` next to the binary (file-next-to-executable precedence) or use `otelcollector.WithConfigFile(...)` / `WithConfigYAML(...)`.
 
 `host.json` sets `"telemetryMode": "OpenTelemetry"`.
