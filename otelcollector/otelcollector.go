@@ -249,16 +249,34 @@ func start(ctx context.Context, cfg config) (*Collector, error) {
 
 	c := &Collector{col: col, cancel: cancel, done: done}
 
-	if err := c.waitReady(ctx, cfg.startTimeout); err != nil {
+	alive, err := c.waitReady(ctx, cfg.startTimeout)
+	if err != nil {
 		cancel()
+		// When readiness fails on a timeout or context cancellation the run
+		// goroutine is still executing col.Run; cancel() above signals it to
+		// stop. Drain done (bounded) so Start does not return while a
+		// partially-started collector goroutine is still running. When the
+		// collector already exited on its own, alive is false and done has
+		// been consumed by waitReady, so there is nothing to drain.
+		if alive {
+			select {
+			case <-done:
+			case <-time.After(cfg.startTimeout):
+			}
+		}
 		return nil, err
 	}
 	return c, nil
 }
 
 // waitReady blocks until the collector reports the running state, the timeout
-// elapses, the collector exits, or ctx is cancelled.
-func (c *Collector) waitReady(ctx context.Context, timeout time.Duration) error {
+// elapses, the collector exits, or ctx is cancelled. The returned alive flag
+// reports whether the collector run goroutine is still executing when waitReady
+// returns: true on success and on timeout/cancellation (the goroutine keeps
+// running col.Run), false when the collector has already exited (done has been
+// consumed). Callers use alive to decide whether the goroutine still needs to
+// be drained after cancelling it.
+func (c *Collector) waitReady(ctx context.Context, timeout time.Duration) (alive bool, err error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(50 * time.Millisecond)
@@ -268,16 +286,16 @@ func (c *Collector) waitReady(ctx context.Context, timeout time.Duration) error 
 		select {
 		case err := <-c.done:
 			if err != nil {
-				return fmt.Errorf("collector exited during startup: %w", err)
+				return false, fmt.Errorf("collector exited during startup: %w", err)
 			}
-			return fmt.Errorf("collector stopped during startup")
+			return false, fmt.Errorf("collector stopped during startup")
 		case <-deadline.C:
-			return fmt.Errorf("collector did not reach running state within %s", timeout)
+			return true, fmt.Errorf("collector did not reach running state within %s", timeout)
 		case <-ctx.Done():
-			return ctx.Err()
+			return true, ctx.Err()
 		case <-tick.C:
 			if c.col.GetState() == otelcol.StateRunning {
-				return nil
+				return true, nil
 			}
 		}
 	}
