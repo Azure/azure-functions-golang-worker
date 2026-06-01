@@ -89,6 +89,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/azure/azure-functions-golang-worker/worker/log"
@@ -957,6 +958,12 @@ func (m *otelMiddleware) Shutdown(ctx context.Context) error {
 	return firstErr
 }
 
+// exporterInitTimeout bounds the construction of an autoexport OTLP exporter
+// so a misbehaving transport (for example, a gRPC dial that blocks) cannot
+// stall middleware setup indefinitely. Construction normally returns promptly
+// because the OTLP exporters connect lazily on first export.
+const exporterInitTimeout = 10 * time.Second
+
 // buildOTLPTracerProvider returns a TracerProvider configured against the
 // OTLP HTTP endpoint specified by the standard OpenTelemetry env vars
 // (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS,
@@ -970,7 +977,9 @@ func buildOTLPTracerProvider(extraResource ...attribute.KeyValue) (*sdktrace.Tra
 	if !hasOTLPEndpoint() {
 		return nil, nil
 	}
-	exporter, err := autoexport.NewSpanExporter(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), exporterInitTimeout)
+	defer cancel()
+	exporter, err := autoexport.NewSpanExporter(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -988,7 +997,9 @@ func buildOTLPLoggerProvider(extraResource ...attribute.KeyValue) (*sdklog.Logge
 	if !hasOTLPEndpoint() {
 		return nil, nil
 	}
-	exporter, err := autoexport.NewLogExporter(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), exporterInitTimeout)
+	defer cancel()
+	exporter, err := autoexport.NewLogExporter(ctx)
 	if err != nil {
 		return nil, err
 	}
