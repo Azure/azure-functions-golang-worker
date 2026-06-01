@@ -134,16 +134,16 @@ func Start(app *sdk.App, opts ...sdk.StartOption) {
 	// hook owns its own readiness gating; a non-nil error is fatal (the
 	// hook itself decides whether to fail fast or degrade and return nil).
 	// hookCtx spans the serving lifetime and is cancelled after the hooks
-	// have been shut down below.
+	// have been shut down below. On a start failure, startLifecycleHooks
+	// unwinds the hooks that already started so the process never exits with
+	// half-initialized resources still holding telemetry or sockets.
 	hookCtx, hookCancel := context.WithCancel(context.Background())
-	for _, h := range startCfg.Hooks {
-		if err := h.Start(hookCtx); err != nil {
-			dispatcher.systemLogger.LogAttrs(hookCtx, slog.LevelError, "Lifecycle hook failed to start; terminating",
-				slog.Any("err", err),
-			)
-			hookCancel()
-			os.Exit(1)
-		}
+	if err := startLifecycleHooks(hookCtx, startCfg.Hooks, dispatcher.systemLogger); err != nil {
+		dispatcher.systemLogger.LogAttrs(hookCtx, slog.LevelError, "Lifecycle hook failed to start; terminating",
+			slog.Any("err", err),
+		)
+		hookCancel()
+		os.Exit(1)
 	}
 
 	md := buildWorkerMetadata()
@@ -187,7 +187,7 @@ func Start(app *sdk.App, opts ...sdk.StartOption) {
 
 	// Run middleware-registered shutdowns. Bounded so a misbehaving
 	// exporter cannot delay process exit indefinitely.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), lifecycleShutdownTimeout)
 	defer cancel()
 	if err := app.RunShutdowns(shutdownCtx); err != nil {
 		dispatcher.systemLogger.LogAttrs(shutdownCtx, slog.LevelWarn, "Middleware shutdown returned error",
@@ -198,14 +198,47 @@ func Start(app *sdk.App, opts ...sdk.StartOption) {
 	// Shut down lifecycle hooks in reverse registration order so dependents
 	// stop before their dependencies, then cancel the hook context to
 	// release any goroutines still bound to it.
-	for i := len(startCfg.Hooks) - 1; i >= 0; i-- {
-		if err := startCfg.Hooks[i].Shutdown(shutdownCtx); err != nil {
-			dispatcher.systemLogger.LogAttrs(shutdownCtx, slog.LevelWarn, "Lifecycle hook shutdown returned error",
+	shutdownLifecycleHooks(shutdownCtx, startCfg.Hooks, dispatcher.systemLogger)
+	hookCancel()
+}
+
+// lifecycleShutdownTimeout bounds how long the worker waits for middleware and
+// lifecycle-hook shutdowns to flush and release, so a misbehaving exporter
+// cannot delay process exit indefinitely.
+const lifecycleShutdownTimeout = 10 * time.Second
+
+// startLifecycleHooks starts each hook in registration order, blocking on each
+// hook's own readiness gating. If a hook fails to start, the hooks that already
+// started are shut down in reverse order (so dependents stop before their
+// dependencies) before the error is returned, ensuring the worker never
+// proceeds — or terminates — with half-initialized resources still holding
+// telemetry buffers or sockets.
+func startLifecycleHooks(ctx context.Context, hooks []sdk.LifecycleHook, logger *slog.Logger) error {
+	for i, h := range hooks {
+		if err := h.Start(ctx); err != nil {
+			// Unwind the hooks that started successfully so far. Use a
+			// fresh, bounded context because the failure path may have
+			// already cancelled or be about to cancel ctx.
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), lifecycleShutdownTimeout)
+			shutdownLifecycleHooks(shutdownCtx, hooks[:i], logger)
+			cancel()
+			return err
+		}
+	}
+	return nil
+}
+
+// shutdownLifecycleHooks shuts down the supplied hooks in reverse registration
+// order so dependents stop before their dependencies. Errors are logged and do
+// not halt the sequence — every hook gets a chance to flush and release.
+func shutdownLifecycleHooks(ctx context.Context, hooks []sdk.LifecycleHook, logger *slog.Logger) {
+	for i := len(hooks) - 1; i >= 0; i-- {
+		if err := hooks[i].Shutdown(ctx); err != nil {
+			logger.LogAttrs(ctx, slog.LevelWarn, "Lifecycle hook shutdown returned error",
 				slog.Any("err", err),
 			)
 		}
 	}
-	hookCancel()
 }
 
 // signalContext returns a context that is cancelled when the process
