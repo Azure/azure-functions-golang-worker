@@ -1,7 +1,8 @@
-# Azure Functions Go Worker
-
+# Azure Functions Go Worker (Preview)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Azure/azure-functions-golang-worker)](https://goreportcard.com/report/github.com/Azure/azure-functions-golang-worker)
 [![Go Reference](https://pkg.go.dev/badge/github.com/Azure/azure-functions-golang-worker.svg)](https://pkg.go.dev/github.com/Azure/azure-functions-golang-worker)
+
+> Public preview. The features described here are available for preview use and may change before general availability.
 
 The `azure-functions-golang-worker` repository provides the SDK and worker implementation to run Go (Golang) applications natively on Azure Functions. This allows developers to write serverless applications using familiar idiomatic Go structures, such as standard `net/http` handlers and structured types, while deeply integrating with Azure Function's bindings and trigger ecosystem.
 
@@ -19,7 +20,7 @@ The `azure-functions-golang-worker` repository provides the SDK and worker imple
 ### Prerequisites
 
 * [Go 1.24+](https://go.dev/dl/)
-* [Azure Functions Core Tools](https://www.npmjs.com/package/azure-functions-core-tools) v4.12.0-preview.1 or later (includes Go worker support)
+* [Azure Functions Core Tools](https://www.npmjs.com/package/azure-functions-core-tools/v/4.12.0) 4.12.0 or later (includes Go worker support)
 
 ```bash
 # Install Azure Functions Core Tools
@@ -44,29 +45,29 @@ Create a `main.go` file:
 package main
 
 import (
-"fmt"
-"net/http"
+    "fmt"
+    "net/http"
 
-"github.com/azure/azure-functions-golang-worker/sdk"
-"github.com/azure/azure-functions-golang-worker/worker"
+    "github.com/azure/azure-functions-golang-worker/sdk"
+    "github.com/azure/azure-functions-golang-worker/worker"
 )
 
 func main() {
-app := sdk.FunctionApp()
+    app := sdk.FunctionApp()
 
-// Register an HTTP trigger using familiar types
-app.HTTP("hello", hello).Methods("GET", "POST").Auth("anonymous")
+    // Register an HTTP trigger using familiar types
+    app.HTTP("hello", hello).Methods("GET", "POST").Auth("anonymous")
 
-// Start the worker
-worker.Start(app)
+    // Start the worker
+    worker.Start(app)
 }
 
 func hello(w http.ResponseWriter, r *http.Request) {
-name := r.URL.Query().Get("name")
-if name == "" {
-name = "Azure"
-}
-fmt.Fprintf(w, "Hello, %s! Welcome to Go on Azure Functions.", name)
+    name := r.URL.Query().Get("name")
+    if name == "" {
+    name = "Azure"
+    }
+    fmt.Fprintf(w, "Hello, %s! Welcome to Go on Azure Functions.", name)
 }
 ```
 
@@ -162,7 +163,23 @@ The default handler honors the host's per-category log levels and the `--verbose
 
 The [`middleware/otelfunc`](middleware/otelfunc) package provides an `sdk.Middleware` that creates an internal-kind span (`function <FunctionName>`) around every invocation, extracts the host's W3C trace context so user spans correlate end-to-end, advertises the `WorkerOpenTelemetryEnabled` capability so the host stops forwarding the worker's user log records (`Function.*` categories) into its own OpenTelemetry pipeline, and force-flushes after each invocation (critical on consumption-style plans where the worker may be frozen).
 
-The middleware emits the same span shape the [Java worker](https://github.com/microsoft/ApplicationInsights-Java/tree/main/agent/instrumentation/azure-functions) does, so cross-runtime dashboards filter on one set of keys. The default Resource carries `cloud.provider=azure`, `cloud.platform=azure_functions`, `cloud.region=$REGION_NAME`, `cloud.resource_id=/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Web/sites/<site>` (when `WEBSITE_OWNER_NAME` + `WEBSITE_RESOURCE_GROUP` + `WEBSITE_SITE_NAME` are populated by the platform), `deployment.environment.name=$WEBSITE_SLOT_NAME` (default `production`), `service.name`, and `otel.library.version` (the SDK module's runtime version). Per-invocation spans additionally carry `process.pid`, `faas.instance`, and `azure.functions.live_logs_session_id` for portal live-log correlation.
+The span shape is consistent across Azure Functions runtimes, so cross-runtime dashboards filter on one set of keys.
+
+The default Resource carries:
+
+- `cloud.provider=azure`
+- `cloud.platform=azure_functions`
+- `cloud.region=$REGION_NAME`
+- `cloud.resource_id=/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Web/sites/<site>` (when `WEBSITE_OWNER_NAME` + `WEBSITE_RESOURCE_GROUP` + `WEBSITE_SITE_NAME` are populated by the platform)
+- `deployment.environment.name=$WEBSITE_SLOT_NAME` (default `production`)
+- `service.name`
+- `otel.library.version` (the SDK module's runtime version)
+
+Per-invocation spans additionally carry:
+
+- `process.pid`
+- `faas.instance`
+- `azure.functions.live_logs_session_id` (for portal live-log correlation)
 
 The worker also emits a one-time `Go worker started` log record on cold start summarizing the SDK version, git revision, Go version, and runtime metadata. Customer queries against `message = "Go worker started"` show which build is running and whether it carries any local `replace` directive in `go.mod`.
 
