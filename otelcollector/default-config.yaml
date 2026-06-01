@@ -57,5 +57,5 @@ service:
       exporters: [otlphttp/azuremonitor]
     metrics:
       receivers: [otlp]
-      processors: [batch, cumulativetodelta]
+      processors: [cumulativetodelta, batch]
       exporters: [otlphttp/azuremonitor]
