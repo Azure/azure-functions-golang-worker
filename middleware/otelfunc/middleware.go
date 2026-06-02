@@ -21,8 +21,11 @@
 // With OTEL_EXPORTER_OTLP_ENDPOINT (and optionally
 // OTEL_EXPORTER_OTLP_HEADERS, OTEL_SERVICE_NAME) set in the app settings,
 // the middleware auto-configures both a TracerProvider and a
-// LoggerProvider against the OTLP HTTP endpoint, wires force-flush, and
+// LoggerProvider against the OTLP endpoint, wires force-flush, and
 // registers a clean shutdown — no in-code provider plumbing required.
+// The OTLP transport (gRPC or HTTP/protobuf) is selected via the
+// standard OTEL_EXPORTER_OTLP_PROTOCOL env var (and per-signal
+// overrides), with HTTP/protobuf the default.
 //
 // The middleware honors four setup paths in priority order:
 //
@@ -33,7 +36,7 @@
 //     cloud.provider=azure / cloud.platform=azure_functions / service.name
 //     (from OTEL_SERVICE_NAME or WEBSITE_SITE_NAME). (Same shape for
 //     [WithLogExporter].)
-//  3. OTEL_EXPORTER_OTLP_ENDPOINT env var — auto-build an OTLP HTTP
+//  3. OTEL_EXPORTER_OTLP_ENDPOINT env var — auto-build an OTLP
 //     TracerProvider and LoggerProvider. This is preferred over the
 //     OTel global because the global is a delegating wrapper that
 //     reports as non-noop even when nothing is wired up.
@@ -543,9 +546,11 @@ func Middleware(opts ...Option) sdk.Middleware {
 	// Resolve TracerProvider in priority order:
 	//   1. WithTracerProvider — explicitly given, use as-is.
 	//   2. WithExporter — build a TracerProvider with a default Resource.
-	//   3. OTEL_EXPORTER_OTLP_ENDPOINT env var — auto-build an OTLP HTTP
+	//   3. OTEL_EXPORTER_OTLP_ENDPOINT env var — auto-build an OTLP
 	//      TracerProvider so a vanilla `app.Use(otelfunc.Middleware())`
-	//      configures end-to-end tracing with no in-code wiring.
+	//      configures end-to-end tracing with no in-code wiring. Transport
+	//      (gRPC vs HTTP/protobuf) is selected via OTEL_EXPORTER_OTLP_PROTOCOL /
+	//      OTEL_EXPORTER_OTLP_TRACES_PROTOCOL, defaulting to http/protobuf.
 	//   4. otel.GetTracerProvider() — honor a non-noop global.
 	//
 	// Auto-OTLP is preferred over the global because the OTel global
@@ -600,7 +605,9 @@ func Middleware(opts ...Option) sdk.Middleware {
 	// Resolve LoggerProvider in priority order:
 	//   1. WithLoggerProvider — explicitly given, use as-is.
 	//   2. WithLogExporter — build a LoggerProvider with a default Resource.
-	//   3. OTEL_EXPORTER_OTLP_ENDPOINT — auto-build an OTLP HTTP LoggerProvider.
+	//   3. OTEL_EXPORTER_OTLP_ENDPOINT — auto-build an OTLP LoggerProvider
+	//      (transport selected via OTEL_EXPORTER_OTLP_PROTOCOL /
+	//      OTEL_EXPORTER_OTLP_LOGS_PROTOCOL, defaulting to http/protobuf).
 	//   4. global.GetLoggerProvider() — honor a user-installed global.
 	//
 	// Auto-OTLP is preferred over the global because the OTel global
@@ -965,9 +972,11 @@ func (m *otelMiddleware) Shutdown(ctx context.Context) error {
 const exporterInitTimeout = 10 * time.Second
 
 // buildOTLPTracerProvider returns a TracerProvider configured against the
-// OTLP HTTP endpoint specified by the standard OpenTelemetry env vars
-// (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS,
-// OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf). Returns (nil, nil) when no
+// OTLP endpoint specified by the standard OpenTelemetry env vars
+// (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS). The transport
+// (gRPC or HTTP/protobuf) is selected via OTEL_EXPORTER_OTLP_PROTOCOL /
+// OTEL_EXPORTER_OTLP_TRACES_PROTOCOL, defaulting to http/protobuf, via the
+// contrib autoexport package. Returns (nil, nil) when no
 // endpoint is set so the caller can leave the global TP untouched.
 //
 // extraResource attributes are merged into the default Resource on top
@@ -990,7 +999,10 @@ func buildOTLPTracerProvider(extraResource ...attribute.KeyValue) (*sdktrace.Tra
 }
 
 // buildOTLPLoggerProvider returns a LoggerProvider configured against the
-// OTLP HTTP endpoint specified by the standard OpenTelemetry env vars.
+// OTLP endpoint specified by the standard OpenTelemetry env vars. The
+// transport (gRPC or HTTP/protobuf) is selected via OTEL_EXPORTER_OTLP_PROTOCOL
+// / OTEL_EXPORTER_OTLP_LOGS_PROTOCOL, defaulting to http/protobuf, via the
+// contrib autoexport package.
 // Returns (nil, nil) when no endpoint is set so the caller can leave the
 // global LP untouched.
 func buildOTLPLoggerProvider(extraResource ...attribute.KeyValue) (*sdklog.LoggerProvider, error) {
