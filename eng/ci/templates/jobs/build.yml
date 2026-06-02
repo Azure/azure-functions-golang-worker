@@ -48,3 +48,10 @@ jobs:
     - script: |
         cd triggers/blob && go mod download && go vet ./... && go build ./...
       displayName: 'Build triggers/blob'
+
+    - script: |
+        go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
+        for d in samples/*/; do
+          [ -f "$d/main.go" ] && (cd "$d" && go build .) || true
+        done
+      displayName: 'Build samples (workspace mode)'
