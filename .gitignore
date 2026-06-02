@@ -413,6 +413,10 @@ bin
 
 .idea
 
+# Go workspace (local dev only)
+go.work
+go.work.sum
+
 # Go module files for samples
 samples/*/go.mod
 samples/*/go.sum
