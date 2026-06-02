@@ -51,7 +51,13 @@ jobs:
 
     - script: |
         go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
+        go work edit -replace google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
+        failed=0
         for d in samples/*/; do
-          [ -f "$d/main.go" ] && (cd "$d" && go build .) || true
+          if [ -f "$d/main.go" ]; then
+            echo "Building $d ..."
+            (cd "$d" && go build .) || { echo "FAILED: $d"; failed=1; }
+          fi
         done
+        exit $failed
       displayName: 'Build samples (workspace mode)'
