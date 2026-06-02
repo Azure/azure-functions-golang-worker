@@ -29,7 +29,7 @@ jobs:
 
     - script: |
         export PATH=$PATH:$(go env GOPATH)/bin
-        golangci-lint run --config=$(Build.SourcesDirectory)/eng/ci/.golangci.yml --out-format=colored-line-number ./... || true
+        golangci-lint run --config=$(Build.SourcesDirectory)/eng/ci/.golangci.yml --out-format=colored-line-number $(go list ./... | grep -v /samples/) || true
       displayName: 'Run golangci-lint'
 
     - script: |
