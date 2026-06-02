@@ -34,3 +34,15 @@ jobs:
 
     - script: go build ./...
       displayName: 'Run go build'
+
+    - script: |
+        cd middleware/otelfunc && go mod download && go vet ./... && go build ./...
+      displayName: 'Build middleware/otelfunc'
+
+    - script: |
+        cd otelcollector && go mod download && go vet ./... && go build ./...
+      displayName: 'Build otelcollector'
+
+    - script: |
+        cd triggers/blob && go mod download && go vet ./... && go build ./...
+      displayName: 'Build triggers/blob'

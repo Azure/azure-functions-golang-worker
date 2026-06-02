@@ -38,6 +38,18 @@ jobs:
       displayName: 'Run unit tests'
 
     - script: |
+        cd middleware/otelfunc && go mod download && go test ./...
+      displayName: 'Test middleware/otelfunc'
+
+    - script: |
+        cd otelcollector && go mod download && go test ./...
+      displayName: 'Test otelcollector'
+
+    - script: |
+        cd triggers/blob && go mod download && go test ./...
+      displayName: 'Test triggers/blob'
+
+    - script: |
         export PATH=$PATH:$(go env GOPATH)/bin
         gocover-cobertura -ignore-gen-files < $(Build.SourcesDirectory)/coverage.out > $(Build.SourcesDirectory)/coverage.xml
       displayName: 'Convert coverage to Cobertura'
