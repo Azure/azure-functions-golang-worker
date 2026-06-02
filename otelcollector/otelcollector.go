@@ -76,14 +76,26 @@ const DefaultConfigFileName = "otel-collector-config.yaml"
 // the running state before reporting a startup failure.
 const defaultStartTimeout = 10 * time.Second
 
+// defaultShutdownTimeout bounds how long the package waits for the collector
+// run goroutine to exit during teardown. It applies in two places:
+//
+//   - The start-failure drain: after a startup failure cancels the run
+//     goroutine, [Start] waits at most this long for it to exit before
+//     returning. This caps the worst-case [Start] latency at
+//     startTimeout + shutdownTimeout instead of 2x startTimeout.
+//   - [Collector.Shutdown]: when the caller's ctx has no deadline, this
+//     bounds the wait so a stuck collector cannot block teardown forever.
+const defaultShutdownTimeout = 10 * time.Second
+
 // config holds resolved options for the embedded collector.
 type config struct {
-	configFile   string
-	configYAML   string
-	factories    *otelcol.Factories
-	failFast     bool
-	startTimeout time.Duration
-	buildInfo    component.BuildInfo
+	configFile      string
+	configYAML      string
+	factories       *otelcol.Factories
+	failFast        bool
+	startTimeout    time.Duration
+	shutdownTimeout time.Duration
+	buildInfo       component.BuildInfo
 }
 
 // Option configures the embedded collector. Options are applied in order.
@@ -129,6 +141,15 @@ func StartTimeout(d time.Duration) Option {
 	return func(c *config) { c.startTimeout = d }
 }
 
+// WithShutdownTimeout overrides how long the package waits for the collector
+// to exit during teardown. It bounds the start-failure drain (so a startup
+// failure does not double the worst-case [Start] latency) and serves as the
+// fallback deadline for [Collector.Shutdown] when the caller's ctx has none.
+// A non-positive duration restores the default.
+func WithShutdownTimeout(d time.Duration) Option {
+	return func(c *config) { c.shutdownTimeout = d }
+}
+
 // WithBuildInfo overrides the BuildInfo reported by the embedded collector.
 func WithBuildInfo(bi component.BuildInfo) Option {
 	return func(c *config) { c.buildInfo = bi }
@@ -136,7 +157,8 @@ func WithBuildInfo(bi component.BuildInfo) Option {
 
 func newConfig(opts []Option) config {
 	c := config{
-		startTimeout: defaultStartTimeout,
+		startTimeout:    defaultStartTimeout,
+		shutdownTimeout: defaultShutdownTimeout,
 		buildInfo: component.BuildInfo{
 			Command:     "embedded-otelcol",
 			Description: "Embedded OTel Collector for the Azure Functions Go worker",
@@ -148,6 +170,9 @@ func newConfig(opts []Option) config {
 	}
 	if c.startTimeout <= 0 {
 		c.startTimeout = defaultStartTimeout
+	}
+	if c.shutdownTimeout <= 0 {
+		c.shutdownTimeout = defaultShutdownTimeout
 	}
 	return c
 }
@@ -195,9 +220,10 @@ func DefaultConfigYAML() string {
 // managed by [Start]/[Collector.Shutdown] (or, transparently, by
 // [WithCollector]).
 type Collector struct {
-	col    *otelcol.Collector
-	cancel context.CancelFunc
-	done   chan error
+	col             *otelcol.Collector
+	cancel          context.CancelFunc
+	done            chan error
+	shutdownTimeout time.Duration
 }
 
 // Start builds and runs an embedded collector, blocking until it reaches the
@@ -247,21 +273,27 @@ func start(ctx context.Context, cfg config) (*Collector, error) {
 	done := make(chan error, 1)
 	go func() { done <- col.Run(runCtx) }()
 
-	c := &Collector{col: col, cancel: cancel, done: done}
+	c := &Collector{col: col, cancel: cancel, done: done, shutdownTimeout: cfg.shutdownTimeout}
 
 	alive, err := c.waitReady(ctx, cfg.startTimeout)
 	if err != nil {
 		cancel()
 		// When readiness fails on a timeout or context cancellation the run
 		// goroutine is still executing col.Run; cancel() above signals it to
-		// stop. Drain done (bounded) so Start does not return while a
+		// stop. Drain done (bounded by shutdownTimeout, not startTimeout, so
+		// the worst-case Start latency is startTimeout + shutdownTimeout
+		// instead of 2x startTimeout) so Start does not return while a
 		// partially-started collector goroutine is still running. When the
 		// collector already exited on its own, alive is false and done has
 		// been consumed by waitReady, so there is nothing to drain.
 		if alive {
 			select {
 			case <-done:
-			case <-time.After(cfg.startTimeout):
+			case <-time.After(cfg.shutdownTimeout):
+				slog.LogAttrs(ctx, slog.LevelWarn,
+					"embedded collector run goroutine did not exit within shutdown timeout after startup failure",
+					slog.Duration("shutdown_timeout", cfg.shutdownTimeout),
+				)
 			}
 		}
 		return nil, err
@@ -302,11 +334,19 @@ func (c *Collector) waitReady(ctx context.Context, timeout time.Duration) (alive
 }
 
 // Shutdown gracefully stops the collector, flushing buffered telemetry, and
-// waits for it to exit. It is bounded by ctx. Shutdown is safe to call on a
-// nil *Collector (a no-op), which lets graceful-degrade callers avoid a guard.
+// waits for it to exit. It is bounded by ctx; when ctx has no deadline the
+// configured shutdown timeout (see [WithShutdownTimeout]) is applied so a
+// stuck collector cannot block teardown indefinitely. Shutdown is safe to
+// call on a nil *Collector (a no-op), which lets graceful-degrade callers
+// avoid a guard.
 func (c *Collector) Shutdown(ctx context.Context) error {
 	if c == nil || c.col == nil {
 		return nil
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.shutdownTimeout)
+		defer cancel()
 	}
 	c.col.Shutdown()
 	select {

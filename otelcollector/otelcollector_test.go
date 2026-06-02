@@ -46,6 +46,9 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.startTimeout != defaultStartTimeout {
 		t.Errorf("startTimeout = %v, want %v", c.startTimeout, defaultStartTimeout)
 	}
+	if c.shutdownTimeout != defaultShutdownTimeout {
+		t.Errorf("shutdownTimeout = %v, want %v", c.shutdownTimeout, defaultShutdownTimeout)
+	}
 	if c.failFast {
 		t.Errorf("failFast should default to false")
 	}
@@ -58,7 +61,8 @@ func TestNewConfig_Options(t *testing.T) {
 	c := newConfig([]Option{
 		WithConfigYAML("yaml-content"),
 		FailFast(),
-		StartTimeout(-1), // non-positive restores default
+		StartTimeout(-1),         // non-positive restores default
+		WithShutdownTimeout(-1), // non-positive restores default
 	})
 	if c.configYAML != "yaml-content" {
 		t.Errorf("configYAML = %q", c.configYAML)
@@ -68,6 +72,14 @@ func TestNewConfig_Options(t *testing.T) {
 	}
 	if c.startTimeout != defaultStartTimeout {
 		t.Errorf("non-positive StartTimeout should restore default, got %v", c.startTimeout)
+	}
+	if c.shutdownTimeout != defaultShutdownTimeout {
+		t.Errorf("non-positive WithShutdownTimeout should restore default, got %v", c.shutdownTimeout)
+	}
+
+	c2 := newConfig([]Option{WithShutdownTimeout(3 * time.Second)})
+	if c2.shutdownTimeout != 3*time.Second {
+		t.Errorf("WithShutdownTimeout(3s) = %v, want 3s", c2.shutdownTimeout)
 	}
 }
 
