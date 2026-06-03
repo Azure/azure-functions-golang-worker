@@ -19,9 +19,9 @@ jobs:
 
     steps:
     - task: GoTool@0
-      displayName: 'Install Go 1.24'
+      displayName: 'Install Go 1.25'
       inputs:
-        version: '1.24'
+        version: '1.25'
 
     - script: go version
       displayName: 'Print Go version'
@@ -29,8 +29,35 @@ jobs:
     - script: go mod download
       displayName: 'Download dependencies'
 
-    - script: go vet ./...
+    - script: |
+        go vet $(go list ./... | grep -v /samples/)
       displayName: 'Run go vet'
 
-    - script: go build ./...
+    - script: |
+        go build $(go list ./... | grep -v /samples/)
       displayName: 'Run go build'
+
+    - script: |
+        cd middleware/otelfunc && go mod download && go vet ./... && go build ./...
+      displayName: 'Build middleware/otelfunc'
+
+    - script: |
+        cd otelcollector && go mod download && go vet ./... && go build ./...
+      displayName: 'Build otelcollector'
+
+    - script: |
+        cd triggers/blob && go mod download && go vet ./... && go build ./...
+      displayName: 'Build triggers/blob'
+
+    - script: |
+        go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
+        go work edit -replace google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
+        failed=0
+        for d in samples/*/; do
+          if [ -f "$d/main.go" ]; then
+            echo "Building $d ..."
+            (cd "$d" && go build .) || { echo "FAILED: $d"; failed=1; }
+          fi
+        done
+        exit $failed
+      displayName: 'Build samples (workspace mode)'

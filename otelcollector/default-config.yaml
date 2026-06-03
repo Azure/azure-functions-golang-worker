@@ -1,0 +1,61 @@
+# Default embedded OpenTelemetry Collector configuration for the Azure
+# Functions Go worker.
+#
+# This config is compiled into the binary (go:embed) and used when no explicit
+# configuration is supplied via otelcollector.WithConfigFile /
+# otelcollector.WithConfigYAML and no otel-collector-config.yaml file is found
+# next to the executable.
+#
+# It receives OTLP from the in-process worker and the Functions host on
+# localhost and forwards traces, logs, and metrics to an Azure Monitor Data
+# Collection Endpoint (DCE) using managed-identity auth. The three signal
+# endpoints are read from the environment:
+#
+#   OTEL_DCE_TRACES_ENDPOINT
+#   OTEL_DCE_LOGS_ENDPOINT
+#   OTEL_DCE_METRICS_ENDPOINT
+#
+# Azure Monitor expects DELTA temporality for metrics, so the metrics pipeline
+# converts cumulative sums to delta via the cumulativetodelta processor.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: localhost:4317
+      http:
+        endpoint: localhost:4318
+
+processors:
+  batch:
+  cumulativetodelta:
+
+extensions:
+  azureauth:
+    use_default: true
+    scopes:
+      - https://monitor.azure.com/.default
+
+exporters:
+  otlphttp/azuremonitor:
+    traces_endpoint: ${env:OTEL_DCE_TRACES_ENDPOINT}
+    logs_endpoint: ${env:OTEL_DCE_LOGS_ENDPOINT}
+    metrics_endpoint: ${env:OTEL_DCE_METRICS_ENDPOINT}
+    auth:
+      authenticator: azureauth
+
+service:
+  extensions: [azureauth]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/azuremonitor]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/azuremonitor]
+    metrics:
+      receivers: [otlp]
+      processors: [cumulativetodelta, batch]
+      exporters: [otlphttp/azuremonitor]

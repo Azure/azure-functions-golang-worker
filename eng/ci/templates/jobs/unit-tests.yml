@@ -14,9 +14,9 @@ jobs:
 
     steps:
     - task: GoTool@0
-      displayName: 'Install Go 1.24'
+      displayName: 'Install Go 1.25'
       inputs:
-        version: '1.24'
+        version: '1.25'
 
     - script: go mod download
       displayName: 'Download dependencies'
@@ -29,13 +29,25 @@ jobs:
 
     - script: |
         export PATH=$PATH:$(go env GOPATH)/bin
-        golangci-lint run --config=$(Build.SourcesDirectory)/eng/ci/.golangci.yml --out-format=colored-line-number ./... || true
+        golangci-lint run --config=$(Build.SourcesDirectory)/eng/ci/.golangci.yml --out-format=colored-line-number $(go list ./... | grep -v /samples/) || true
       displayName: 'Run golangci-lint'
 
     - script: |
         export PATH=$PATH:$(go env GOPATH)/bin
         gotestsum --junitfile $(Build.SourcesDirectory)/test-results.xml -- -coverprofile=$(Build.SourcesDirectory)/coverage.out -covermode=atomic -coverpkg=./worker/...,./sdk/... ./worker/... ./sdk/...
       displayName: 'Run unit tests'
+
+    - script: |
+        cd middleware/otelfunc && go mod download && go test ./...
+      displayName: 'Test middleware/otelfunc'
+
+    - script: |
+        cd otelcollector && go mod download && go test ./...
+      displayName: 'Test otelcollector'
+
+    - script: |
+        cd triggers/blob && go mod download && go test ./...
+      displayName: 'Test triggers/blob'
 
     - script: |
         export PATH=$PATH:$(go env GOPATH)/bin

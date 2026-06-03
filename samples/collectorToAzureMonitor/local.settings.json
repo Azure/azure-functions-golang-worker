@@ -1,0 +1,15 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "native",
+
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
+    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+    "OTEL_SERVICE_NAME": "collector-to-azure-monitor",
+
+    "OTEL_DCE_TRACES_ENDPOINT": "https://<your-dce>.<region>.ingest.monitor.azure.com/dataCollectionRules/<dcr-immutable-id>/streams/Microsoft-OTLP-Traces/otlp/v1/traces",
+    "OTEL_DCE_LOGS_ENDPOINT": "https://<your-dce>.<region>.ingest.monitor.azure.com/dataCollectionRules/<dcr-immutable-id>/streams/Microsoft-OTLP-Logs/otlp/v1/logs",
+    "OTEL_DCE_METRICS_ENDPOINT": "https://<your-dce>.<region>.metrics.ingest.monitor.azure.com/dataCollectionRules/<dcr-immutable-id>/streams/microsoft-otelmetrics/otlp/v1/metrics"
+  }
+}
