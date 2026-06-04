@@ -17,9 +17,11 @@
 # The pipeline never produces release notes or binary artifacts;
 # release notes are authored once on the GitHub release.
 #
-# NOTE: this pipeline pushes git tags to the GitHub origin. It requires
-# a secret pipeline variable `GITHUB_TOKEN` containing a PAT with
-# `contents:write` access to the repository.
+# NOTE: this pipeline pushes git tags to the GitHub origin using the
+# credentials persisted by the `checkout: self` task. This works when
+# the ADO project's GitHub service connection has write scope on the
+# repo. If that's not the case, switch the 'Push submodule tags' step
+# to fetch a token from Azure Key Vault and push with it explicitly.
 # ---------------------------------------------------------------
 
 trigger: none
@@ -186,28 +188,18 @@ extends:
 
               - bash: |
                   set -euo pipefail
-                  if [ -z "${GITHUB_TOKEN:-}" ]; then
-                    echo "##vso[task.logissue type=error]Pipeline variable GITHUB_TOKEN is not set. Configure a secret variable holding a GitHub PAT with contents:write."
-                    exit 1
-                  fi
-                  remote=$(git config --get remote.origin.url)
-                  case "$remote" in
-                    https://github.com/*)
-                      host_path=${remote#https://}
-                      auth_remote="https://x-access-token:${GITHUB_TOKEN}@${host_path}"
-                      ;;
-                    *)
-                      echo "##vso[task.logissue type=error]Unexpected remote URL '$remote'; expected https://github.com/..."
-                      exit 1
-                      ;;
-                  esac
-
+                  # Push uses the credentials persisted by `checkout: self` above
+                  # (persistCredentials: true). This relies on the ADO project's
+                  # GitHub service connection having write scope on the repo.
+                  # If the push fails with HTTP 403, the connection is read-only
+                  # and the pipeline needs to be reconfigured to use a token
+                  # explicitly (e.g. a fine-grained PAT or GitHub App token
+                  # fetched from Azure Key Vault).
                   for module in middleware/otelfunc otelcollector triggers/blob; do
                     subtag="$module/$ROOT_TAG"
                     echo "Pushing $subtag"
-                    git push "$auth_remote" "refs/tags/$subtag"
+                    git push origin "refs/tags/$subtag"
                   done
                 displayName: 'Push submodule tags to GitHub'
                 env:
                   ROOT_TAG: $(rootTag)
-                  GITHUB_TOKEN: $(GITHUB_TOKEN)
