@@ -21,5 +21,3 @@ require (
 	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 )
-
-replace github.com/azure/azure-functions-golang-worker => ../../
