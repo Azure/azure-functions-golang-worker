@@ -1,0 +1,213 @@
+# ---------------------------------------------------------------
+# Azure DevOps Pipeline: Release Submodule Tags
+# Manual-trigger only. Given an existing root module tag (e.g. v0.7.0),
+# checks out that exact commit, validates each submodule's go.mod, and
+# atomically creates matching submodule tags from the same commit so
+# every module in this repo is released together.
+#
+# Release flow:
+#   1. Open a "release prep" PR that bumps each submodule's go.mod
+#      `require github.com/azure/azure-functions-golang-worker` line
+#      to the target version (e.g. v0.7.0).
+#   2. Merge the PR.
+#   3. Create a GitHub release with tag vX.Y.Z pointing at the merge
+#      commit. This is the root module tag.
+#   4. Manually queue this pipeline with rootTag=vX.Y.Z.
+#
+# The pipeline never produces release notes or binary artifacts;
+# release notes are authored once on the GitHub release.
+#
+# NOTE: this pipeline pushes git tags to the GitHub origin. It requires
+# a secret pipeline variable `GITHUB_TOKEN` containing a PAT with
+# `contents:write` access to the repository.
+# ---------------------------------------------------------------
+
+trigger: none
+pr: none
+
+parameters:
+  - name: rootTag
+    displayName: 'Root module tag (e.g. v0.7.0)'
+    type: string
+
+resources:
+  repositories:
+    - repository: 1es
+      type: git
+      name: 1ESPipelineTemplates/1ESPipelineTemplates
+      ref: refs/tags/release
+    - repository: eng
+      type: git
+      name: engineering
+      ref: refs/tags/release
+
+  # Optional gate: once the official-build pipeline is registered in ADO,
+  # add a `pipelines:` resource here so this pipeline can only be queued
+  # against a successful official-build run. Example:
+  #
+  #   pipelines:
+  #     - pipeline: officialBuild
+  #       source: '<official-build pipeline name in ADO>'
+  #       trigger: none
+
+extends:
+  template: v1/1ES.Official.PipelineTemplate.yml@1es
+  parameters:
+    pool:
+      name: 1es-pool-azfunc
+      image: 1es-windows-2022
+      os: windows
+    featureFlags:
+      golang:
+        internalModuleProxy:
+          enabled: true
+
+    sdl:
+      # No binaries are produced or signed; this pipeline only creates
+      # and pushes git tags.
+      codeSignValidation:
+        enabled: false
+      codeql:
+        compiled:
+          enabled: false
+
+    stages:
+      - stage: Release
+        displayName: 'Release submodule tags'
+        jobs:
+          - job: TagSubmodules
+            displayName: 'Create and push submodule tags'
+            pool:
+              name: 1es-pool-azfunc
+              image: 1es-ubuntu-22.04
+              os: linux
+
+            variables:
+              - name: rootTag
+                value: ${{ parameters.rootTag }}
+
+            steps:
+              - checkout: self
+                fetchTags: true
+                fetchDepth: 0
+                persistCredentials: true
+
+              - bash: |
+                  set -euo pipefail
+                  if ! [[ "$ROOT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+                    echo "##vso[task.logissue type=error]Invalid tag format: '$ROOT_TAG'. Expected semver such as 'v0.7.0' or 'v0.7.0-preview'."
+                    exit 1
+                  fi
+                  echo "Root tag validated: $ROOT_TAG"
+                displayName: 'Validate input tag format'
+                env:
+                  ROOT_TAG: $(rootTag)
+
+              - bash: |
+                  set -euo pipefail
+                  git fetch --tags --force origin
+                  if ! git rev-parse "refs/tags/$ROOT_TAG" >/dev/null 2>&1; then
+                    echo "##vso[task.logissue type=error]Tag '$ROOT_TAG' does not exist on origin. Create the GitHub release first."
+                    exit 1
+                  fi
+                  COMMIT_SHA=$(git rev-list -n 1 "refs/tags/$ROOT_TAG")
+                  echo "Tag '$ROOT_TAG' -> commit $COMMIT_SHA"
+                  echo "##vso[task.setvariable variable=commitSha]$COMMIT_SHA"
+                displayName: 'Resolve root tag to commit'
+                env:
+                  ROOT_TAG: $(rootTag)
+
+              - bash: |
+                  set -euo pipefail
+                  git checkout --detach "$COMMIT_SHA"
+                  echo "Checked out $COMMIT_SHA"
+                displayName: 'Checkout tagged commit'
+                env:
+                  COMMIT_SHA: $(commitSha)
+
+              - bash: |
+                  set -euo pipefail
+                  failed=0
+                  for module in middleware/otelfunc otelcollector triggers/blob; do
+                    gomod="$module/go.mod"
+                    echo "--- $gomod ---"
+                    if [ ! -f "$gomod" ]; then
+                      echo "##vso[task.logissue type=error]$gomod is missing at this commit."
+                      failed=1
+                      continue
+                    fi
+
+                    # Strip block-form 'require ( ... )' wrappers and comments
+                    # so a single grep handles both single-line and block forms.
+                    if ! awk '
+                      /^require[[:space:]]*\(/ {block=1; next}
+                      block && /^\)/ {block=0; next}
+                      block || /^require[[:space:]]/ {print}
+                    ' "$gomod" | grep -E "(^|[[:space:]])github\.com/azure/azure-functions-golang-worker[[:space:]]+${ROOT_TAG}([[:space:]]|$)" >/dev/null; then
+                      echo "##vso[task.logissue type=error]$gomod does not require github.com/azure/azure-functions-golang-worker at version $ROOT_TAG."
+                      grep -nE "github\.com/azure/azure-functions-golang-worker" "$gomod" || true
+                      failed=1
+                    else
+                      echo "  require: OK"
+                    fi
+
+                    if grep -E "^[[:space:]]*replace[[:space:]]+github\.com/azure/azure-functions-golang-worker" "$gomod" >/dev/null; then
+                      echo "##vso[task.logissue type=error]$gomod still contains a 'replace' directive for the root module. Remove it before releasing."
+                      failed=1
+                    else
+                      echo "  no root replace: OK"
+                    fi
+                  done
+                  exit $failed
+                displayName: 'Validate submodule go.mod files'
+                env:
+                  ROOT_TAG: $(rootTag)
+
+              - bash: |
+                  set -euo pipefail
+                  for module in middleware/otelfunc otelcollector triggers/blob; do
+                    subtag="$module/$ROOT_TAG"
+                    if git rev-parse "refs/tags/$subtag" >/dev/null 2>&1; then
+                      existing=$(git rev-list -n 1 "refs/tags/$subtag")
+                      if [ "$existing" != "$COMMIT_SHA" ]; then
+                        echo "##vso[task.logissue type=error]Tag $subtag already exists at $existing but expected $COMMIT_SHA."
+                        exit 1
+                      fi
+                      echo "Tag $subtag already at $COMMIT_SHA; skipping."
+                    else
+                      git tag -a "$subtag" "$COMMIT_SHA" -m "Release $subtag"
+                      echo "Created tag $subtag at $COMMIT_SHA"
+                    fi
+                  done
+                displayName: 'Create submodule tags'
+                env:
+                  ROOT_TAG: $(rootTag)
+                  COMMIT_SHA: $(commitSha)
+
+              - bash: |
+                  set -euo pipefail
+                  if [ -z "${GITHUB_TOKEN:-}" ]; then
+                    echo "##vso[task.logissue type=error]Pipeline variable GITHUB_TOKEN is not set. Configure a secret variable holding a GitHub PAT with contents:write."
+                    exit 1
+                  fi
+                  remote=$(git config --get remote.origin.url)
+                  case "$remote" in
+                    https://github.com/*)
+                      host_path=${remote#https://}
+                      auth_remote="https://x-access-token:${GITHUB_TOKEN}@${host_path}"
+                      ;;
+                    *)
+                      echo "##vso[task.logissue type=error]Unexpected remote URL '$remote'; expected https://github.com/..."
+                      exit 1
+                      ;;
+                  esac
+
+                  for module in middleware/otelfunc otelcollector triggers/blob; do
+                    subtag="$module/$ROOT_TAG"
+                    echo "Pushing $subtag"
+                    git push "$auth_remote" "refs/tags/$subtag"
+                  done
+                displayName: 'Push submodule tags to GitHub'
+                env:
+                  ROOT_TAG: $(rootTag)
+                  GITHUB_TOKEN: $(GITHUB_TOKEN)
