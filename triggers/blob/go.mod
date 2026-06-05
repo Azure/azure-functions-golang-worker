@@ -6,7 +6,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.21.1
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.7.0
-	github.com/azure/azure-functions-golang-worker v0.6.0-preview
+	github.com/azure/azure-functions-golang-worker v0.0.0-pipelinetest1
 )
 
 require (

@@ -3,7 +3,7 @@ module github.com/azure/azure-functions-golang-worker/otelcollector
 go 1.25.0
 
 require (
-	github.com/azure/azure-functions-golang-worker v0.6.0-preview
+	github.com/azure/azure-functions-golang-worker v0.0.0-pipelinetest1
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/azureauthextension v0.132.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/processor/cumulativetodeltaprocessor v0.132.0
 	go.opentelemetry.io/collector/component v1.38.0
