@@ -1,4 +1,4 @@
-FROM golang:1.24 AS proxy-builder
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.24 AS proxy-builder
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY sdk/ sdk/
