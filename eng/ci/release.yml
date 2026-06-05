@@ -110,6 +110,12 @@ extends:
 
               - bash: |
                   set -euo pipefail
+                  git config user.name "Azure Functions Release Pipeline"
+                  git config user.email "azfuncgo-release@noreply.github.com"
+                displayName: 'Configure git identity for annotated tags'
+
+              - bash: |
+                  set -euo pipefail
                   if ! [[ "$ROOT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
                     echo "##vso[task.logissue type=error]Invalid tag format: '$ROOT_TAG'. Expected semver such as 'v0.7.0' or 'v0.7.0-preview'."
                     exit 1
