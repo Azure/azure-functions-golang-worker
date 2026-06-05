@@ -9,10 +9,17 @@
 #   1. Open a "release prep" PR that bumps each submodule's go.mod
 #      `require github.com/azure/azure-functions-golang-worker` line
 #      to the target version (e.g. v0.7.0).
-#   2. Merge the PR.
-#   3. Create a GitHub release with tag vX.Y.Z pointing at the merge
-#      commit. This is the root module tag.
-#   4. Manually queue this pipeline with rootTag=vX.Y.Z.
+#   2. Merge the PR. This triggers `golang-worker.official` on the
+#      merge commit; wait for it to succeed.
+#   3. Create a GitHub release with tag vX.Y.Z pointing at the same
+#      merge commit. This is the root module tag.
+#   4. Manually queue this pipeline:
+#        - Resources -> officialBuild: pick the successful
+#          golang-worker.official run from step 2.
+#        - rootTag: vX.Y.Z (matching the tag from step 3).
+#      The pipeline cross-checks that the picked official run's
+#      commit equals the commit pointed at by rootTag before
+#      publishing any submodule tags.
 #
 # The pipeline never produces release notes or binary artifacts;
 # release notes are authored once on the GitHub release.
@@ -53,14 +60,14 @@ resources:
       name: engineering
       ref: refs/tags/release
 
-  # Optional gate: once the official-build pipeline is registered in ADO,
-  # add a `pipelines:` resource here so this pipeline can only be queued
-  # against a successful official-build run. Example:
-  #
-  #   pipelines:
-  #     - pipeline: officialBuild
-  #       source: '<official-build pipeline name in ADO>'
-  #       trigger: none
+  # Gating resource: this pipeline can only be queued by selecting a
+  # successful run of golang-worker.official. The picked run's
+  # sourceCommit is cross-checked against the commit pointed at by
+  # rootTag in a later step.
+  pipelines:
+    - pipeline: officialBuild
+      source: golang-worker.official
+      trigger: none
 
 extends:
   template: v1/1ES.Official.PipelineTemplate.yml@1es
@@ -139,6 +146,19 @@ extends:
                   echo "##vso[task.setvariable variable=commitSha]$COMMIT_SHA"
                 displayName: 'Resolve root tag to commit'
                 env:
+                  ROOT_TAG: $(rootTag)
+
+              - bash: |
+                  set -euo pipefail
+                  if [ "$OFFICIAL_COMMIT" != "$COMMIT_SHA" ]; then
+                    echo "##vso[task.logissue type=error]The selected golang-worker.official run was built from commit $OFFICIAL_COMMIT, but tag $ROOT_TAG points at $COMMIT_SHA. Pick the official run that built the same commit as the tag."
+                    exit 1
+                  fi
+                  echo "Official build commit matches tag commit: $COMMIT_SHA"
+                displayName: 'Verify official build ran on the tagged commit'
+                env:
+                  OFFICIAL_COMMIT: $(resources.pipeline.officialBuild.sourceCommit)
+                  COMMIT_SHA: $(commitSha)
                   ROOT_TAG: $(rootTag)
 
               - bash: |
