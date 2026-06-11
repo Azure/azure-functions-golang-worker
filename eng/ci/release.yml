@@ -159,8 +159,10 @@ extends:
                   git config user.email "azfuncgo-release@noreply.github.com"
                 displayName: 'Configure git identity for annotated tags'
 
-              # Decides whether this run should tag anything and resolves the
-              # version + target commit. Two modes:
+              # Decides what to release and resolves the version + target
+              # commit. Because this pipeline is manual-trigger only, every
+              # run is meant to produce a release: a commit that can't be
+              # released is an error, not a silent no-op. Two modes:
               #
               #   Override:  rootTagOverride is non-empty. Use it as the
               #              version. The target commit is the selected
@@ -169,14 +171,18 @@ extends:
               #   Detect (no override): read the pinned root-module version
               #              from each submodule's go.mod at the official
               #              build commit. If all submodules agree on a
-              #              proper semver version and no tag for it exists
-              #              yet, release this commit as that version.
-              #              Otherwise stop cleanly without touching tags.
-              #              This works the same for merge, squash, and
-              #              rebase commits because the source of truth is
+              #              proper (non-pseudo) semver version, release this
+              #              commit as that version. If they disagree, none is
+              #              found, or it's a pseudo-version, the step fails
+              #              loudly. This works the same for merge, squash,
+              #              and rebase commits because the source of truth is
               #              the file contents, not the commit message.
               #
-              # Sets job-scoped variables: shouldRelease, rootTag, commitSha.
+              # Tag conflicts (a version that already exists at a different
+              # commit) and idempotent re-runs (the same tag already at this
+              # commit) are handled later in 'Create release tags'.
+              #
+              # Sets job-scoped variables: rootTag, commitSha.
               - bash: |
                   set -euo pipefail
 
@@ -242,35 +248,22 @@ extends:
                     done
 
                     if [ "$INCONSISTENT" = "1" ] || [ -z "$DETECTED_VER" ]; then
-                      echo "Submodules disagree or no version detected; not a release commit."
-                      echo "##vso[task.setvariable variable=shouldRelease]false"
-                      exit 0
+                      echo "##vso[task.logissue type=error]Submodules disagree on the root-module version, or no version was found. This commit is not a coherent release point. Fix the go.mod files, or pass the rootTag parameter to force a version."
+                      exit 1
                     fi
 
-                    # Skip pseudo-versions (vX.Y.Z-YYYYMMDDHHMMSS-abcdef123456),
-                    # which `go get @<branch-or-commit>` writes. These are never
-                    # real release targets.
+                    # Pseudo-versions (vX.Y.Z-YYYYMMDDHHMMSS-abcdef123456) are
+                    # written by `go get @<branch-or-commit>` and are never a
+                    # real release target.
                     if [[ "$DETECTED_VER" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9]{14}- ]]; then
-                      echo "Detected pseudo-version $DETECTED_VER; not a release commit."
-                      echo "##vso[task.setvariable variable=shouldRelease]false"
-                      exit 0
-                    fi
-
-                    # If a tag for this version already exists, nothing to do.
-                    # This is the common case: every subsequent commit on main
-                    # still pins to the last released version.
-                    if git rev-parse "refs/tags/$DETECTED_VER" >/dev/null 2>&1; then
-                      existing=$(git rev-list -n 1 "refs/tags/$DETECTED_VER")
-                      echo "Tag $DETECTED_VER already exists at $existing; nothing to do."
-                      echo "##vso[task.setvariable variable=shouldRelease]false"
-                      exit 0
+                      echo "##vso[task.logissue type=error]Submodules pin a pseudo-version ($DETECTED_VER), not a release version. Bump the go.mod files to a real version, or pass the rootTag parameter to force one."
+                      exit 1
                     fi
 
                     ROOT_TAG="$DETECTED_VER"
-                    echo "Detected new release version: $ROOT_TAG"
+                    echo "Detected release version: $ROOT_TAG"
                   fi
 
-                  echo "##vso[task.setvariable variable=shouldRelease]true"
                   echo "##vso[task.setvariable variable=rootTag]$ROOT_TAG"
                   echo "##vso[task.setvariable variable=commitSha]$OFFICIAL_COMMIT"
                   echo "Resolved rootTag=$ROOT_TAG commitSha=$OFFICIAL_COMMIT"
@@ -289,7 +282,6 @@ extends:
                   echo "Root tag validated: $ROOT_TAG"
                   echo "Submodules: $SUBMODULES"
                 displayName: 'Validate tag format'
-                condition: and(succeeded(), eq(variables.shouldRelease, 'true'))
                 env:
                   ROOT_TAG: $(rootTag)
                   SUBMODULES: $(submodules)
@@ -300,7 +292,6 @@ extends:
                   git checkout --detach "$COMMIT_SHA"
                   echo "Checked out $COMMIT_SHA"
                 displayName: 'Checkout release commit'
-                condition: and(succeeded(), eq(variables.shouldRelease, 'true'))
                 env:
                   COMMIT_SHA: $(commitSha)
 
@@ -339,13 +330,14 @@ extends:
                   done
                   exit $failed
                 displayName: 'Validate submodule go.mod files'
-                condition: and(succeeded(), eq(variables.shouldRelease, 'true'))
                 env:
                   ROOT_TAG: $(rootTag)
                   SUBMODULES: $(submodules)
 
-              # Idempotent: creates the tag if missing, verifies the commit
-              # if present. Same loop handles root and every submodule.
+              # Idempotent and safe: creates each tag if missing; if a tag
+              # already exists it must point at the same commit, otherwise the
+              # step fails (prevents silently reusing a version for a different
+              # commit). Same loop handles root and every submodule.
               - bash: |
                   set -euo pipefail
 
@@ -373,7 +365,6 @@ extends:
                     create_tag "$module/$ROOT_TAG"
                   done
                 displayName: 'Create release tags'
-                condition: and(succeeded(), eq(variables.shouldRelease, 'true'))
                 env:
                   ROOT_TAG: $(rootTag)
                   COMMIT_SHA: $(commitSha)
@@ -399,7 +390,6 @@ extends:
                     push_tag "$module/$ROOT_TAG"
                   done
                 displayName: 'Push release tags to GitHub'
-                condition: and(succeeded(), eq(variables.shouldRelease, 'true'))
                 env:
                   ROOT_TAG: $(rootTag)
                   SUBMODULES: $(submodules)
@@ -408,11 +398,10 @@ extends:
                   set -euo pipefail
                   echo ""
                   echo "============================================================"
-                  echo "Tags published. To publish release notes, create the GitHub"
-                  echo "Release at:"
+                  echo "Release tags are in place on origin. To publish release"
+                  echo "notes, create the GitHub Release at:"
                   echo "  https://github.com/Azure/azure-functions-golang-worker/releases/new?tag=$ROOT_TAG"
                   echo "============================================================"
                 displayName: 'Next steps: create GitHub Release'
-                condition: and(succeeded(), eq(variables.shouldRelease, 'true'))
                 env:
                   ROOT_TAG: $(rootTag)
