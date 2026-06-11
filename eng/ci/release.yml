@@ -3,30 +3,37 @@
 #
 # Auto-triggered by successful runs of `golang-worker.official` on main.
 # On every main commit this pipeline runs a fast detection step:
-#   - If the merge commit message matches "Merge pull request #N from
-#     <owner>/release/vX.Y.Z", the pipeline tags root + every submodule
-#     at the merge commit and pushes them.
-#   - Otherwise it exits successfully without touching tags.
+#   - It reads each submodule's go.mod at the commit and extracts the
+#     version they pin for `github.com/azure/azure-functions-golang-worker`.
+#   - If all submodules agree on a real semver version (e.g. v0.7.0) and
+#     no tag for that version exists yet, the commit is treated as a
+#     release: the pipeline tags root + every submodule at the commit and
+#     pushes them.
+#   - Otherwise (no change, mismatch, pseudo-version, or tag already
+#     exists) it exits successfully without touching tags.
+#
+# This means: a release is just a PR that bumps every submodule's
+# `require github.com/azure/azure-functions-golang-worker` line to the
+# new version. The merge style (merge commit, squash, rebase) doesn't
+# matter — the file contents drive the decision.
 #
 # Release flow:
-#   1. Open a PR from branch `release/vX.Y.Z` that bumps each
-#      submodule's go.mod `require github.com/azure/azure-functions-
-#      golang-worker` line to `vX.Y.Z`.
-#   2. Merge the PR (must be a real merge commit, not a squash —
-#      squash discards the branch name we parse).
-#   3. golang-worker.official runs on the merge commit. On success →
-#   4. This pipeline auto-fires on the same commit, detects the
-#      release/vX.Y.Z branch in the merge message, validates the
+#   1. Open a PR that bumps each submodule's go.mod
+#      `require github.com/azure/azure-functions-golang-worker` line to
+#      the target version (e.g. vX.Y.Z).
+#   2. Merge the PR (any merge style works).
+#   3. golang-worker.official runs on the resulting commit. On success →
+#   4. This pipeline auto-fires on the same commit, validates the
 #      submodule go.mod files, and creates + pushes the root tag
-#      `vX.Y.Z` plus matching submodule tags.
+#      `vX.Y.Z` plus matching submodule tags from the same commit.
 #   5. A human creates the GitHub Release with notes at
 #      https://github.com/Azure/azure-functions-golang-worker/releases/new?tag=vX.Y.Z
 #      (the URL is printed at the end of the pipeline run).
 #
 # Manual override: queueing the pipeline with `rootTag=vX.Y.Z` skips
-# the merge-commit detection and operates on the picked official run's
-# commit. Use for re-runs after a failed publish or for ad-hoc
-# releases that didn't go through the release-branch convention.
+# the auto-detection and operates on the picked official run's commit.
+# Use this to re-publish a failed run, or to release from a commit
+# whose go.mod files weren't updated as part of the change.
 #
 # This pipeline never produces release notes or binary artifacts;
 # release notes are authored once on the GitHub release.
@@ -152,11 +159,16 @@ extends:
               #                      version. The target commit is whatever the
               #                      selected official run was built from.
               #
-              #   Auto (no override): parse the official build's commit message.
-              #                       Only release-branch merges
-              #                       (Merge pull request #N from <owner>/release/vX.Y.Z)
-              #                       produce a release; everything else exits
-              #                       cleanly without touching tags.
+              #   Auto (no override): read the pinned root-module version from
+              #                       each submodule's go.mod at the official
+              #                       build commit. If all submodules agree on a
+              #                       proper semver version and no tag for it
+              #                       exists yet, release this commit as that
+              #                       version. Otherwise exit cleanly without
+              #                       touching tags. This works the same for
+              #                       merge, squash, and rebase commits because
+              #                       the source of truth is the file contents,
+              #                       not the commit message or branch name.
               #
               # Sets job-scoped variables: shouldRelease, rootTag, commitSha.
               - bash: |
@@ -164,35 +176,92 @@ extends:
 
                   echo "rootTagOverride=$ROOT_TAG_OVERRIDE"
                   echo "officialCommit=$OFFICIAL_COMMIT"
+                  echo "submodules=$SUBMODULES"
 
                   if [ -z "$OFFICIAL_COMMIT" ]; then
                     echo "##vso[task.logissue type=error]No official build sourceCommit available. This pipeline must be queued via the golang-worker.official resource."
                     exit 1
                   fi
 
+                  # Make sure the commit and existing tags are present locally.
+                  git fetch origin "$OFFICIAL_COMMIT" --depth=1 2>/dev/null || true
+                  git fetch --tags origin 2>/dev/null || true
+
                   if [ -n "$ROOT_TAG_OVERRIDE" ]; then
                     echo "Mode: manual override"
                     ROOT_TAG="$ROOT_TAG_OVERRIDE"
                   else
-                    echo "Mode: auto-detect from merge commit message"
-                    git fetch origin "$OFFICIAL_COMMIT" --depth=1 2>/dev/null || true
-                    MSG=$(git log -1 --format=%B "$OFFICIAL_COMMIT")
-                    echo "Commit message:"
-                    echo "$MSG" | sed 's/^/  | /'
+                    echo "Mode: auto-detect from submodule go.mod files"
 
-                    # GitHub PR merge commit subject:
-                    #   Merge pull request #N from <owner>/release/vX.Y.Z
-                    # Squash merges discard the branch name, so they will not
-                    # match and will skip silently.
-                    RELEASE_RE='Merge pull request #[0-9]+ from [^[:space:]]+/release/(v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?)'
-                    if [[ "$MSG" =~ $RELEASE_RE ]]; then
-                      ROOT_TAG="${BASH_REMATCH[1]}"
-                      echo "Detected release-branch merge: $ROOT_TAG"
-                    else
-                      echo "Commit is not a release-branch merge. Nothing to do."
+                    # Read the version each submodule pins for the root module.
+                    # All submodules must agree; if they don't, this isn't a
+                    # release commit (e.g. a mid-flight commit that only
+                    # touched one submodule).
+                    extract_root_version() {
+                      # Reads stdin (a go.mod file), prints the version that
+                      # the root module is required at, or nothing if absent.
+                      # Handles both `require github.com/... vX.Y.Z` and the
+                      # `require ( ... )` block form.
+                      awk '
+                        /^require[[:space:]]*\(/ {in_block=1; next}
+                        in_block && /^\)/ {in_block=0; next}
+                        /^require[[:space:]]+github\.com\/azure\/azure-functions-golang-worker[[:space:]]+/ {
+                          print $3; exit
+                        }
+                        in_block && $1 == "github.com/azure/azure-functions-golang-worker" {
+                          print $2; exit
+                        }
+                      '
+                    }
+
+                    DETECTED_VER=""
+                    INCONSISTENT=0
+                    for module in $SUBMODULES; do
+                      gomod="$module/go.mod"
+                      ver=$(git show "$OFFICIAL_COMMIT:$gomod" 2>/dev/null | extract_root_version || true)
+                      if [ -z "$ver" ]; then
+                        echo "  $gomod: no root-module require line"
+                        INCONSISTENT=1
+                        continue
+                      fi
+                      if [ -z "$DETECTED_VER" ]; then
+                        DETECTED_VER="$ver"
+                        echo "  $gomod: $ver"
+                      elif [ "$DETECTED_VER" != "$ver" ]; then
+                        echo "  $gomod: $ver (disagrees with $DETECTED_VER)"
+                        INCONSISTENT=1
+                      else
+                        echo "  $gomod: $ver"
+                      fi
+                    done
+
+                    if [ "$INCONSISTENT" = "1" ] || [ -z "$DETECTED_VER" ]; then
+                      echo "Submodules disagree or no version detected; not a release commit."
                       echo "##vso[task.setvariable variable=shouldRelease]false"
                       exit 0
                     fi
+
+                    # Skip pseudo-versions (vX.Y.Z-YYYYMMDDHHMMSS-abcdef123456),
+                    # which `go get @<branch-or-commit>` writes. These are never
+                    # real release targets.
+                    if [[ "$DETECTED_VER" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9]{14}- ]]; then
+                      echo "Detected pseudo-version $DETECTED_VER; not a release commit."
+                      echo "##vso[task.setvariable variable=shouldRelease]false"
+                      exit 0
+                    fi
+
+                    # If a tag for this version already exists, nothing to do.
+                    # This is the common case: every subsequent commit on main
+                    # still pins to the last released version.
+                    if git rev-parse "refs/tags/$DETECTED_VER" >/dev/null 2>&1; then
+                      existing=$(git rev-list -n 1 "refs/tags/$DETECTED_VER")
+                      echo "Tag $DETECTED_VER already exists at $existing; nothing to do."
+                      echo "##vso[task.setvariable variable=shouldRelease]false"
+                      exit 0
+                    fi
+
+                    ROOT_TAG="$DETECTED_VER"
+                    echo "Detected new release version: $ROOT_TAG"
                   fi
 
                   echo "##vso[task.setvariable variable=shouldRelease]true"
@@ -203,6 +272,7 @@ extends:
                 env:
                   ROOT_TAG_OVERRIDE: $(rootTagOverride)
                   OFFICIAL_COMMIT: $(officialCommit)
+                  SUBMODULES: $(submodules)
 
               - bash: |
                   set -euo pipefail
