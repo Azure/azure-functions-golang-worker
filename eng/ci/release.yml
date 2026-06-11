@@ -1,39 +1,48 @@
 # ---------------------------------------------------------------
 # Azure DevOps Pipeline: Release Module Tags
 #
-# Auto-triggered by successful runs of `golang-worker.official` on main.
-# On every main commit this pipeline runs a fast detection step:
-#   - It reads each submodule's go.mod at the commit and extracts the
+# Manually triggered. Releasing is a deliberate, separately-authorized
+# action: only people with permission to run this pipeline in ADO can
+# publish tags, even though many people can merge a version bump. This
+# keeps "can merge a PR" and "can cut a release" as distinct privileges,
+# so a merged change can never publish a release on its own.
+#
+# When queued, the pipeline:
+#   - Requires you to select a successful run of golang-worker.official;
+#     that run's commit is the only commit this pipeline will tag (the
+#     build gate — you can't release a commit that didn't build).
+#   - Reads each submodule's go.mod at that commit and extracts the
 #     version they pin for `github.com/azure/azure-functions-golang-worker`.
 #   - If all submodules agree on a real semver version (e.g. v0.7.0) and
-#     no tag for that version exists yet, the commit is treated as a
-#     release: the pipeline tags root + every submodule at the commit and
-#     pushes them.
-#   - Otherwise (no change, mismatch, pseudo-version, or tag already
-#     exists) it exits successfully without touching tags.
+#     no tag for it exists yet, it tags root + every submodule at that
+#     commit and pushes them. Otherwise (mismatch, pseudo-version, or
+#     tag already exists) it stops without touching tags.
 #
-# This means: a release is just a PR that bumps every submodule's
+# A release is therefore: a merged PR that bumps every submodule's
 # `require github.com/azure/azure-functions-golang-worker` line to the
-# new version. The merge style (merge commit, squash, rebase) doesn't
-# matter — the file contents drive the decision.
+# new version, followed by a human running this pipeline against the
+# official build of that commit. The merge style (merge commit, squash,
+# rebase) doesn't matter — the go.mod contents drive the version.
 #
 # Release flow:
 #   1. Open a PR that bumps each submodule's go.mod
 #      `require github.com/azure/azure-functions-golang-worker` line to
-#      the target version (e.g. vX.Y.Z).
-#   2. Merge the PR (any merge style works).
-#   3. golang-worker.official runs on the resulting commit. On success →
-#   4. This pipeline auto-fires on the same commit, validates the
-#      submodule go.mod files, and creates + pushes the root tag
-#      `vX.Y.Z` plus matching submodule tags from the same commit.
+#      the target version (e.g. vX.Y.Z) and merge it.
+#   2. Wait for golang-worker.official to succeed on the merge commit.
+#   3. Queue this pipeline. Under "Resources", pick that successful
+#      golang-worker.official run. Leave the rootTag parameter empty to
+#      detect the version from go.mod, or set it to force a version.
+#   4. The pipeline validates the go.mod files and creates + pushes the
+#      root tag vX.Y.Z plus matching submodule tags from the same commit.
 #   5. A human creates the GitHub Release with notes at
 #      https://github.com/Azure/azure-functions-golang-worker/releases/new?tag=vX.Y.Z
 #      (the URL is printed at the end of the pipeline run).
 #
-# Manual override: queueing the pipeline with `rootTag=vX.Y.Z` skips
-# the auto-detection and operates on the picked official run's commit.
-# Use this to re-publish a failed run, or to release from a commit
-# whose go.mod files weren't updated as part of the change.
+# rootTag override: set the rootTag parameter to force a specific
+# version instead of detecting it from go.mod. Use to re-publish a
+# failed run, or to release from a commit whose go.mod files weren't
+# updated as part of the change. The selected official run's commit is
+# still the only commit that gets tagged.
 #
 # This pipeline never produces release notes or binary artifacts;
 # release notes are authored once on the GitHub release.
@@ -49,14 +58,13 @@ trigger: none
 pr: none
 
 parameters:
-  # Manual override. Leave empty for the normal flow: this pipeline auto-
-  # triggers when golang-worker.official succeeds on main, detects whether
-  # the commit is a release-branch merge, and tags accordingly.
-  # Set this only to force a release for a specific version (re-run after
-  # a failed publish, hotfix from a commit that doesn't follow the release
-  # branch convention, etc.).
+  # Optional version override. Leave empty for the normal flow: the
+  # version is detected from the submodule go.mod files at the selected
+  # official build's commit. Set this to force a specific version
+  # (re-publish a failed run, or release a commit whose go.mod files
+  # weren't updated as part of the change).
   - name: rootTag
-    displayName: 'Root module tag override (e.g. v0.7.0) — leave empty for auto-detect'
+    displayName: 'Root module version override (e.g. v0.7.0) — leave empty to detect from go.mod'
     type: string
     default: ''
 
@@ -81,17 +89,16 @@ resources:
       name: engineering
       ref: refs/tags/release
 
-  # Gating + auto-trigger resource: this pipeline can only be queued by
-  # selecting a successful run of golang-worker.official, and it auto-
-  # triggers whenever that pipeline succeeds on main. Non-release commits
-  # produce a fast no-op run (see 'Detect release version' below).
+  # Gating resource: this pipeline can only be queued by selecting a
+  # successful run of golang-worker.official. That run's commit is the
+  # only commit this pipeline will tag, so you can never release a commit
+  # that didn't pass an official build. Manual trigger only (trigger:
+  # none) — releasing is a deliberate action, not a side effect of
+  # merging a version bump.
   pipelines:
     - pipeline: officialBuild
       source: golang-worker.official
-      trigger:
-        branches:
-          include:
-            - main
+      trigger: none
 
 extends:
   template: v1/1ES.Official.PipelineTemplate.yml@1es
@@ -126,13 +133,13 @@ extends:
               os: linux
 
             variables:
-              # Manual override from the queue-time parameter. Empty for the
-              # normal auto-trigger flow; non-empty when a human is forcing a
-              # specific version (re-run, hotfix, etc.).
+              # Optional version override from the queue-time parameter.
+              # Empty for the normal flow (version detected from go.mod);
+              # non-empty when an operator is forcing a specific version.
               - name: rootTagOverride
                 value: ${{ parameters.rootTag }}
-              # Commit the upstream golang-worker.official run was built from.
-              # In auto-trigger mode this is the merge commit on main.
+              # Commit the selected golang-worker.official run was built
+              # from. This is the only commit this pipeline will tag.
               - name: officialCommit
                 value: $(resources.pipeline.officialBuild.sourceCommit)
               # Space-separated list of submodule paths, materialized once
@@ -155,20 +162,19 @@ extends:
               # Decides whether this run should tag anything and resolves the
               # version + target commit. Two modes:
               #
-              #   Manual override:   rootTagOverride is non-empty. Use it as the
-              #                      version. The target commit is whatever the
-              #                      selected official run was built from.
+              #   Override:  rootTagOverride is non-empty. Use it as the
+              #              version. The target commit is the selected
+              #              official run's commit.
               #
-              #   Auto (no override): read the pinned root-module version from
-              #                       each submodule's go.mod at the official
-              #                       build commit. If all submodules agree on a
-              #                       proper semver version and no tag for it
-              #                       exists yet, release this commit as that
-              #                       version. Otherwise exit cleanly without
-              #                       touching tags. This works the same for
-              #                       merge, squash, and rebase commits because
-              #                       the source of truth is the file contents,
-              #                       not the commit message or branch name.
+              #   Detect (no override): read the pinned root-module version
+              #              from each submodule's go.mod at the official
+              #              build commit. If all submodules agree on a
+              #              proper semver version and no tag for it exists
+              #              yet, release this commit as that version.
+              #              Otherwise stop cleanly without touching tags.
+              #              This works the same for merge, squash, and
+              #              rebase commits because the source of truth is
+              #              the file contents, not the commit message.
               #
               # Sets job-scoped variables: shouldRelease, rootTag, commitSha.
               - bash: |
@@ -188,10 +194,10 @@ extends:
                   git fetch --tags origin 2>/dev/null || true
 
                   if [ -n "$ROOT_TAG_OVERRIDE" ]; then
-                    echo "Mode: manual override"
+                    echo "Mode: version override"
                     ROOT_TAG="$ROOT_TAG_OVERRIDE"
                   else
-                    echo "Mode: auto-detect from submodule go.mod files"
+                    echo "Mode: detect version from submodule go.mod files"
 
                     # Read the version each submodule pins for the root module.
                     # All submodules must agree; if they don't, this isn't a
