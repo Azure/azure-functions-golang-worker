@@ -39,6 +39,8 @@ go get github.com/azure/azure-functions-golang-worker
 go mod tidy
 ```
 
+> **Use a tagged release.** We encourage pinning your project to a published, tagged release of the worker (e.g. `go get github.com/azure/azure-functions-golang-worker@v0.7.0`) rather than building against whatever is currently on `main`. Tagged releases are the versions we validate and support; `main` is an active development branch and may contain in-progress or breaking changes. To upgrade later, re-run `go get` with the newer tag. You can find the available versions on the [releases page](https://github.com/Azure/azure-functions-golang-worker/releases).
+
 Create a `main.go` file:
 
 ```go
