@@ -394,12 +394,75 @@ extends:
                   ROOT_TAG: $(rootTag)
                   SUBMODULES: $(submodules)
 
+              # Post-publish gate: prove the freshly-pushed tags resolve and
+              # build the way an external consumer sees them. This is the only
+              # point where a standalone (non-workspace) build is both possible
+              # and meaningful: the released submodules now require a root
+              # version that actually exists, so 'go get .../<submodule>@vX.Y.Z'
+              # + 'go build' exercises the real consumer path. A failure here
+              # means a broken release is already on origin (see cleanup note).
+              - bash: |
+                  set -euo pipefail
+
+                  MODULE_ROOT="github.com/azure/azure-functions-golang-worker"
+
+                  # Isolated caches in the agent temp dir so this can't be
+                  # satisfied by anything already on the agent, and so it leaves
+                  # no state behind.
+                  SCRATCH="$(mktemp -d)"
+                  export GOMODCACHE="$SCRATCH/modcache"
+                  export GOPATH="$SCRATCH/gopath"
+                  export GOFLAGS="-mod=mod"
+                  # Resolve straight from the GitHub VCS, bypassing any module
+                  # proxy/sumdb cache, so we validate exactly the tags we just
+                  # pushed (no proxy-propagation delay, no stale cache).
+                  export GOPROXY=direct
+                  export GOSUMDB=off
+                  export GONOSUMCHECK=1
+                  export GOPRIVATE="$MODULE_ROOT"
+
+                  cd "$SCRATCH"
+                  go mod init release-verify >/dev/null
+
+                  fail=0
+
+                  echo "=== go get @ $ROOT_TAG (root + submodules) ==="
+                  for target in "$MODULE_ROOT@$ROOT_TAG" $(for m in $SUBMODULES; do echo "$MODULE_ROOT/$m@$ROOT_TAG"; done); do
+                    echo "--- go get $target ---"
+                    if ! go get "$target"; then
+                      echo "##vso[task.logissue type=error]Failed to resolve $target from origin. The published tag may be missing or its go.mod is unsatisfiable."
+                      fail=1
+                    fi
+                  done
+
+                  echo "=== go build (consumer compile) ==="
+                  for m in $SUBMODULES; do
+                    echo "--- go build $MODULE_ROOT/$m/... ---"
+                    if ! go build "$MODULE_ROOT/$m/..."; then
+                      echo "##vso[task.logissue type=error]Submodule $m does not build standalone at $ROOT_TAG. Consumers doing 'go get $MODULE_ROOT/$m@$ROOT_TAG' will hit this."
+                      fail=1
+                    fi
+                  done
+
+                  go clean -modcache >/dev/null 2>&1 || true
+                  rm -rf "$SCRATCH"
+
+                  if [ "$fail" != "0" ]; then
+                    echo "##vso[task.logissue type=error]Post-publish verification failed. The tags are already on origin; you may need to delete them (git push origin :refs/tags/<tag>) before re-releasing."
+                    exit 1
+                  fi
+                  echo "All published modules resolve and build standalone at $ROOT_TAG."
+                displayName: 'Verify published tags resolve for consumers'
+                env:
+                  ROOT_TAG: $(rootTag)
+                  SUBMODULES: $(submodules)
+
               - bash: |
                   set -euo pipefail
                   echo ""
                   echo "============================================================"
-                  echo "Release tags are in place on origin. To publish release"
-                  echo "notes, create the GitHub Release at:"
+                  echo "Release tags are in place on origin and verified. To publish"
+                  echo "release notes, create the GitHub Release at:"
                   echo "  https://github.com/Azure/azure-functions-golang-worker/releases/new?tag=$ROOT_TAG"
                   echo "============================================================"
                 displayName: 'Next steps: create GitHub Release'
