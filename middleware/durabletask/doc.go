@@ -66,14 +66,41 @@
 // The host durable gRPC endpoint is taken from [WithEndpoint], [WithConnection],
 // or the EnvGrpcEndpoint environment variable.
 //
-// # Distributed tracing (planned)
+// # Distributed tracing
 //
-// Full trace correlation across the chain (host → starter → durable client →
-// host sidecar → worker execution) is layered on via middleware/otelfunc and
-// depends on upstream durabletask-go changes (client-side spans, propagation
-// of ParentTraceContext, and worker-side execution spans). Until then, starter
-// functions are traced by otelfunc as normal; orchestration/activity execution
-// spans arrive once that wiring lands.
+// Each orchestration and activity work item runs through the App's middleware
+// chain, exactly like a host-triggered invocation. [Durable] implements
+// [sdk.ComposerAware]: when registered via App.Use it receives the App's chain
+// composer and installs a durabletask-go work-item interceptor that, per work
+// item, synthesizes an [sdk.MiddlewareContext] — seeded with the function name,
+// the durable trigger type, and the parent W3C trace context — and runs the
+// execution as the innermost handler of the chain.
+//
+// So registering middleware/otelfunc alongside durable is all that is needed
+// to get execution spans; durable itself has no dependency on any tracing
+// package:
+//
+//	app := sdk.FunctionApp()
+//	app.Use(otelfunc.Middleware())     // owns OTel setup; traces every chain run
+//	app.Use(durabletask.Middleware(
+//	    durabletask.WithOrchestrator("HelloCities", HelloCities),
+//	    durabletask.WithActivity("SayHello", SayHello),
+//	))
+//
+// otelfunc reads the seeded trace context to start each execution span, so
+// activities correlate with their orchestration: the host backend stamps the
+// orchestration's trace context onto the scheduled activity
+// (ActivityRequest.ParentTraceContext), durabletask-go surfaces it on the work
+// item, and durable seeds it into the MiddlewareContext the chain consumes.
+// Orchestrators are replayed, so a multi-turn orchestration produces one
+// execution span per turn — all siblings under the orchestration.
+//
+// Two refinements depend on upstream work and are tracked with the coordinated
+// durabletask-go and host-extension changes: parenting orchestration execution
+// spans under the host's backend orchestration span (the host must put that
+// span's context on the pushed orchestration work item), and starting a
+// client-side span on the starter→host hop (ScheduleNewOrchestration /
+// RaiseEvent propagating ParentTraceContext).
 //
 // # Status
 //
