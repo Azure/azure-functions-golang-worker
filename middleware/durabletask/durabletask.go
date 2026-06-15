@@ -9,6 +9,7 @@ import (
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/microsoft/durabletask-go/backend"
+	dtclient "github.com/microsoft/durabletask-go/client"
 	"github.com/microsoft/durabletask-go/task"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -51,6 +52,14 @@ type Durable struct {
 	// conn is an externally supplied connection (tests / custom transport).
 	// When nil, the listener hook dials endpoint and owns the connection.
 	conn grpc.ClientConnInterface
+
+	// compose runs a handler through the App's middleware chain. It is set by
+	// App.Use via [sdk.ComposerAware] and used to execute every work item
+	// through the same chain as host-triggered invocations, so tracing,
+	// logging, and panic recovery apply uniformly. Nil when Durable was not
+	// registered through App.Use (the listener then executes work items
+	// directly, without the middleware chain).
+	compose sdk.Composer
 
 	// hook is the stable [sdk.LifecycleHook] returned by Lifecycle. It is a
 	// distinct value from Durable so that registering Durable via App.Use does
@@ -168,6 +177,76 @@ func (d *Durable) Lifecycle() sdk.LifecycleHook {
 	return d.hook
 }
 
+// SetComposer implements [sdk.ComposerAware]. App.Use calls it with the App's
+// chain composer so the work-item listener can run each orchestration and
+// activity execution through the same middleware chain as host-triggered
+// invocations. This is what lets middleware/otelfunc wrap durable executions
+// with distributed-tracing spans — parented to the work item's trace context
+// — without Durable depending on any tracing package.
+func (d *Durable) SetComposer(compose sdk.Composer) {
+	d.compose = compose
+}
+
+// workItemInterceptor builds the [dtclient.WorkItemInterceptor] that runs each
+// work item through the App's middleware chain. It returns nil when no composer
+// was injected (Durable was not registered through App.Use), so the listener
+// executes work items directly.
+//
+// For each work item the interceptor synthesizes a per-execution
+// [sdk.MiddlewareContext] — seeded with the work item's name, a stable
+// invocation ID, the durable trigger type, and the parent W3C trace context —
+// then runs the durabletask-go execution (next) as the innermost handler of
+// the composed chain. Middleware such as otelfunc reads the seeded trace
+// context to start a span that correlates with the orchestration, and the
+// span-enriched context flows into the execution so any child spans nest
+// correctly.
+func (d *Durable) workItemInterceptor() dtclient.WorkItemInterceptor {
+	compose := d.compose
+	if compose == nil {
+		return nil
+	}
+	return func(ctx context.Context, info dtclient.WorkItemInfo, next func(context.Context) error) error {
+		mc := &sdk.MiddlewareContext{InvocationContext: invocationContextFor(info)}
+		ctx = sdk.ContextWithMiddleware(ctx, mc)
+		inner := func(ctx context.Context, _ *sdk.MiddlewareContext) error {
+			return next(ctx)
+		}
+		return compose(inner)(ctx, mc)
+	}
+}
+
+// invocationContextFor maps a durabletask-go [dtclient.WorkItemInfo] onto the
+// worker's [sdk.InvocationContext] so a work item looks like an ordinary
+// invocation to the middleware chain.
+func invocationContextFor(info dtclient.WorkItemInfo) *sdk.InvocationContext {
+	ic := &sdk.InvocationContext{
+		FunctionName: info.Name,
+		TriggerType:  triggerTypeFor(info.Kind),
+		TraceContext: sdk.TraceContext{
+			TraceParent: info.TraceParent,
+			TraceState:  info.TraceState,
+		},
+	}
+	switch info.Kind {
+	case dtclient.ActivityWorkItem:
+		// Activities re-run per attempt; the task ID disambiguates parallel
+		// activities within the same orchestration instance.
+		ic.InvocationID = fmt.Sprintf("%s:%d", info.InstanceID, info.TaskID)
+	default:
+		ic.InvocationID = info.InstanceID
+	}
+	return ic
+}
+
+// triggerTypeFor maps a work-item kind to the Durable Functions trigger-binding
+// type name, surfaced on the invocation span as the trigger classification.
+func triggerTypeFor(kind dtclient.WorkItemKind) string {
+	if kind == dtclient.ActivityWorkItem {
+		return "activityTrigger"
+	}
+	return "orchestrationTrigger"
+}
+
 // Client returns the management [Client] once the listener hook's Start has
 // run, or nil before (or when durable is inactive). Starter functions normally
 // reach it through [ClientFromContext] instead.
@@ -215,7 +294,7 @@ func (h *listenerHook) Start(ctx context.Context) error {
 	// cancelable context so Shutdown can stop it deterministically.
 	lctx, cancel := context.WithCancel(context.Background())
 	d.listenerCancel = cancel
-	if err := d.client.startWorkItemListener(lctx, d.registry); err != nil {
+	if err := d.client.startWorkItemListener(lctx, d.registry, d.workItemInterceptor()); err != nil {
 		cancel()
 		d.listenerCancel = nil
 		if d.ownConn != nil {
@@ -250,5 +329,6 @@ func (h *listenerHook) Shutdown(ctx context.Context) error {
 var (
 	_ sdk.Middleware        = (*Durable)(nil)
 	_ sdk.LifecycleProvider = (*Durable)(nil)
+	_ sdk.ComposerAware     = (*Durable)(nil)
 	_ sdk.LifecycleHook     = (*listenerHook)(nil)
 )

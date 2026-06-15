@@ -75,8 +75,17 @@ func Dial(endpoint string) (*Client, error) {
 // client's connection. The listener pulls orchestrator/activity work items
 // from the host sidecar and executes them against r in a background goroutine;
 // it stops when ctx is canceled. Used by [Durable.Start].
-func (c *Client) startWorkItemListener(ctx context.Context, r *task.TaskRegistry) error {
-	return c.inner.StartWorkItemListener(ctx, r)
+//
+// When interceptor is non-nil it is installed on the listener so every
+// orchestration and activity execution is wrapped — this is how [Durable]
+// runs each work item through the App's middleware chain for distributed
+// tracing and other cross-cutting concerns.
+func (c *Client) startWorkItemListener(ctx context.Context, r *task.TaskRegistry, interceptor dtclient.WorkItemInterceptor) error {
+	var opts []dtclient.WorkItemListenerOption
+	if interceptor != nil {
+		opts = append(opts, dtclient.WithWorkItemInterceptor(interceptor))
+	}
+	return c.inner.StartWorkItemListener(ctx, r, opts...)
 }
 
 // Close releases the underlying connection if this Client created it.
