@@ -1,4 +1,4 @@
-FROM golang:1.24 AS proxy-builder
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.24 AS proxy-builder
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY sdk/ sdk/
@@ -6,7 +6,7 @@ COPY worker/ worker/
 COPY proxy/ proxy/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /proxy ./proxy/
 
-FROM golang:1.24 AS app-builder
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.24 AS app-builder
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY sdk/ sdk/

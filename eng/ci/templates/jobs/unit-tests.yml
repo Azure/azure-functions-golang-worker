@@ -18,8 +18,15 @@ jobs:
       inputs:
         version: '1.25'
 
+    # See eng/ci/templates/jobs/build.yml for rationale.
+    - script: |
+        go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
+        go work edit -replace google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
+        cat go.work
+      displayName: 'Initialize go workspace'
+
     - script: go mod download
-      displayName: 'Download dependencies'
+      displayName: 'Download dependencies (root)'
 
     - script: |
         go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
@@ -38,15 +45,15 @@ jobs:
       displayName: 'Run unit tests'
 
     - script: |
-        cd middleware/otelfunc && go mod download && go test ./...
+        cd middleware/otelfunc && go test ./...
       displayName: 'Test middleware/otelfunc'
 
     - script: |
-        cd otelcollector && go mod download && go test ./...
+        cd otelcollector && go test ./...
       displayName: 'Test otelcollector'
 
     - script: |
-        cd triggers/blob && go mod download && go test ./...
+        cd triggers/blob && go test ./...
       displayName: 'Test triggers/blob'
 
     - script: |
