@@ -138,12 +138,38 @@ This is similar to the .NET worker extensions model (`Microsoft.Azure.Functions.
 
 ---
 
-## Custom Handlers vs First-Class Go Worker
+## Goroutine safety & panic recovery
 
-Historically, Go was only supported on Azure Functions via "Custom Handlers" (an HTTP-based proxy pattern). This new natively supported Go Worker provides a richer experience:
-1. **gRPC Integration**: The worker connects directly to the host process via an `EventStream`, reducing HTTP proxy overhead.
-2. **First-class Bindings**: You no longer need to parse raw HTTP headers to read trigger/binding data; the gRPC worker deserializes the metadata and binding data directly into your Go objects.
-3. **No configurations:** Function endpoints are discovered cleanly in code without `function.json`.
+The worker recovers panics that happen **inside your handler** and reports them to the host as a failed invocation with the full Go stack trace — so they show up, diagnosable, in Application Insights.
+
+That safety net does **not** extend to goroutines you start yourself. In Go, an unrecovered panic in *any* goroutine terminates the entire process. A handler that launches background work with a bare `go func() { ... }()` therefore puts the whole worker at risk: one nil-pointer dereference on that goroutine crashes the process, fails every other in-flight invocation with an opaque "worker exited" error, and the real stack never reaches the host or your App Insights.
+
+Use [`sdk.Go`](sdk/safego.go) instead of `go` for fire-and-forget work. It runs your function in a panic-guarded goroutine: a panic is recovered, logged at error level with its stack (correlated to the spawning invocation via `slog`), and the worker stays alive.
+
+```go
+func EventHubHandler(ctx context.Context, events []bindings.EventHubEvent) error {
+    for _, e := range events {
+        e := e
+        sdk.Go(ctx, func() {
+            // A panic in here is recovered and logged — it will NOT crash the worker.
+            process(e)
+        })
+    }
+    return nil
+}
+```
+
+When you need to control how the goroutine is launched (a `sync.WaitGroup`, a worker pool, a named function), defer [`sdk.Recover`](sdk/safego.go) as the first statement instead:
+
+```go
+go func() {
+    defer sdk.Recover(ctx)
+    defer wg.Done()
+    doBackgroundWork(ctx)
+}()
+```
+
+> **Rule of thumb:** inside Functions code, reach for `sdk.Go` / `sdk.Recover` instead of a bare `go`. The cost is one identifier; the payoff is that a defect in background work degrades to a logged error instead of a worker crash.
 
 ---
 
@@ -241,6 +267,15 @@ app.Use(otelfunc.Middleware(
 Inbound W3C baggage is hydrated onto `ctx` automatically — read with `baggage.FromContext(ctx)`, propagate to your downstream calls with `otelhttp.NewTransport(...)` / `otelgrpc` interceptors. See `package otelfunc` godoc for full options including `WithTracerProvider`, `WithPropagator`, custom span names, and the `AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED` kill switch.
 
 For a deeper architectural overview see the [developer manual](TECHNICAL_SPEC.md).
+
+---
+
+## Custom Handlers vs First-Class Go Worker
+
+Historically, Go was only supported on Azure Functions via "Custom Handlers" (an HTTP-based proxy pattern). This new natively supported Go Worker provides a richer experience:
+1. **gRPC Integration**: The worker connects directly to the host process via an `EventStream`, reducing HTTP proxy overhead.
+2. **First-class Bindings**: You no longer need to parse raw HTTP headers to read trigger/binding data; the gRPC worker deserializes the metadata and binding data directly into your Go objects.
+3. **No configurations:** Function endpoints are discovered cleanly in code without `function.json`.
 
 ## Contributing
 
