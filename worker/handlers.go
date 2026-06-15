@@ -297,9 +297,6 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	// Handlers retrieve the embedded InvocationContext via sdk.FromContext;
 	// middleware that needs the wrapper calls sdk.MiddlewareContextFrom.
 	mc := buildMiddlewareContext(req, &loadedFunc.Function)
-	if raw := extractTriggerInputBytes(req, loadedFunc); raw != nil {
-		mc.SetInputBytes(raw)
-	}
 	ctx := sdk.ContextWithMiddleware(context.Background(), mc)
 
 	// Emit a system log with the inbound trace_parent so OTel correlation
@@ -375,30 +372,16 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	//    enriched) ctx from the outer chain, propagates it into the user
 	//    function's arguments, performs the reflective call, and returns
 	//    any error result. See [sdk.App.Compose] for ordering.
-	inner := func(ctx context.Context, mwc *sdk.MiddlewareContext) error {
+	inner := func(ctx context.Context, _ *sdk.MiddlewareContext) error {
 		injectInvocationContext(ft, args, ctx)
 		fv := reflect.ValueOf(loadedFunc.Function.Func)
 		results := fv.Call(args)
-		var retErr error
-		returnSet := false
 		for _, r := range results {
-			if r.Type().Implements(errorType) {
-				if !r.IsNil() {
-					retErr = r.Interface().(error)
-				}
-				continue
-			}
-			// The first non-error return value becomes the invocation's
-			// ReturnValue (encoded by the response builder below). HTTP
-			// handlers have no return value (they use the ResponseWriter),
-			// so this only affects non-HTTP triggers such as durable
-			// activities.
-			if !returnSet && mwc != nil {
-				mwc.SetReturnValue(r.Interface())
-				returnSet = true
+			if r.Type().Implements(errorType) && !r.IsNil() {
+				return r.Interface().(error)
 			}
 		}
-		return retErr
+		return nil
 	}
 
 	// 4. Compose the middleware chain around the inner handler and run it.
@@ -428,15 +411,6 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 					returnValue = encodeHTTPResponse(proxy)
 				}
 			}
-		}
-	}
-	// Non-HTTP triggers source their ReturnValue from the MiddlewareContext:
-	// either the user function's first non-error return value (captured in
-	// inner above) or a value a short-circuiting middleware produced (e.g.
-	// durable orchestration replay via mc.SetReturnValue).
-	if returnValue == nil {
-		if v, ok := mc.ReturnValue(); ok {
-			returnValue = encodeReturnValue(v)
 		}
 	}
 
@@ -478,45 +452,6 @@ func buildMiddlewareContext(req *pb.InvocationRequest, fn *sdk.RegisteredFunctio
 			TriggerMetadata: flattenTriggerMetadata(req.GetTriggerMetadata()),
 		},
 	}
-}
-
-// extractTriggerInputBytes returns the raw bytes of the function's primary
-// trigger input binding. It is used to populate
-// sdk.MiddlewareContext.InputBytes so a short-circuiting middleware (e.g.
-// durable orchestration replay) can read the inbound payload directly.
-//
-// The trigger binding is the first "in" binding declared for the function.
-// Its TypedData is rendered to bytes preferring the string form (durable
-// orchestration history arrives as a base64 string), then raw bytes, then
-// JSON. Returns nil when no matching input is present.
-func extractTriggerInputBytes(req *pb.InvocationRequest, lf *LoadedFunction) []byte {
-	triggerName := ""
-	for _, b := range lf.Function.RawBindings {
-		if b.Direction == "in" {
-			triggerName = b.Name
-			break
-		}
-	}
-	for _, in := range req.GetInputData() {
-		if triggerName != "" && in.GetName() != triggerName {
-			continue
-		}
-		td := in.GetData()
-		if td == nil {
-			continue
-		}
-		if s := td.GetString_(); s != "" {
-			return []byte(s)
-		}
-		if bs := td.GetBytes(); bs != nil {
-			return bs
-		}
-		if j := td.GetJson(); j != "" {
-			return []byte(j)
-		}
-		return nil
-	}
-	return nil
 }
 
 // injectInvocationContext propagates ctx into all argument slots that need it

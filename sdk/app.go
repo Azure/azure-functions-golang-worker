@@ -35,6 +35,12 @@ type App struct {
 	// in registration order after the gRPC stream closes; see
 	// [App.RunShutdowns].
 	shutdowns []func(context.Context) error
+	// lifecycleHooks are process-lifetime resources contributed by
+	// middlewares that implement [LifecycleProvider]. The worker starts
+	// them before serving and shuts them down at teardown, alongside any
+	// hooks passed to worker.Start via WithLifecycleHook. See
+	// [App.LifecycleHooks].
+	lifecycleHooks []LifecycleHook
 }
 
 // FunctionApp creates a new App instance.

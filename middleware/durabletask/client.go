@@ -4,21 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/microsoft/durabletask-go/api"
 	"github.com/microsoft/durabletask-go/backend"
 	dtclient "github.com/microsoft/durabletask-go/client"
+	"github.com/microsoft/durabletask-go/task"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// EnvGrpcEndpoint is the environment variable the default client dials when
-// the middleware is constructed without an explicit [WithClient]. It carries
-// the address of the Durable Task gRPC endpoint the host (or the Durable Task
-// Scheduler) exposes for management operations, e.g. "127.0.0.1:4001".
+// EnvGrpcEndpoint is the environment variable [New] reads to find the host
+// DurableTask gRPC endpoint when no explicit [WithEndpoint] / [WithConnection]
+// is supplied. It carries the address of the Durable Task gRPC endpoint the
+// host (or the Durable Task Scheduler) exposes, e.g. "127.0.0.1:4001".
 const EnvGrpcEndpoint = "DURABLE_TASK_GRPC_ENDPOINT"
 
 // ErrInstanceNotFound is returned by [Client.GetStatus] when no orchestration
@@ -29,25 +29,31 @@ var ErrInstanceNotFound = errors.New("durabletask: orchestration instance not fo
 // around durabletask-go's client.TaskHubGrpcClient: every management call
 // delegates to the upstream client, which speaks the Durable Task gRPC
 // protocol (TaskHubSidecarService). The endpoint is whatever exposes that
-// protocol — the Durable Task Scheduler (DTS), a durabletask-go sidecar, or
-// the Functions host's durable gRPC endpoint delivered via the DurableClient
-// binding.
+// protocol — the Functions host's durable gRPC sidecar (model 2), the Durable
+// Task Scheduler (DTS), or a durabletask-go sidecar.
 //
-// This is the management half of the integration. The execution half
-// (orchestrator replay) is handled separately by the middleware against the
-// Functions trigger payload — see [Durable.Wrap]. Both share the same
-// durabletask-go programming model (task.OrchestrationContext), so the same
-// orchestrator function is driven by either path.
+// This is the management half of the integration; the execution half (the
+// work-item listener that runs orchestrators/activities) is owned by
+// [Durable]. Both share one connection and durabletask-go's programming model.
 type Client struct {
 	inner *dtclient.TaskHubGrpcClient
 	conn  *grpc.ClientConn // owned (non-nil) only when created via Dial
+}
+
+// newClient wraps an existing connection with the given logger. Internal
+// constructor shared by [NewClient] and [Durable.Start].
+func newClient(conn grpc.ClientConnInterface, logger backend.Logger) *Client {
+	if logger == nil {
+		logger = backend.DefaultLogger()
+	}
+	return &Client{inner: dtclient.NewTaskHubGrpcClient(conn, logger)}
 }
 
 // NewClient wraps an existing gRPC connection. Use this when you manage the
 // connection yourself (or in tests, with an in-memory listener). The caller
 // owns the connection's lifecycle.
 func NewClient(conn grpc.ClientConnInterface) *Client {
-	return &Client{inner: dtclient.NewTaskHubGrpcClient(conn, backend.DefaultLogger())}
+	return newClient(conn, backend.DefaultLogger())
 }
 
 // Dial connects to a Durable Task gRPC endpoint and returns a [Client] that
@@ -63,6 +69,14 @@ func Dial(endpoint string) (*Client, error) {
 		inner: dtclient.NewTaskHubGrpcClient(conn, backend.DefaultLogger()),
 		conn:  conn,
 	}, nil
+}
+
+// startWorkItemListener starts the durabletask-go work-item listener on this
+// client's connection. The listener pulls orchestrator/activity work items
+// from the host sidecar and executes them against r in a background goroutine;
+// it stops when ctx is canceled. Used by [Durable.Start].
+func (c *Client) startWorkItemListener(ctx context.Context, r *task.TaskRegistry) error {
+	return c.inner.StartWorkItemListener(ctx, r)
 }
 
 // Close releases the underlying connection if this Client created it.
@@ -184,21 +198,6 @@ func runtimeStatusString(enum string) string {
 		}
 	}
 	return strings.Join(parts, "")
-}
-
-// defaultClientFromEnv builds a [Client] from EnvGrpcEndpoint, or returns nil
-// when the variable is unset (so the middleware can run without a client when
-// only orchestrator/activity execution is needed).
-func defaultClientFromEnv() *Client {
-	endpoint := os.Getenv(EnvGrpcEndpoint)
-	if endpoint == "" {
-		return nil
-	}
-	c, err := Dial(endpoint)
-	if err != nil {
-		return nil
-	}
-	return c
 }
 
 // clientContextKey is the unexported context key under which the durable
