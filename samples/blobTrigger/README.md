@@ -12,9 +12,9 @@ An Azure Function that triggers when a blob is created or updated in Azure Stora
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)
-- Custom [Azure Functions Core Tools](https://www.npmjs.com/package/@gaaguiar/azure-functions-core-tools) with Go worker support:
+- [Azure Functions Core Tools](https://www.npmjs.com/package/azure-functions-core-tools/v/4.12.0) 4.12.0 or later (includes Go worker support):
   ```bash
-  npm i -g @gaaguiar/azure-functions-core-tools
+  npm i -g azure-functions-core-tools@4 --unsafe-perm true
   ```
 - An Azure Storage account (or [Azurite](https://github.com/Azure/Azurite) for local emulation)
 
