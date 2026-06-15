@@ -27,6 +27,7 @@ type Binding struct {
 	*TimerBinding
 	*EventHubBinding
 	*ServiceBusBinding
+	*SQLBinding
 }
 
 // MarshalJSON flattens the embedded sub-binding fields into the top-level
@@ -52,6 +53,8 @@ func (b Binding) MarshalJSON() ([]byte, error) {
 		sub = b.EventHubBinding
 	} else if b.ServiceBusBinding != nil {
 		sub = b.ServiceBusBinding
+	} else if b.SQLBinding != nil {
+		sub = b.SQLBinding
 	}
 
 	if sub != nil {

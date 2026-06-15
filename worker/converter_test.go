@@ -3,6 +3,7 @@ package worker
 import (
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
@@ -290,5 +291,122 @@ func TestEncodeHTTPResponse(t *testing.T) {
 	}
 	if httpData.Headers["Content-Type"] != "text/plain" {
 		t.Errorf("expected Content-Type %q, got %q", "text/plain", httpData.Headers["Content-Type"])
+	}
+}
+
+// --- SQL change-slice decoding tests ---
+
+const sqlChangesJSON = `[` +
+	`{"Operation":0,"Item":{"ProductId":1,"Name":"Widget","Cost":100}},` +
+	`{"Operation":1,"Item":{"ProductId":2,"Name":"Gadget","Cost":250}},` +
+	`{"Operation":2,"Item":{"ProductId":3,"Name":"Gizmo","Cost":50}}` +
+	`]`
+
+// TestConvertToTypeValue_SQLChanges_FromJSON locks down that the
+// converter decodes the wire payload into a typed []bindings.SQLChange
+// when the host packages it as TypedData_Json.
+func TestConvertToTypeValue_SQLChanges_FromJSON(t *testing.T) {
+	data := &pb.TypedData{Data: &pb.TypedData_Json{Json: sqlChangesJSON}}
+	t.Logf("payload: %s", data.GetJson())
+
+	v, err := convertToTypeValue(reflect.TypeOf([]bindings.SQLChange{}), data, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	changes, ok := v.Interface().([]bindings.SQLChange)
+	if !ok {
+		t.Fatalf("expected []bindings.SQLChange, got %T", v.Interface())
+	}
+	if len(changes) != 3 {
+		t.Fatalf("expected 3 changes, got %d", len(changes))
+	}
+	wantOps := []bindings.SQLOperation{
+		bindings.SQLOperationInsert,
+		bindings.SQLOperationUpdate,
+		bindings.SQLOperationDelete,
+	}
+	for i, want := range wantOps {
+		if changes[i].Operation != want {
+			t.Errorf("change[%d]: expected %v, got %v", i, want, changes[i].Operation)
+		}
+		if len(changes[i].Item) == 0 {
+			t.Errorf("change[%d]: expected non-empty Item RawMessage", i)
+		}
+	}
+}
+
+// TestConvertToTypeValue_SQLChanges_FromString covers the alternative
+// wire format where the host packages the payload as TypedData_String_
+// rather than TypedData_Json. Older host versions and some out-of-process
+// integrations have been observed to use String_ for JSON payloads.
+func TestConvertToTypeValue_SQLChanges_FromString(t *testing.T) {
+	data := &pb.TypedData{Data: &pb.TypedData_String_{String_: sqlChangesJSON}}
+
+	v, err := convertToTypeValue(reflect.TypeOf([]bindings.SQLChange{}), data, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	changes, ok := v.Interface().([]bindings.SQLChange)
+	if !ok {
+		t.Fatalf("expected []bindings.SQLChange, got %T", v.Interface())
+	}
+	if len(changes) != 3 {
+		t.Fatalf("expected 3 changes, got %d", len(changes))
+	}
+	if changes[0].Operation != bindings.SQLOperationInsert {
+		t.Errorf("change[0]: expected Insert, got %v", changes[0].Operation)
+	}
+}
+
+// TestConvertToTypeValue_SQLChanges_EmptyBatch confirms that a legitimate
+// empty change batch (the host can deliver one on polling cycles with no
+// activity but a forced flush) decodes to an empty slice without error.
+func TestConvertToTypeValue_SQLChanges_EmptyBatch(t *testing.T) {
+	data := &pb.TypedData{Data: &pb.TypedData_Json{Json: `[]`}}
+
+	v, err := convertToTypeValue(reflect.TypeOf([]bindings.SQLChange{}), data, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	changes, ok := v.Interface().([]bindings.SQLChange)
+	if !ok {
+		t.Fatalf("expected []bindings.SQLChange, got %T", v.Interface())
+	}
+	if len(changes) != 0 {
+		t.Errorf("expected empty batch, got %d changes", len(changes))
+	}
+}
+
+// TestConvertToTypeValue_SQLChanges_MalformedStringJSON_ReturnsError locks
+// down that a String_-packaged payload targeted at a slice/map but containing
+// malformed JSON surfaces an explicit decode error rather than silently
+// degrading to an empty slice. Without this guarantee a corrupted batch
+// would be indistinguishable from the legitimate empty-batch case above.
+func TestConvertToTypeValue_SQLChanges_MalformedStringJSON_ReturnsError(t *testing.T) {
+	data := &pb.TypedData{Data: &pb.TypedData_String_{String_: `[{"Operation":0,`}} // truncated
+
+	_, err := convertToTypeValue(reflect.TypeOf([]bindings.SQLChange{}), data, nil)
+	if err == nil {
+		t.Fatal("expected decode error for truncated JSON, got nil")
+	}
+	// Must mention the target type so the operator can tell which binding
+	// failed when several appear in one request.
+	if !strings.Contains(err.Error(), "SQLChange") {
+		t.Errorf("error should name the target type; got %q", err.Error())
+	}
+}
+
+// TestConvertToTypeValue_MapStringInt_FromMalformedString_ReturnsError is
+// the map-target analogue of the slice case — same contract, different
+// reflect.Kind path through the new branch.
+func TestConvertToTypeValue_MapStringInt_FromMalformedString_ReturnsError(t *testing.T) {
+	data := &pb.TypedData{Data: &pb.TypedData_String_{String_: `{"a":1,`}} // truncated
+
+	_, err := convertToTypeValue(reflect.TypeOf(map[string]int{}), data, nil)
+	if err == nil {
+		t.Fatal("expected decode error for truncated JSON map payload, got nil")
 	}
 }

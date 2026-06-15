@@ -142,7 +142,7 @@ dependency boundary, not by convention alone.
 
 ### 4.1 Core Triggers — Data Passthrough (`sdk/`)
 
-**HTTP, Timer, CosmosDB, ServiceBus, EventHub, EventGrid**
+**HTTP, Timer, CosmosDB, ServiceBus, EventHub, EventGrid, SQL**
 
 Core triggers receive their payload inline in the gRPC `InvocationRequest`. The
 host serializes the trigger data (JSON documents, queue messages, timer info) into
@@ -290,6 +290,60 @@ func handler(ctx context.Context, docs []bindings.CosmosDocument) error {
     return nil
 }
 ```
+
+### 4.7 Example: Core Trigger (SQL)
+
+The SQL trigger is a Core trigger backed by the
+`Microsoft.Azure.WebJobs.Extensions.Sql` host extension. The host polls SQL
+Server / Azure SQL Change Tracking for committed row changes and delivers
+each batch inline as `[]bindings.SQLChange`. The worker has no SQL or
+`mssql` dependency — the payload is serialized JSON.
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "log/slog"
+
+    "github.com/azure/azure-functions-golang-worker/sdk"
+    "github.com/azure/azure-functions-golang-worker/sdk/bindings"
+    "github.com/azure/azure-functions-golang-worker/worker"
+)
+
+type Product struct {
+    ProductID int    `json:"ProductId"`
+    Name      string `json:"Name"`
+    Cost      int    `json:"Cost"`
+}
+
+func productsChanged(ctx context.Context, changes []bindings.SQLChange) error {
+    for _, c := range changes {
+        var p Product
+        if err := json.Unmarshal(c.Item, &p); err != nil {
+            return err
+        }
+        slog.InfoContext(ctx, "row change",
+            "operation", c.Operation.String(),
+            "product_id", p.ProductID)
+    }
+    return nil
+}
+
+func main() {
+    app := sdk.FunctionApp()
+    app.SQL("productsChanged", productsChanged,
+        sdk.WithTable("dbo.Products"),
+        sdk.WithConnection("AzureWebJobsSqlConnectionString"),
+    )
+    worker.Start(app)
+}
+```
+
+See `samples/sqlTrigger/` for a runnable end-to-end example, including the
+exact `ALTER` statements and `host.json` logging configuration needed for
+the host extension's startup banner to surface in logs.
 
 ## 5. Per-Invocation Context, Middleware, and Observability
 

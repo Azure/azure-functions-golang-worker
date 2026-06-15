@@ -79,6 +79,17 @@ func (app *App) CosmosDB(name string, f CosmosDBHandler, opts ...Option) *Regist
 	return app.registerFunction(name, f, trigger, opts...)
 }
 
+// SQL creates a new SQL triggered function. The handler is invoked with a
+// batch of row changes captured from the configured table via SQL Change
+// Tracking. Use [WithTable] and [WithConnection] to configure the table
+// and connection-string app-setting name.
+func (app *App) SQL(name string, f SQLChangeHandler, opts ...Option) *RegisteredFunction {
+	trigger := &bindings.SQLTrigger{
+		Name: "changes",
+	}
+	return app.registerFunction(name, f, trigger, opts...)
+}
+
 // EventGrid creates a new EventGrid triggered function.
 func (app *App) EventGrid(name string, f EventGridHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.EventGridTrigger{
@@ -143,7 +154,7 @@ func (app *App) ServiceBusTopic(name string, f ServiceBusHandler, opts ...Option
 // The handler argument type depends on the registered blob trigger extension.
 // Import the triggers/blob package to enable *blob.Client support:
 //
-// import _ "github.com/azure/azure-functions-golang-worker/triggers/blob"
+//	import _ "github.com/azure/azure-functions-golang-worker/triggers/blob"
 func (app *App) Blob(name string, f any, opts ...Option) *RegisteredFunction {
 	// Validate handler signature: must be a function
 	ft := reflect.TypeOf(f)
@@ -192,14 +203,38 @@ func (app *App) Blob(name string, f any, opts ...Option) *RegisteredFunction {
 
 // RegisteredFunction holds metadata about a registered function.
 type RegisteredFunction struct {
-	Func          any
-	FuncName      string
-	FuncId        string
-	RawBindings   []bindings.Binding
-	Retry         *RetryOptions
-	ScriptFile    string
-	TriggerType   string
-	ClientFactory ClientFactory // Optional: creates trigger-specific client args
+	// Func is the user-supplied handler. Stored as any because the worker
+	// invokes it via reflection — the concrete signature is validated at
+	// registration time by the trigger-specific App method.
+	Func any
+	// FuncName is the human-readable name passed to the registration method
+	// (e.g. "productsChanged") or, if empty, derived from the handler's
+	// runtime function name. Surfaces in host logs as "Functions.<name>".
+	FuncName string
+	// FuncId is the sha256-based identifier the worker uses to look up the
+	// function when dispatching an InvocationRequest. Derived from FuncName
+	// and TriggerType by [HashFunctionID] — see that function for the
+	// derivation contract.
+	FuncId string
+	// RawBindings is the ordered list of bindings sent to the host as the
+	// function's metadata. Index 0 is always the trigger binding; index 1+
+	// is reserved for input/output bindings (today only the implicit HTTP
+	// $return is appended automatically).
+	RawBindings []bindings.Binding
+	// Retry is the optional host-managed retry policy. Nil means no retry
+	// configuration is reported to the host. Set via [WithRetry].
+	Retry *RetryOptions
+	// ScriptFile is the source file where the handler was declared,
+	// captured at registration time via runtime.FuncForPC for diagnostics.
+	ScriptFile string
+	// TriggerType is the binding type string the host uses to route
+	// invocations (e.g. "httpTrigger", "sqlTrigger"). Set from the trigger
+	// binding's GetBindingType().
+	TriggerType string
+	// ClientFactory creates trigger-specific client arguments for Extension
+	// Triggers (e.g. *blob.Client). Nil for Core Triggers, which receive
+	// their payload inline via the gRPC message.
+	ClientFactory ClientFactory
 }
 
 // RegisterFunction registers a function with an explicit name and a trigger binding.

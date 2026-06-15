@@ -818,3 +818,105 @@ func TestTriggerBinding_Empty(t *testing.T) {
 		t.Error("expected nil TriggerBinding for empty RawBindings")
 	}
 }
+
+// --- SQL tests ---
+
+func TestSQL_BasicRegistration(t *testing.T) {
+	app := FunctionApp()
+	handler := SQLChangeHandler(func(ctx context.Context, changes []bindings.SQLChange) error {
+		return nil
+	})
+
+	app.SQL("productsChanged", handler)
+
+	count := 0
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		count++
+		rf := value.(*RegisteredFunction)
+		if rf.FuncName != "productsChanged" {
+			t.Errorf("expected func name %q, got %q", "productsChanged", rf.FuncName)
+		}
+		if rf.TriggerType != string(bindings.SQLTriggerType) {
+			t.Errorf("expected trigger type %q, got %q", bindings.SQLTriggerType, rf.TriggerType)
+		}
+		if len(rf.RawBindings) != 1 {
+			t.Errorf("expected 1 binding, got %d", len(rf.RawBindings))
+		}
+		b := rf.RawBindings[0]
+		if b.Type != "sqlTrigger" {
+			t.Errorf("expected type %q, got %q", "sqlTrigger", b.Type)
+		}
+		if b.Direction != "in" {
+			t.Errorf("expected direction %q, got %q", "in", b.Direction)
+		}
+		if b.Name != "changes" {
+			t.Errorf("expected default binding name %q, got %q", "changes", b.Name)
+		}
+		if b.SQLBinding == nil {
+			t.Fatal("expected SQLBinding")
+		}
+		return true
+	})
+	if count != 1 {
+		t.Errorf("expected 1 registered function, got %d", count)
+	}
+}
+
+func TestSQL_Options(t *testing.T) {
+	app := FunctionApp()
+	handler := SQLChangeHandler(func(ctx context.Context, changes []bindings.SQLChange) error {
+		return nil
+	})
+
+	app.SQL("productsChanged", handler,
+		WithTable("dbo.Products"),
+		WithConnection("AzureWebJobsSqlConnectionString"),
+	)
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.SQLBinding == nil {
+			t.Fatal("expected SQLBinding")
+		}
+		if binding.SQLBinding.TableName != "dbo.Products" {
+			t.Errorf("expected tableName %q, got %q",
+				"dbo.Products", binding.SQLBinding.TableName)
+		}
+		if binding.SQLBinding.ConnectionStringSetting != "AzureWebJobsSqlConnectionString" {
+			t.Errorf("expected connectionStringSetting %q, got %q",
+				"AzureWebJobsSqlConnectionString",
+				binding.SQLBinding.ConnectionStringSetting)
+		}
+		return true
+	})
+}
+
+// TestSQL_WithConnectionPopulatesSQLBinding locks down that the shared
+// WithConnection option targets the SQL binding's connectionStringSetting
+// field, so SQL users get the same one-option-fits-all surface as the
+// CosmosDB / EventHub / ServiceBus / Blob triggers.
+func TestSQL_WithConnectionPopulatesSQLBinding(t *testing.T) {
+	app := FunctionApp()
+	handler := SQLChangeHandler(func(ctx context.Context, changes []bindings.SQLChange) error {
+		return nil
+	})
+
+	app.SQL("productsChanged", handler,
+		WithTable("dbo.Products"),
+		WithConnection("AzureWebJobsSqlConnectionString"),
+	)
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.SQLBinding == nil {
+			t.Fatal("expected SQLBinding")
+		}
+		if binding.SQLBinding.ConnectionStringSetting != "AzureWebJobsSqlConnectionString" {
+			t.Errorf("WithConnection must populate SQL connectionStringSetting; got %q",
+				binding.SQLBinding.ConnectionStringSetting)
+		}
+		return true
+	})
+}
