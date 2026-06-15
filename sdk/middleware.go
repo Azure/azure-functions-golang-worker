@@ -15,7 +15,11 @@
 // no separate extension point is provided today.
 package sdk
 
-import "context"
+import (
+	"context"
+
+	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
+)
 
 // Handler is the unit a Middleware wraps. It runs a single function invocation
 // and returns nil on success or an error that becomes the failure status on
@@ -117,6 +121,47 @@ type ShutdownProvider interface {
 	Shutdown(ctx context.Context) error
 }
 
+// FunctionRegistration describes a single function a [FunctionProvider]
+// contributes to the App. The fields mirror the arguments of
+// [App.RegisterFunction]: a name, the handler, the trigger binding, and any
+// registration options.
+type FunctionRegistration struct {
+	// Name is the function name (and, for durable triggers, the
+	// orchestration / activity name the host dispatches by).
+	Name string
+	// Func is the handler. Its accepted shapes are the same as any other
+	// registered function; a middleware that replaces execution may pass a
+	// placeholder whose body never runs (the middleware short-circuits the
+	// chain and produces the response itself).
+	Func any
+	// Trigger is the binding that drives the function.
+	Trigger bindings.Bind
+	// Options are applied during registration (e.g. retry policy).
+	Options []Option
+}
+
+// FunctionProvider is an optional contract a [Middleware] can implement to
+// contribute functions to the App at registration time.
+//
+// When a Middleware is registered via [App.Use], the App checks whether it
+// satisfies FunctionProvider; if so, each returned [FunctionRegistration]
+// is registered exactly as if the user had called [App.RegisterFunction].
+// This lets a self-contained middleware own both the cross-cutting behavior
+// (via Wrap) and the function declarations it depends on, so the user wires
+// the whole feature with a single App.Use call.
+//
+// The motivating consumer is durable functions: a single
+// durabletask.Middleware() both intercepts orchestration invocations (Wrap)
+// and declares the orchestrator / activity / client functions the host must
+// know about (ProvidedFunctions), so the host emits metadata for them and
+// dispatches them to the worker.
+//
+// ProvidedFunctions is read once at registration time and should be
+// side-effect-free.
+type FunctionProvider interface {
+	ProvidedFunctions() []FunctionRegistration
+}
+
 // Use registers a [Middleware]. Middleware run in registration order: the
 // first registered is the outermost — i.e. it observes the invocation first
 // and last. This matches the convention used by net/http middleware libraries
@@ -160,6 +205,12 @@ func (app *App) Use(mw Middleware) {
 
 	if sp, ok := mw.(ShutdownProvider); ok {
 		app.shutdowns = append(app.shutdowns, sp.Shutdown)
+	}
+
+	if fp, ok := mw.(FunctionProvider); ok {
+		for _, fr := range fp.ProvidedFunctions() {
+			app.registerFunction(fr.Name, fr.Func, fr.Trigger, fr.Options...)
+		}
 	}
 }
 

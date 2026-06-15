@@ -462,5 +462,32 @@ func encodeHTTPResponse(proxy *ResponseWriterProxy) *pb.TypedData {
 	}
 }
 
+// encodeReturnValue encodes a non-HTTP function's return value (or a value
+// a middleware recorded via sdk.MiddlewareContext.SetReturnValue) into a
+// TypedData for InvocationResponse.ReturnValue.
+//
+// The encoding mirrors how other Azure Functions out-of-process workers
+// shape return values: strings and byte slices pass through as the
+// corresponding TypedData kinds (so a durable orchestrator returning its
+// base64-encoded actions lands as a plain string the host's DurableTask
+// extension can read), and everything else is JSON-encoded so the host can
+// route it to output bindings / the function result.
+func encodeReturnValue(v any) *pb.TypedData {
+	switch val := v.(type) {
+	case nil:
+		return nil
+	case string:
+		return &pb.TypedData{Data: &pb.TypedData_String_{String_: val}}
+	case []byte:
+		return &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: val}}
+	default:
+		b, err := json.Marshal(val)
+		if err != nil {
+			return nil
+		}
+		return &pb.TypedData{Data: &pb.TypedData_Json{Json: string(b)}}
+	}
+}
+
 // Needed for context type checking
 var contextType = reflect.TypeOf((*context.Context)(nil)).Elem()
