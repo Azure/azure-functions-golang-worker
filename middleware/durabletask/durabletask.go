@@ -124,10 +124,53 @@ func (d *Durable) Activity(name string, fn any) *Durable {
 	validateActivity(name, fn)
 	d.provided = append(d.provided, sdk.FunctionRegistration{
 		Name:    name,
-		Func:    fn,
+		Func:    activityInputDecoder(fn),
 		Trigger: activityTriggerBinding{},
 	})
 	return d
+}
+
+// activityInputDecoder adapts a user activity function so the worker delivers
+// its input already decoded from JSON.
+//
+// durabletask serializes an activity's input as JSON (task.WithActivityInput
+// marshals the value) and the host forwards that JSON to the worker. Without
+// decoding, a func(ctx, string) activity would receive "Tokyo" with the
+// surrounding quotes rather than Tokyo. The returned function has a fixed
+// func(context.Context, []byte) (any, error) shape that the worker maps the
+// activity trigger's input binding onto; it JSON-decodes the raw input into the
+// user function's input type and forwards the call. The user's return value
+// flows back unchanged (the host serializes it for the orchestration history).
+func activityInputDecoder(fn any) func(context.Context, []byte) (any, error) {
+	fnVal := reflect.ValueOf(fn)
+	fnType := fnVal.Type()
+	hasInput := fnType.NumIn() == 2
+	hasOutput := fnType.NumOut() == 2
+	var inType reflect.Type
+	if hasInput {
+		inType = fnType.In(1)
+	}
+	return func(ctx context.Context, raw []byte) (any, error) {
+		callArgs := []reflect.Value{reflect.ValueOf(ctx)}
+		if hasInput {
+			inPtr := reflect.New(inType)
+			if len(raw) > 0 {
+				if err := json.Unmarshal(raw, inPtr.Interface()); err != nil {
+					return nil, fmt.Errorf("durabletask: decode activity input: %w", err)
+				}
+			}
+			callArgs = append(callArgs, inPtr.Elem())
+		}
+		results := fnVal.Call(callArgs)
+		var err error
+		if last := results[len(results)-1]; !last.IsNil() {
+			err = last.Interface().(error)
+		}
+		if !hasOutput {
+			return nil, err
+		}
+		return results[0].Interface(), err
+	}
 }
 
 // Wrap implements [sdk.Middleware]. For orchestration invocations it replays

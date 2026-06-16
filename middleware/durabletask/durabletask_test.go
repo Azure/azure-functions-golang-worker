@@ -221,6 +221,60 @@ func TestMiddlewareIntegration_ActivityPassesThrough(t *testing.T) {
 	}
 }
 
+// TestActivityInputDecoder verifies the wrapper JSON-decodes activity inputs of
+// various shapes (scalar, struct, none) and forwards outputs unchanged, so a
+// func(ctx, string) activity receives Tokyo rather than "Tokyo".
+func TestActivityInputDecoder(t *testing.T) {
+	// Scalar string input: the JSON "Tokyo" must arrive as Tokyo (no quotes).
+	stringAct := activityInputDecoder(func(_ context.Context, city string) (string, error) {
+		return "Hello, " + city + "!", nil
+	})
+	if out, err := stringAct(context.Background(), []byte(`"Tokyo"`)); err != nil {
+		t.Fatalf("string activity: %v", err)
+	} else if out != "Hello, Tokyo!" {
+		t.Errorf("string activity out = %q, want Hello, Tokyo!", out)
+	}
+
+	// Struct input.
+	type expense struct {
+		ID     string  `json:"id"`
+		Amount float64 `json:"amount"`
+	}
+	structAct := activityInputDecoder(func(_ context.Context, e expense) (float64, error) {
+		return e.Amount, nil
+	})
+	if out, err := structAct(context.Background(), []byte(`{"id":"x","amount":42.5}`)); err != nil {
+		t.Fatalf("struct activity: %v", err)
+	} else if out != 42.5 {
+		t.Errorf("struct activity out = %v, want 42.5", out)
+	}
+
+	// No input.
+	noInputAct := activityInputDecoder(func(_ context.Context) (string, error) {
+		return "ok", nil
+	})
+	if out, err := noInputAct(context.Background(), nil); err != nil {
+		t.Fatalf("no-input activity: %v", err)
+	} else if out != "ok" {
+		t.Errorf("no-input activity out = %q, want ok", out)
+	}
+
+	// No output (error-only signature) with a scalar input.
+	var ran bool
+	errOnlyAct := activityInputDecoder(func(_ context.Context, n int) error {
+		ran = n == 7
+		return nil
+	})
+	if out, err := errOnlyAct(context.Background(), []byte(`7`)); err != nil {
+		t.Fatalf("error-only activity: %v", err)
+	} else if out != nil {
+		t.Errorf("error-only activity out = %v, want nil", out)
+	}
+	if !ran {
+		t.Error("error-only activity did not receive decoded input 7")
+	}
+}
+
 // TestEndToEnd_Emulator runs the full orchestration to completion on the
 // in-memory durabletask worker, validating that the orchestrator logic in the
 // sample produces the expected output across multiple replay turns.
