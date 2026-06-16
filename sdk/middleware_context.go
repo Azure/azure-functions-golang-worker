@@ -33,6 +33,23 @@ type MiddlewareContext struct {
 
 	mu                 sync.Mutex
 	outboundTraceAttrs map[string]string
+
+	// inputBytes is the raw trigger input payload the host sent for this
+	// invocation (the primary "in" binding's TypedData rendered to bytes).
+	// The dispatcher populates it before the middleware chain runs so a
+	// short-circuiting middleware (e.g. durable orchestration replay) can
+	// read the raw payload without going through the reflective argument
+	// binder. Nil when the trigger carried no input.
+	inputBytes []byte
+
+	// returnValue / hasReturnValue carry the value to encode into
+	// InvocationResponse.ReturnValue. It is set either by the worker's
+	// inner handler (the user function's first non-error return value) or
+	// by a middleware that replaces execution entirely and produces the
+	// response itself (mc.SetReturnValue). The dispatcher reads it when
+	// building the response for non-HTTP triggers.
+	returnValue    any
+	hasReturnValue bool
 }
 
 // ContextWithMiddleware returns a context that carries the given
@@ -103,4 +120,67 @@ func (mc *MiddlewareContext) OutboundTraceAttributes() map[string]string {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	return mc.outboundTraceAttrs
+}
+
+// SetInputBytes stores the raw trigger input payload for this invocation.
+//
+// Intended for the worker dispatcher, which calls it once before the
+// middleware chain runs. Middleware reads the value via [InputBytes].
+func (mc *MiddlewareContext) SetInputBytes(b []byte) {
+	if mc == nil {
+		return
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	mc.inputBytes = b
+}
+
+// InputBytes returns the raw trigger input payload the host sent for this
+// invocation, or nil when the trigger carried no input.
+//
+// This is the seam a middleware that replaces function execution (for
+// example, durable orchestration replay) uses to read the inbound payload
+// (such as a base64-encoded orchestration history) without going through
+// the reflective argument binder that feeds normal handler arguments.
+func (mc *MiddlewareContext) InputBytes() []byte {
+	if mc == nil {
+		return nil
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	return mc.inputBytes
+}
+
+// SetReturnValue records the value the worker should encode into
+// InvocationResponse.ReturnValue for this invocation.
+//
+// Two callers set it: the worker's inner handler records the user
+// function's first non-error return value, and a middleware that replaces
+// execution entirely records the response it produced (for example, the
+// base64-encoded orchestrator actions from a durable replay). The latter
+// is why this is exposed on MiddlewareContext rather than inferred solely
+// from the handler's return: a short-circuiting middleware never calls the
+// inner handler, so it needs an explicit way to set the response.
+//
+// HTTP triggers do not use this path; they encode their response through
+// the ResponseWriter. Safe to call from multiple goroutines.
+func (mc *MiddlewareContext) SetReturnValue(v any) {
+	if mc == nil {
+		return
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	mc.returnValue = v
+	mc.hasReturnValue = true
+}
+
+// ReturnValue returns the recorded return value and whether one was set.
+// Intended for the worker dispatcher's response builder.
+func (mc *MiddlewareContext) ReturnValue() (any, bool) {
+	if mc == nil {
+		return nil, false
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	return mc.returnValue, mc.hasReturnValue
 }

@@ -48,13 +48,6 @@ func Start(app *sdk.App, opts ...sdk.StartOption) {
 	for _, opt := range opts {
 		opt(&startCfg)
 	}
-	// Merge lifecycle hooks contributed by registered middlewares (via
-	// sdk.LifecycleProvider) after any explicitly passed via WithLifecycleHook,
-	// so option-provided hooks (e.g. an embedded collector) start first and
-	// shut down last. This lets a single app.Use(...) wire a middleware that
-	// also owns a process-lifetime resource (e.g. the durable work-item
-	// listener) without the user registering the hook separately.
-	startCfg.Hooks = append(startCfg.Hooks, app.LifecycleHooks()...)
 
 	bootstrapHandler := log.NewBootstrap(os.Stderr)
 	bootstrap := slog.New(bootstrapHandler)

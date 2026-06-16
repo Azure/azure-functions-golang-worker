@@ -2,232 +2,279 @@ package durabletask
 
 import (
 	"context"
-	"net"
+	"encoding/base64"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
+	"github.com/microsoft/durabletask-go/api"
 	"github.com/microsoft/durabletask-go/backend"
 	"github.com/microsoft/durabletask-go/backend/sqlite"
 	"github.com/microsoft/durabletask-go/task"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 )
 
-// startListenerSidecar stands up a durabletask-go gRPC sidecar whose executor
-// DISPATCHES work items over the gRPC stream (backend.NewGrpcExecutor) instead
-// of executing in-process. This is the model-2 topology: the host sidecar
-// dispatches; a connected work-item listener (our [Durable]) executes the
-// work. Returns a client connection to the sidecar.
-func startListenerSidecar(t *testing.T) *grpc.ClientConn {
+// --- Sample orchestration used by the tests (mirrors samples/durableFunctions) ---
+
+// helloCities calls the SayHello activity once per city, in sequence.
+func helloCities(ctx *task.OrchestrationContext) (any, error) {
+	var result []string
+	for _, city := range []string{"Tokyo", "Seattle", "London"} {
+		var greeting string
+		if err := ctx.CallActivity("SayHello", task.WithActivityInput(city)).Await(&greeting); err != nil {
+			return nil, err
+		}
+		result = append(result, greeting)
+	}
+	return result, nil
+}
+
+// sayHello is the activity in the worker's plain-function form.
+func sayHello(_ context.Context, city string) (string, error) {
+	return "Hello, " + city + "!", nil
+}
+
+// newEmulatorBackend stands up an in-memory durabletask backend (the
+// "emulator") and returns it plus a client.
+func newEmulatorBackend(t *testing.T) (backend.Backend, backend.TaskHubClient) {
 	t.Helper()
 	ctx := context.Background()
 	logger := backend.DefaultLogger()
-
 	be := sqlite.NewSqliteBackend(sqlite.NewSqliteOptions(""), logger)
-	grpcExecutor, registerFn := backend.NewGrpcExecutor(be, logger)
-	orchestrationWorker := backend.NewOrchestrationWorker(be, grpcExecutor, logger)
-	activityWorker := backend.NewActivityTaskWorker(be, grpcExecutor, logger)
-	hub := backend.NewTaskHubWorker(be, orchestrationWorker, activityWorker, logger)
-	if err := hub.Start(ctx); err != nil {
-		t.Fatalf("start hub: %v", err)
+	if err := be.CreateTaskHub(ctx); err != nil {
+		t.Fatalf("create task hub: %v", err)
 	}
-	t.Cleanup(func() { _ = hub.Shutdown(context.Background()) })
-
-	grpcServer := grpc.NewServer()
-	registerFn(grpcServer)
-	lis := bufconn.Listen(1 << 20)
-	go func() { _ = grpcServer.Serve(lis) }()
-	t.Cleanup(grpcServer.Stop)
-
-	conn, err := grpc.NewClient(
-		"passthrough:///bufnet",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			return lis.DialContext(ctx)
-		}),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		t.Fatalf("dial bufconn: %v", err)
+	if err := be.Start(ctx); err != nil {
+		t.Fatalf("start backend: %v", err)
 	}
-	t.Cleanup(func() { _ = conn.Close() })
-	return conn
+	t.Cleanup(func() { _ = be.Stop(ctx) })
+	return be, backend.NewTaskHubClient(be)
 }
 
-// startHook starts dt's lifecycle hook (the work-item listener) and registers
-// its shutdown — the same hook App.Use contributes and the worker runs.
-func startHook(t *testing.T, dt *Durable) {
+// scheduleAndEncodeRequest schedules a new orchestration on the emulator and
+// returns the first work item rendered as a base64 OrchestratorRequest — the
+// exact payload the Functions host would send to the worker for the first
+// orchestrator turn.
+func scheduleAndEncodeRequest(t *testing.T, be backend.Backend, client backend.TaskHubClient, name string, input any) string {
 	t.Helper()
-	h := dt.Lifecycle()
-	if err := h.Start(context.Background()); err != nil {
-		t.Fatalf("start: %v", err)
+	ctx := context.Background()
+	if _, err := client.ScheduleNewOrchestration(ctx, name, api.WithInput(input)); err != nil {
+		t.Fatalf("schedule orchestration: %v", err)
 	}
-	t.Cleanup(func() { _ = h.Shutdown(context.Background()) })
+	wi, err := be.GetOrchestrationWorkItem(ctx)
+	if err != nil {
+		t.Fatalf("get work item: %v", err)
+	}
+	reqBytes, err := encodeOrchestratorRequest(string(wi.InstanceID), nil, wi.NewEvents)
+	if err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(reqBytes)
 }
 
-// TestDurable_EndToEnd_Listener exercises the full model-2 path: the lifecycle
-// hook starts a work-item listener against a sidecar that dispatches over the
-// gRPC stream, the management client schedules an orchestration, the listener
-// executes the orchestrator + activities, and the client observes completion.
-func TestDurable_EndToEnd_Listener(t *testing.T) {
-	conn := startListenerSidecar(t)
-
+// TestOrchestratorReplay_MatchesEngine drives a real (emulator-produced)
+// OrchestratorRequest through the middleware's runner and asserts that the
+// resulting OrchestratorResponse (a) schedules the first activity and (b) is
+// byte-for-byte equivalent to what durabletask-go's executor produces
+// directly. This exercises the full decode -> replay -> encode path.
+func TestOrchestratorReplay_MatchesEngine(t *testing.T) {
+	ctx := context.Background()
 	dt := Middleware(
-		WithConnection(conn),
-		WithOrchestrator("HelloCities", func(octx *task.OrchestrationContext) (any, error) {
-			out := make([]string, 0, 3)
-			for _, city := range []string{"Tokyo", "Seattle", "London"} {
-				var r string
-				if err := octx.CallActivity("SayHello", task.WithActivityInput(city)).Await(&r); err != nil {
-					return nil, err
-				}
-				out = append(out, r)
-			}
-			return out, nil
-		}),
-		WithActivity("SayHello", func(actx task.ActivityContext) (any, error) {
-			var city string
-			if err := actx.GetInput(&city); err != nil {
-				return nil, err
-			}
-			return "Hello, " + city + "!", nil
-		}),
+		WithOrchestrator("HelloCities", helloCities),
+		WithActivity("SayHello", sayHello),
 	)
 
-	startHook(t, dt)
+	be, client := newEmulatorBackend(t)
+	encoded := scheduleAndEncodeRequest(t, be, client, "HelloCities", "")
 
-	client := dt.Client()
-	if client == nil {
-		t.Fatal("expected a client after Start")
-	}
-
-	ctx := context.Background()
-	id, err := client.ScheduleNewOrchestration(ctx, "HelloCities", nil)
+	gotB64, err := dt.runner.loadAndRun(ctx, encoded)
 	if err != nil {
-		t.Fatalf("schedule: %v", err)
+		t.Fatalf("loadAndRun: %v", err)
+	}
+	gotBytes, err := base64.StdEncoding.DecodeString(gotB64)
+	if err != nil {
+		t.Fatalf("decode response: %v", err)
 	}
 
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	final, err := client.WaitForCompletion(waitCtx, id)
+	// The first orchestrator action schedules the SayHello activity; its
+	// name is embedded as a string in the ScheduleTaskAction.
+	if !strings.Contains(string(gotBytes), "SayHello") {
+		t.Fatalf("expected response to schedule SayHello, got %q", string(gotBytes))
+	}
+
+	// Equivalence with the engine's direct output.
+	reqBytes, _ := base64.StdEncoding.DecodeString(encoded)
+	id, past, newEvents, err := decodeOrchestratorRequest(reqBytes)
 	if err != nil {
-		t.Fatalf("wait: %v", err)
+		t.Fatalf("decode request: %v", err)
 	}
-	if final.RuntimeStatus != "Completed" {
-		t.Fatalf("status = %q, want Completed", final.RuntimeStatus)
+	executor := task.NewTaskExecutor(dt.registry)
+	direct, err := executor.ExecuteOrchestrator(ctx, api.InstanceID(id), past, newEvents)
+	if err != nil {
+		t.Fatalf("direct execute: %v", err)
 	}
-	for _, want := range []string{"Tokyo", "Seattle", "London"} {
-		if !strings.Contains(final.Output, want) {
-			t.Fatalf("output %q missing %q", final.Output, want)
-		}
+	fresh := direct.Response.ProtoReflect().New().Interface()
+	if err := proto.Unmarshal(gotBytes, fresh); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !proto.Equal(direct.Response, fresh) {
+		t.Fatalf("middleware response does not match engine response")
 	}
 }
 
-// TestDurable_EndToEnd_HITL drives an external-event wait and delivers the
-// approval via the client — the human-in-the-loop pattern — all executed by
-// the Durable listener.
-func TestDurable_EndToEnd_HITL(t *testing.T) {
-	conn := startListenerSidecar(t)
-
+// TestMiddlewareIntegration_OrchestrationShortCircuits exercises the real SDK
+// seams: App.Use registers the provided functions and the composed middleware
+// chain short-circuits orchestration invocations, producing the response via
+// mc.SetReturnValue without invoking the inner handler.
+func TestMiddlewareIntegration_OrchestrationShortCircuits(t *testing.T) {
+	ctx := context.Background()
 	dt := Middleware(
-		WithConnection(conn),
-		WithOrchestrator("Approval", func(octx *task.OrchestrationContext) (any, error) {
-			octx.SetCustomStatus("awaiting approval")
-			var d struct {
-				Approved bool `json:"approved"`
-			}
-			if err := octx.WaitForSingleEvent("ApprovalDecision", 30*time.Second).Await(&d); err != nil {
-				return "timeout", nil
-			}
-			if d.Approved {
-				return "approved", nil
-			}
-			return "rejected", nil
-		}),
+		WithOrchestrator("HelloCities", helloCities),
+		WithActivity("SayHello", sayHello),
 	)
-	startHook(t, dt)
-
-	ctx := context.Background()
-	client := dt.Client()
-	id, err := client.ScheduleNewOrchestration(ctx, "Approval", nil)
-	if err != nil {
-		t.Fatalf("schedule: %v", err)
-	}
-
-	if !waitForCustomStatus(t, client, id, "awaiting approval", 10*time.Second) {
-		st, _ := client.GetStatus(ctx, id)
-		t.Fatalf("never reached approval wait; last = %+v", st)
-	}
-	if err := client.RaiseEvent(ctx, id, "ApprovalDecision", map[string]any{"approved": true}); err != nil {
-		t.Fatalf("raise event: %v", err)
-	}
-
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	final, err := client.WaitForCompletion(waitCtx, id)
-	if err != nil {
-		t.Fatalf("wait: %v", err)
-	}
-	if !strings.Contains(final.Output, "approved") {
-		t.Fatalf("output = %q, want approved", final.Output)
-	}
-}
-
-// TestDurable_SelfRegisters verifies that a single App.Use(Middleware(...))
-// both composes the client-injection middleware and contributes the listener
-// lifecycle hook — so the user does not register the hook separately.
-func TestDurable_SelfRegisters(t *testing.T) {
-	conn := startListenerSidecar(t)
-	dt := Middleware(WithConnection(conn))
 
 	app := sdk.FunctionApp()
 	app.Use(dt)
 
-	// App.Use should have collected the lifecycle hook via LifecycleProvider.
-	hooks := app.LifecycleHooks()
-	if len(hooks) != 1 {
-		t.Fatalf("expected 1 lifecycle hook from App.Use, got %d", len(hooks))
+	names := registeredFunctionNames(app)
+	if !names["HelloCities"] {
+		t.Fatalf("orchestrator HelloCities was not registered on the app: %v", names)
 	}
-	if hooks[0] != dt.Lifecycle() {
-		t.Fatal("collected hook should be the Durable's listener hook")
+	if !names["SayHello"] {
+		t.Fatalf("activity SayHello was not registered on the app: %v", names)
 	}
 
-	// Start via the collected hook (as the worker would), then verify the
-	// composed chain injects the client.
-	if err := hooks[0].Start(context.Background()); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	t.Cleanup(func() { _ = hooks[0].Shutdown(context.Background()) })
+	be, client := newEmulatorBackend(t)
+	encoded := scheduleAndEncodeRequest(t, be, client, "HelloCities", "")
 
-	var got *Client
-	var present bool
-	chain := app.Compose(func(ctx context.Context, _ *sdk.MiddlewareContext) error {
-		got, present = ClientFromContext(ctx)
+	innerCalled := false
+	inner := func(_ context.Context, _ *sdk.MiddlewareContext) error {
+		innerCalled = true
 		return nil
-	})
-	mc := &sdk.MiddlewareContext{InvocationContext: &sdk.InvocationContext{FunctionName: "start"}}
-	if err := chain(context.Background(), mc); err != nil {
+	}
+	chain := app.Compose(inner)
+
+	mc := &sdk.MiddlewareContext{InvocationContext: &sdk.InvocationContext{
+		FunctionName: "HelloCities",
+		TriggerType:  string(OrchestrationTriggerType),
+	}}
+	mc.SetInputBytes([]byte(encoded))
+
+	if err := chain(ctx, mc); err != nil {
 		t.Fatalf("chain: %v", err)
 	}
-	if !present || got == nil {
-		t.Fatal("expected durable client injected into context")
+	if innerCalled {
+		t.Fatal("orchestration invocation should short-circuit, not call inner")
 	}
-	if got != dt.Client() {
-		t.Fatal("injected client should be the Durable's client")
+
+	got, ok := mc.ReturnValue()
+	if !ok {
+		t.Fatal("expected a return value to be set")
+	}
+	gotStr, ok := got.(string)
+	if !ok {
+		t.Fatalf("expected return value to be a base64 string, got %T", got)
+	}
+	gotBytes, err := base64.StdEncoding.DecodeString(gotStr)
+	if err != nil {
+		t.Fatalf("decode return value: %v", err)
+	}
+	if !strings.Contains(string(gotBytes), "SayHello") {
+		t.Fatalf("expected orchestrator response to schedule SayHello")
 	}
 }
 
-// TestDurable_Start_NoEndpoint verifies Start is a graceful no-op (durable
-// inactive) when no endpoint or connection is configured.
-func TestDurable_Start_NoEndpoint(t *testing.T) {
-	t.Setenv(EnvGrpcEndpoint, "")
-	dt := Middleware()
-	if err := dt.Lifecycle().Start(context.Background()); err != nil {
-		t.Fatalf("expected nil error when no endpoint configured, got %v", err)
+// TestMiddlewareIntegration_ActivityPassesThrough verifies that
+// activity (and other non-orchestration) invocations flow through to the
+// normal pipeline rather than being short-circuited, and that a configured
+// durable client is attached to the invocation context for starters.
+func TestMiddlewareIntegration_ActivityPassesThrough(t *testing.T) {
+	// A configured client (here over the in-memory sidecar) is attached to
+	// non-orchestration invocations so HTTP starters can reach it.
+	conn := startGrpcSidecar(t, task.NewTaskRegistry())
+	dt := Middleware(WithActivity("SayHello", sayHello), WithClient(NewClient(conn)))
+	app := sdk.FunctionApp()
+	app.Use(dt)
+
+	innerCalled := false
+	var clientPresent bool
+	inner := func(ctx context.Context, _ *sdk.MiddlewareContext) error {
+		innerCalled = true
+		_, clientPresent = ClientFromContext(ctx)
+		return nil
 	}
-	if dt.Client() != nil {
-		t.Fatal("expected no client when durable is inactive")
+	chain := app.Compose(inner)
+
+	mc := &sdk.MiddlewareContext{InvocationContext: &sdk.InvocationContext{
+		FunctionName: "SayHello",
+		TriggerType:  string(ActivityTriggerType),
+	}}
+
+	if err := chain(context.Background(), mc); err != nil {
+		t.Fatalf("chain: %v", err)
 	}
+	if !innerCalled {
+		t.Fatal("activity invocation should pass through to inner")
+	}
+	if !clientPresent {
+		t.Fatal("durable client should be attached to non-orchestration context")
+	}
+}
+
+// TestEndToEnd_Emulator runs the full orchestration to completion on the
+// in-memory durabletask worker, validating that the orchestrator logic in the
+// sample produces the expected output across multiple replay turns.
+func TestEndToEnd_Emulator(t *testing.T) {
+	ctx := context.Background()
+	r := task.NewTaskRegistry()
+	if err := r.AddOrchestratorN("HelloCities", helloCities); err != nil {
+		t.Fatalf("add orchestrator: %v", err)
+	}
+	if err := r.AddActivityN("SayHello", func(actx task.ActivityContext) (any, error) {
+		var city string
+		if err := actx.GetInput(&city); err != nil {
+			return nil, err
+		}
+		return "Hello, " + city + "!", nil
+	}); err != nil {
+		t.Fatalf("add activity: %v", err)
+	}
+
+	logger := backend.DefaultLogger()
+	be := sqlite.NewSqliteBackend(sqlite.NewSqliteOptions(""), logger)
+	executor := task.NewTaskExecutor(r)
+	orchestrationWorker := backend.NewOrchestrationWorker(be, executor, logger)
+	activityWorker := backend.NewActivityTaskWorker(be, executor, logger)
+	hub := backend.NewTaskHubWorker(be, orchestrationWorker, activityWorker, logger)
+	if err := hub.Start(ctx); err != nil {
+		t.Fatalf("start hub: %v", err)
+	}
+	defer func() { _ = hub.Shutdown(ctx) }()
+
+	client := backend.NewTaskHubClient(be)
+	id, err := client.ScheduleNewOrchestration(ctx, "HelloCities", api.WithInput(""))
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	metadata, err := client.WaitForOrchestrationCompletion(ctx, id)
+	if err != nil {
+		t.Fatalf("wait for completion: %v", err)
+	}
+	if metadata.RuntimeStatus != api.RUNTIME_STATUS_COMPLETED {
+		t.Fatalf("expected COMPLETED, got %v", metadata.RuntimeStatus)
+	}
+	for _, want := range []string{"Hello, Tokyo!", "Hello, Seattle!", "Hello, London!"} {
+		if !strings.Contains(metadata.SerializedOutput, want) {
+			t.Fatalf("output %q missing %q", metadata.SerializedOutput, want)
+		}
+	}
+}
+
+func registeredFunctionNames(app *sdk.App) map[string]bool {
+	names := map[string]bool{}
+	app.GetRegisteredFunctions().Range(func(_, v any) bool {
+		names[v.(*sdk.RegisteredFunction).FuncName] = true
+		return true
+	})
+	return names
 }

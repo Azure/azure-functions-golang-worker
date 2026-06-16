@@ -1,26 +1,22 @@
 // Command durableFunctions is a sample Azure Functions app showing Durable
-// Functions in the Go worker via the durabletask integration (model 2:
-// gRPC work-item stream).
+// Functions in the Go worker via the durabletask middleware.
 //
 // It demonstrates, in a single app:
 //
 //   - Multiple orchestrations registered side by side (HelloCities and
 //     ProcessExpense).
 //   - The three building blocks: orchestrators (deterministic coordinators),
-//     activities (the actual work, durabletask-go native signature), and HTTP
-//     starters/management endpoints.
+//     activities (the actual work), and HTTP starters/management endpoints.
 //   - Fan-out / fan-in, custom-status progress reporting, and a
 //     human-in-the-loop (HITL) approval gated by a durable timeout.
 //   - How orchestration endpoints are exposed: start, status/progress, and
 //     raising an external event (the HITL response).
 //
-// The durable feature is wired with two registrations: app.Use(dt.Middleware())
-// injects the durable client into starter functions, and
-// worker.Start(app, sdk.WithLifecycleHook(dt)) runs the work-item listener
-// that executes orchestrators and activities.
+// The whole feature is wired with a single app.Use(durabletask.Middleware(...)).
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -67,14 +63,10 @@ func HelloCities(ctx *task.OrchestrationContext) (any, error) {
 	return greetings, nil
 }
 
-// SayHello is an activity. Activities use durabletask-go's native signature
-// (func(task.ActivityContext) (any, error)); they read input with
-// ctx.GetInput and run once (no replay), so non-deterministic code is fine.
-func SayHello(ctx task.ActivityContext) (any, error) {
-	var city string
-	if err := ctx.GetInput(&city); err != nil {
-		return nil, err
-	}
+// SayHello is an activity. Activities are ordinary functions — input in,
+// result out — and run through the normal worker pipeline, so non-
+// deterministic code is fine here.
+func SayHello(_ context.Context, city string) (string, error) {
 	return fmt.Sprintf("Hello, %s!", city), nil
 }
 
@@ -164,6 +156,8 @@ func ProcessExpense(ctx *task.OrchestrationContext) (any, error) {
 }
 
 // finalizeExpense records the outcome via an activity and returns the result.
+// It is an ordinary helper that uses ctx, so it stays inside the deterministic
+// replay.
 func finalizeExpense(ctx *task.OrchestrationContext, exp Expense, status, note string) (any, error) {
 	result := ExpenseResult{ExpenseID: exp.ID, Status: status, Note: note}
 	if err := ctx.CallActivity("RecordDecision", task.WithActivityInput(result)).Await(nil); err != nil {
@@ -172,38 +166,22 @@ func finalizeExpense(ctx *task.OrchestrationContext, exp Expense, status, note s
 	return result, nil
 }
 
-// --- ProcessExpense activities (durabletask-go native signatures) ---
+// --- ProcessExpense activities (ordinary functions) ---
 
-func ValidateReceipt(ctx task.ActivityContext) (any, error) {
-	var exp Expense
-	if err := ctx.GetInput(&exp); err != nil {
-		return nil, err
-	}
+func ValidateReceipt(_ context.Context, exp Expense) (bool, error) {
 	return exp.ReceiptURL != "", nil
 }
 
-func CheckPolicy(ctx task.ActivityContext) (any, error) {
-	var exp Expense
-	if err := ctx.GetInput(&exp); err != nil {
-		return nil, err
-	}
+func CheckPolicy(_ context.Context, exp Expense) (bool, error) {
 	return exp.Category != "", nil
 }
 
-func CheckBudget(ctx task.ActivityContext) (any, error) {
-	var exp Expense
-	if err := ctx.GetInput(&exp); err != nil {
-		return nil, err
-	}
+func CheckBudget(_ context.Context, exp Expense) (bool, error) {
 	return exp.Amount <= 10000, nil
 }
 
-func RecordDecision(ctx task.ActivityContext) (any, error) {
-	var r ExpenseResult
-	if err := ctx.GetInput(&r); err != nil {
-		return nil, err
-	}
-	slog.InfoContext(ctx.Context(), "expense decision recorded",
+func RecordDecision(ctx context.Context, r ExpenseResult) (string, error) {
+	slog.InfoContext(ctx, "expense decision recorded",
 		"expense_id", r.ExpenseID, "status", r.Status, "note", r.Note)
 	return "recorded", nil
 }
@@ -231,7 +209,9 @@ func StartHelloCities(w http.ResponseWriter, r *http.Request) {
 }
 
 // SubmitExpense (POST /api/expenses) starts the expense orchestration and
-// returns a 202 with a pointer to this app's own status route.
+// returns the standard "check status" payload: a 202 with the management URLs
+// (status query, raise event, terminate) so the caller can poll progress and
+// later approve.
 func SubmitExpense(w http.ResponseWriter, r *http.Request) {
 	client, ok := durabletask.ClientFromContext(r.Context())
 	if !ok {
@@ -248,6 +228,8 @@ func SubmitExpense(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// 202 Accepted + a pointer to this app's own status route, mirroring the
+	// classic Durable Functions "check status" response.
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Location", "/api/expenses/"+id)
 	w.WriteHeader(http.StatusAccepted)
@@ -308,7 +290,8 @@ func ApproveExpense(w http.ResponseWriter, r *http.Request) {
 
 // instanceIDFromPath extracts the path segment after resource, e.g. for the
 // route "expenses/{id}" and path "/api/expenses/abc-123" it returns
-// "abc-123".
+// "abc-123". The worker advertises RequiresRouteParameters, but reading the
+// value from the request path keeps the sample self-contained.
 func instanceIDFromPath(r *http.Request, resource string) string {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	for i, p := range parts {
@@ -322,10 +305,10 @@ func instanceIDFromPath(r *http.Request, resource string) string {
 func main() {
 	app := sdk.FunctionApp()
 
-	// One registration wires the whole durable feature: it injects the
-	// durable client into starter invocations and contributes the work-item
-	// listener (executes orchestrators + activities) that the worker starts
-	// and stops automatically. Add as many orchestrations as you like.
+	// Enable Durable Functions. A single middleware registers every
+	// orchestrator and activity (so the host dispatches them) and intercepts
+	// orchestration invocations to replay them. Register as many
+	// orchestrations as you like here.
 	app.Use(durabletask.Middleware(
 		// Orchestrators.
 		durabletask.WithOrchestrator("HelloCities", HelloCities),
@@ -338,7 +321,8 @@ func main() {
 		durabletask.WithActivity("RecordDecision", RecordDecision),
 	))
 
-	// Management endpoints are ordinary HTTP functions.
+	// Management endpoints are ordinary HTTP functions that use the durable
+	// client from the request context.
 	app.HTTP("StartHelloCities", StartHelloCities,
 		sdk.WithMethods("post"), sdk.WithRoute("hello"), sdk.WithAuth("anonymous"))
 	app.HTTP("SubmitExpense", SubmitExpense,

@@ -15,7 +15,11 @@
 // no separate extension point is provided today.
 package sdk
 
-import "context"
+import (
+	"context"
+
+	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
+)
 
 // Handler is the unit a Middleware wraps. It runs a single function invocation
 // and returns nil on success or an error that becomes the failure status on
@@ -117,30 +121,45 @@ type ShutdownProvider interface {
 	Shutdown(ctx context.Context) error
 }
 
-// Composer wraps an inner [Handler] with a middleware chain and returns the
-// composed Handler. It is the type of [App.Compose] and the value handed to a
-// [ComposerAware] middleware at registration time.
-type Composer func(inner Handler) Handler
+// FunctionRegistration describes a single function a [FunctionProvider]
+// contributes to the App. The fields mirror the arguments of
+// [App.RegisterFunction]: a name, the handler, the trigger binding, and any
+// registration options.
+type FunctionRegistration struct {
+	// Name is the function name (and, for durable triggers, the
+	// orchestration / activity name the host dispatches by).
+	Name string
+	// Func is the handler. Its accepted shapes are the same as any other
+	// registered function; a middleware that replaces execution may pass a
+	// placeholder whose body never runs (the middleware short-circuits the
+	// chain and produces the response itself).
+	Func any
+	// Trigger is the binding that drives the function.
+	Trigger bindings.Bind
+	// Options are applied during registration (e.g. retry policy).
+	Options []Option
+}
 
-// ComposerAware is an optional contract a [Middleware] can implement to receive
-// the App's chain [Composer] at registration time.
+// FunctionProvider is an optional contract a [Middleware] can implement to
+// contribute functions to the App at registration time.
 //
-// When the Middleware is registered via [App.Use], the App calls SetComposer
-// with [App.Compose]. A middleware that drives executions outside the normal
-// invocation path — for example, a background listener that runs work items
-// pulled from a separate stream (the Durable Functions work-item listener) —
-// uses the composer to run those executions through the very same middleware
-// chain as host-triggered invocations. They then get identical cross-cutting
-// behavior (distributed tracing, structured logging, panic recovery) with no
-// coupling between middlewares: the listener middleware needs no knowledge of
-// the tracing middleware, and vice versa.
+// When a Middleware is registered via [App.Use], the App checks whether it
+// satisfies FunctionProvider; if so, each returned [FunctionRegistration]
+// is registered exactly as if the user had called [App.RegisterFunction].
+// This lets a self-contained middleware own both the cross-cutting behavior
+// (via Wrap) and the function declarations it depends on, so the user wires
+// the whole feature with a single App.Use call.
 //
-// SetComposer is called once at registration time. The supplied composer reads
-// the App's middleware set lazily when invoked, so middlewares registered
-// after the receiver are still included in the chain it produces. Implementations
-// should simply store the composer for later use.
-type ComposerAware interface {
-	SetComposer(compose Composer)
+// The motivating consumer is durable functions: a single
+// durabletask.Middleware() both intercepts orchestration invocations (Wrap)
+// and declares the orchestrator / activity / client functions the host must
+// know about (ProvidedFunctions), so the host emits metadata for them and
+// dispatches them to the worker.
+//
+// ProvidedFunctions is read once at registration time and should be
+// side-effect-free.
+type FunctionProvider interface {
+	ProvidedFunctions() []FunctionRegistration
 }
 
 // Use registers a [Middleware]. Middleware run in registration order: the
@@ -156,12 +175,6 @@ type ComposerAware interface {
 // If mw also implements [ShutdownProvider], its Shutdown method is registered
 // for invocation by the worker once the gRPC stream closes or the process
 // receives a termination signal. Shutdowns run in registration order.
-//
-// If mw also implements [LifecycleProvider], its contributed [LifecycleHook]
-// is collected so the worker starts it before serving and shuts it down at
-// teardown. If mw also implements [ComposerAware], it receives the App's
-// chain [Composer] so it can run out-of-band executions through the same
-// middleware chain as host-triggered invocations.
 //
 // Registering the same Middleware multiple times runs its Wrap multiple times.
 // Use must be called before worker.Start; registering middleware after the
@@ -194,25 +207,11 @@ func (app *App) Use(mw Middleware) {
 		app.shutdowns = append(app.shutdowns, sp.Shutdown)
 	}
 
-	if lp, ok := mw.(LifecycleProvider); ok {
-		if h := lp.Lifecycle(); h != nil {
-			app.lifecycleHooks = append(app.lifecycleHooks, h)
+	if fp, ok := mw.(FunctionProvider); ok {
+		for _, fr := range fp.ProvidedFunctions() {
+			app.registerFunction(fr.Name, fr.Func, fr.Trigger, fr.Options...)
 		}
 	}
-
-	if ca, ok := mw.(ComposerAware); ok {
-		ca.SetComposer(app.Compose)
-	}
-}
-
-// LifecycleHooks returns the [LifecycleHook]s contributed by registered
-// middlewares that implement [LifecycleProvider], in registration order.
-//
-// The worker starts these before serving and shuts them down at teardown,
-// alongside any hooks passed to worker.Start via [WithLifecycleHook]. User
-// code does not normally call this; it is exposed for the worker package.
-func (app *App) LifecycleHooks() []LifecycleHook {
-	return app.lifecycleHooks
 }
 
 // Capabilities returns the merged capability map advertised by every

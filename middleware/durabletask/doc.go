@@ -1,112 +1,83 @@
 // Package durabletask provides Durable Functions support for the
-// azure-functions-golang-worker SDK, built on durabletask-go.
+// azure-functions-golang-worker SDK as a self-contained middleware, in the
+// same spirit as middleware/otelfunc: the user enables the whole feature
+// with a single App.Use call and all durable-specific logic — including the
+// heavy durabletask-go dependency — lives in this package.
 //
-// # Execution model (model 2: gRPC work-item stream)
+//	import (
+//	    "github.com/azure/azure-functions-golang-worker/sdk"
+//	    "github.com/azure/azure-functions-golang-worker/middleware/durabletask"
+//	    "github.com/azure/azure-functions-golang-worker/worker"
+//	    "github.com/microsoft/durabletask-go/task"
+//	)
 //
-// The Functions host's DurableTask extension owns all durable state and
-// exposes a local gRPC sidecar (the TaskHubSidecarService). The worker
-// connects to that sidecar and plays two roles over the one connection:
-//
-//   - Work-item listener — durabletask-go's StartWorkItemListener pulls
-//     orchestrator and activity work items from the host and executes them in
-//     the worker process. Orchestrators are replayed across turns; activities
-//     run once. This is started by [Durable] as a [sdk.LifecycleHook].
-//   - Management client — starter functions schedule and manage instances
-//     (start, raise event, query status, terminate). The [Client] wraps
-//     durabletask-go's TaskHubGrpcClient and is injected into invocation
-//     context by [Durable.Middleware].
-//
-// This mirrors how the .NET isolated and Java workers do durable: the host
-// extension is the backend; the worker is a durabletask client + work-item
-// listener. Execution does NOT flow through the normal FunctionRpc trigger
-// pipeline — orchestrators/activities run in durabletask-go's listener loop.
-//
-// # Programming model
-//
-// Orchestrators and activities use durabletask-go's native types:
-//
-//	func HelloCities(ctx *task.OrchestrationContext) (any, error) {
-//	    var out []string
-//	    for _, city := range []string{"Tokyo", "Seattle", "London"} {
-//	        var r string
-//	        if err := ctx.CallActivity("SayHello", task.WithActivityInput(city)).Await(&r); err != nil {
-//	            return nil, err
-//	        }
-//	        out = append(out, r)
-//	    }
-//	    return out, nil
+//	func main() {
+//	    app := sdk.FunctionApp()
+//	    app.Use(durabletask.Middleware(
+//	        durabletask.WithOrchestrator("HelloCities", HelloCities),
+//	        durabletask.WithActivity("SayHello", SayHello),
+//	    ))
+//	    app.HTTP("start", StartHelloCities, sdk.WithMethods("post"))
+//	    worker.Start(app)
 //	}
 //
-//	func SayHello(ctx task.ActivityContext) (any, error) {
-//	    var city string
-//	    if err := ctx.GetInput(&city); err != nil {
-//	        return nil, err
-//	    }
-//	    return "Hello, " + city + "!", nil
-//	}
+// # Execution model
 //
-// Orchestrator code is replayed, so it must be deterministic; do all I/O and
-// non-determinism inside activities.
+// Durable Functions for an out-of-process worker follow a replay model. The
+// Functions host's WebJobs DurableTask extension owns all durable state
+// (history, queues, dispatch); the worker is a stateless replay engine. This
+// mirrors the .NET isolated worker's GrpcOrchestrationRunner.LoadAndRun:
 //
-// # Wiring
+//  1. The host invokes an orchestrator like any other function. The trigger
+//     input is a base64-encoded protobuf OrchestratorRequest carrying the
+//     orchestration history (past + new events).
+//  2. The worker replays the orchestrator against that history.
+//  3. The orchestrator produces a list of actions (call activity, create
+//     timer, complete, …), serialized as a base64 OrchestratorResponse and
+//     returned as the function's return value.
+//  4. The host applies the actions, persists state, and schedules the next
+//     turn.
 //
-// A single App.Use call wires the whole feature: it injects the durable client
-// into starter invocations and contributes the work-item listener, which the
-// worker starts and stops automatically (via [sdk.LifecycleProvider]).
+// Activities are ordinary functions: input in, result out. The host's
+// DurableTask extension wraps/unwraps the activity protocol, so an activity
+// registered here runs through the normal worker pipeline (its return value
+// is encoded into the InvocationResponse) without any replay machinery.
 //
-//	app := sdk.FunctionApp()
-//	app.Use(durabletask.Middleware(
-//	    durabletask.WithOrchestrator("HelloCities", HelloCities),
-//	    durabletask.WithActivity("SayHello", SayHello),
-//	))
-//	app.HTTP("start", StartHelloCities, sdk.WithMethods("post"))
+// # How it maps onto the worker
 //
-//	worker.Start(app) // listener starts automatically; no extra hook to register
+// The package implements [sdk.Middleware] plus two optional contracts:
 //
-// The host durable gRPC endpoint is taken from [WithEndpoint], [WithConnection],
-// or the EnvGrpcEndpoint environment variable.
+//   - [sdk.Middleware] (Wrap): intercepts orchestration invocations, reads
+//     the inbound history via mc.InputBytes, replays via durabletask-go, and
+//     records the response via mc.SetReturnValue — short-circuiting the chain
+//     so the registered orchestrator placeholder never runs. Every other
+//     trigger (activities, HTTP starters, timers) passes through to next.
+//   - [sdk.FunctionProvider]: contributes the orchestrator and activity
+//     functions to the App so the host receives metadata for them. This is
+//     what lets a single App.Use wire the whole feature.
+//   - [sdk.ShutdownProvider]: closes the management [Client]'s gRPC
+//     connection at worker shutdown when the middleware created it.
 //
 // # Distributed tracing
 //
-// Each orchestration and activity work item runs through the App's middleware
-// chain, exactly like a host-triggered invocation. [Durable] implements
-// [sdk.ComposerAware]: when registered via App.Use it receives the App's chain
-// composer and installs a durabletask-go work-item interceptor that, per work
-// item, synthesizes an [sdk.MiddlewareContext] — seeded with the function name,
-// the durable trigger type, and the parent W3C trace context — and runs the
-// execution as the innermost handler of the chain.
+// No tracing code lives here. Because orchestrator and activity executions
+// arrive as ordinary trigger invocations, they flow through the App's normal
+// middleware chain — so registering middleware/otelfunc alongside this package
+// traces them automatically, with the host-supplied W3C trace context on each
+// invocation. otelfunc emits an execution span per orchestrator turn and per
+// activity, and HTTP starter functions are traced the same way. Linking a
+// starter's span to the orchestration it schedules additionally requires the
+// management client to propagate the trace context on the start call, which
+// depends on an upstream durabletask-go change and is tracked separately.
 //
-// So registering middleware/otelfunc alongside durable is all that is needed
-// to get execution spans; durable itself has no dependency on any tracing
-// package:
+// # Engine dependency
 //
-//	app := sdk.FunctionApp()
-//	app.Use(otelfunc.Middleware())     // owns OTel setup; traces every chain run
-//	app.Use(durabletask.Middleware(
-//	    durabletask.WithOrchestrator("HelloCities", HelloCities),
-//	    durabletask.WithActivity("SayHello", SayHello),
-//	))
-//
-// otelfunc reads the seeded trace context to start each execution span, so
-// activities correlate with their orchestration: the host backend stamps the
-// orchestration's trace context onto the scheduled activity
-// (ActivityRequest.ParentTraceContext), durabletask-go surfaces it on the work
-// item, and durable seeds it into the MiddlewareContext the chain consumes.
-// Orchestrators are replayed, so a multi-turn orchestration produces one
-// execution span per turn — all siblings under the orchestration.
-//
-// Two refinements depend on upstream work and are tracked with the coordinated
-// durabletask-go and host-extension changes: parenting orchestration execution
-// spans under the host's backend orchestration span (the host must put that
-// span's context on the pushed orchestration work item), and starting a
-// client-side span on the starter→host hop (ScheduleNewOrchestration /
-// RaiseEvent propagating ParentTraceContext).
-//
-// # Status
-//
-// The execution path (registry + listener) and the management client run
-// end-to-end against a durabletask gRPC sidecar (see the package tests). A
-// full Functions-host run additionally requires host-side Go durable support
-// (the host must select the gRPC protocol for the Go runtime and deliver the
-// sidecar endpoint to the worker).
+// Replay is delegated to durabletask-go's in-process task executor
+// (task.NewTaskExecutor(...).ExecuteOrchestrator). Because the upstream
+// OrchestratorRequest / OrchestratorResponse protobuf types currently live
+// in an internal package, this package parses the request envelope with
+// protowire (see runner.go) and marshals the engine's response value
+// directly. If/when durabletask-go exposes a public bytes-in/bytes-out
+// runner (e.g. OrchestrationRunner.LoadAndRun), runner.go can be reduced to
+// a one-line delegation with no change to this package's public API.
 package durabletask

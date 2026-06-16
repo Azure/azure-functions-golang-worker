@@ -1,10 +1,8 @@
 # Durable Functions sample
 
 Demonstrates Durable Functions in the Go worker using the
-`middleware/durabletask` package, on the **model 2** (gRPC work-item stream)
-execution model: the Functions host's DurableTask extension owns durable state
-and dispatches work over a local gRPC sidecar; the worker runs a work-item
-listener that executes orchestrators and activities.
+`middleware/durabletask` package. The whole feature is enabled with a single
+`app.Use(durabletask.Middleware(...))` call.
 
 The app registers **two orchestrations** to show how multiple workflows live
 side by side in one app, plus the three ways orchestration endpoints are
@@ -12,40 +10,37 @@ exposed (start, status/progress, and the human-in-the-loop response).
 
 ## Functions
 
-| Function | Kind | Role |
+| Function | Trigger | Role |
 |---|---|---|
-| `HelloCities` | orchestrator | Calls `SayHello` for each city in sequence |
-| `ProcessExpense` | orchestrator | Fan-out/fan-in validation + HITL approval with a durable timeout |
-| `SayHello` | activity | Activity for `HelloCities` |
-| `ValidateReceipt` / `CheckPolicy` / `CheckBudget` | activity | Parallel checks for `ProcessExpense` |
-| `RecordDecision` | activity | Records the final expense outcome |
+| `HelloCities` | `orchestrationTrigger` | Orchestrator: calls `SayHello` for each city in sequence |
+| `ProcessExpense` | `orchestrationTrigger` | Orchestrator: fan-out/fan-in validation + HITL approval with a durable timeout |
+| `SayHello` | `activityTrigger` | Activity for `HelloCities` |
+| `ValidateReceipt` / `CheckPolicy` / `CheckBudget` | `activityTrigger` | Parallel checks for `ProcessExpense` |
+| `RecordDecision` | `activityTrigger` | Records the final expense outcome |
 | `StartHelloCities` | `httpTrigger` POST `/api/hello` | Starts `HelloCities`, returns the instance ID |
-| `SubmitExpense` | `httpTrigger` POST `/api/expenses` | Starts `ProcessExpense`, returns the status URL |
+| `SubmitExpense` | `httpTrigger` POST `/api/expenses` | Starts `ProcessExpense`, returns the check-status payload |
 | `GetExpenseStatus` | `httpTrigger` GET `/api/expenses/{id}` | Returns runtime + custom status (progress) |
 | `ApproveExpense` | `httpTrigger` POST `/api/expenses/{id}/approve` | HITL: raises the `ApprovalDecision` event |
 
 ## How it works
 
 - **Orchestrators** use the durabletask-go programming model
-  (`func(*task.OrchestrationContext) (any, error)`: `CallActivity`,
-  `CreateTimer`, `WaitForSingleEvent`, `SetCustomStatus`, …). The work-item
-  listener replays them as the host dispatches turns. Orchestrator code must be
+  (`task.OrchestrationContext`: `CallActivity`, `CreateTimer`,
+  `WaitForSingleEvent`, `SetCustomStatus`, …). The host sends the
+  orchestration history to the worker; the durable middleware replays the
+  orchestrator and returns the resulting actions. Orchestrator code must be
   deterministic.
-- **Activities** use durabletask-go's native signature
-  (`func(task.ActivityContext) (any, error)`); they read input with
-  `ctx.GetInput(&v)` and run once (no replay), so non-deterministic code is
-  fine.
+- **Activities** are ordinary functions (input in, result out) and run
+  through the normal worker pipeline, so non-deterministic code is fine.
 - **Endpoints** are ordinary HTTP functions that reach the durable client via
   `durabletask.ClientFromContext(r.Context())`.
 
-### Wiring (one registration)
+### Defining more than one orchestration
+
+Register each orchestrator (and its activities) on the same middleware — the
+host dispatches each by name:
 
 ```go
-app := sdk.FunctionApp()
-
-// One App.Use wires the whole feature: it injects the durable client into
-// starter invocations and contributes the work-item listener (which executes
-// orchestrators + activities); the worker starts and stops it automatically.
 app.Use(durabletask.Middleware(
     durabletask.WithOrchestrator("HelloCities", HelloCities),
     durabletask.WithOrchestrator("ProcessExpense", ProcessExpense),
@@ -53,23 +48,18 @@ app.Use(durabletask.Middleware(
     durabletask.WithActivity("ValidateReceipt", ValidateReceipt),
     // ...
 ))
-app.HTTP("StartHelloCities", StartHelloCities, sdk.WithMethods("post"), sdk.WithRoute("hello"))
-// ... other HTTP endpoints ...
-
-worker.Start(app)
 ```
-
-The host durable gRPC endpoint comes from `durabletask.WithEndpoint(...)` or
-the `DURABLE_TASK_GRPC_ENDPOINT` environment variable.
 
 ### How the endpoints are exposed
 
-The management endpoints are ordinary HTTP functions that use the durable
-[`Client`](../../middleware/durabletask) (a thin wrapper over durabletask-go's
-`TaskHubGrpcClient`) injected into their request context:
+The host's DurableTask extension also exposes a built-in management REST API
+under `/runtime/webhooks/durabletask/…` (status, raiseEvent, terminate,
+purge). You can either return those URLs to clients (the check-status payload)
+or wrap them in your own functions, as this sample does:
 
-- **Start** — `client.ScheduleNewOrchestration(name, input)`. `SubmitExpense`
-  returns a 202 with a `statusQueryGetUri` pointing at its own status route.
+- **Start** — a normal HTTP function calls `client.ScheduleNewOrchestration`.
+  `SubmitExpense` returns `client.WriteCheckStatusResponse` (HTTP 202 + the
+  management URLs), the canonical Durable Functions starter response.
 - **Status / progress** — `GetExpenseStatus` calls `client.GetStatus(id)`.
   The orchestrator reports progress with `ctx.SetCustomStatus(...)`, which
   surfaces as `customStatus` in the response.
@@ -119,24 +109,16 @@ curl http://localhost:7071/api/expenses/<instanceId>
 ```
 
 > The DurableTask extension (state store, dispatch) is provided by the host's
-> extension bundle configured in `host.json`. The Go worker connects to the
-> extension's durable gRPC sidecar, runs the work-item listener, and does not
-> own durable state.
->
-> **Note:** a full `func`-host run additionally requires host-side support for
-> the Go runtime (selecting the gRPC durable protocol and delivering the
-> sidecar endpoint to the worker). Until then, the patterns are validated by
-> the gRPC-sidecar tests below.
+> extension bundle configured in `host.json`. The Go worker is a stateless
+> replay engine; it does not own durable state.
 
 ## Tests
 
-The orchestration patterns are covered by gRPC-sidecar tests in
+The orchestration patterns are covered by emulator-backed tests in
 [`middleware/durabletask`](../../middleware/durabletask):
 
-- the work-item listener executing an orchestrator + activities end to end
-  (the host dispatches over gRPC, the worker's listener executes),
-- fan-out/fan-in **plus the external-event (HITL) approval** driven to
-  completion through the listener,
-- the management client (schedule, status/custom-status, raise event,
-  wait-for-completion, not-found), and
-- the middleware injecting the durable client into invocation context.
+- replay equivalence (decode → replay → encode matches the engine directly),
+- the middleware short-circuit and activity pass-through paths,
+- a full end-to-end run of the sequential orchestrator, and
+- a full end-to-end run of fan-out/fan-in **plus the external-event (HITL)
+  approval**, driven to completion on the in-memory durabletask backend.
