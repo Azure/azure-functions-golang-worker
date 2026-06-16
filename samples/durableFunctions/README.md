@@ -33,7 +33,10 @@ exposed (start, status/progress, and the human-in-the-loop response).
 - **Activities** are ordinary functions (input in, result out) and run
   through the normal worker pipeline, so non-deterministic code is fine.
 - **Endpoints** are ordinary HTTP functions that reach the durable client via
-  `durabletask.ClientFromContext(r.Context())`.
+  `durabletask.ClientFromContext(r.Context())`. Each starter adds
+  `durabletask.ClientInput()` to its registration so the host delivers the
+  durable gRPC endpoint with the invocation; the middleware connects to it and
+  attaches the client to the request context.
 
 ### Defining more than one orchestration
 

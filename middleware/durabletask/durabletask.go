@@ -2,8 +2,10 @@ package durabletask
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
+	"sync"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/microsoft/durabletask-go/task"
@@ -30,6 +32,13 @@ type Durable struct {
 	// EnvGrpcEndpoint) and is therefore responsible for closing it on
 	// Shutdown. Clients supplied via WithClient are the caller's to close.
 	ownsClient bool
+
+	// mu guards bindingClients.
+	mu sync.Mutex
+	// bindingClients caches the [Client] created for each durable gRPC
+	// endpoint the host delivers via the durable client binding, keyed by gRPC
+	// target. Reused across invocations and closed on Shutdown.
+	bindingClients map[string]*Client
 }
 
 // Option configures a [Durable] at construction time.
@@ -139,12 +148,58 @@ func (d *Durable) Wrap(next sdk.Handler) sdk.Handler {
 			return nil
 		}
 		// Non-orchestration invocations (activities, HTTP starters, timers)
-		// run normally. Attach the client so starters can reach it.
-		if d.client != nil {
+		// run normally. Attach a durable client so starters can reach it via
+		// ClientFromContext. Prefer the endpoint the host delivered via the
+		// durable client binding; fall back to the env/explicit client.
+		if c := d.clientFromBinding(mc); c != nil {
+			ctx = contextWithClient(ctx, c)
+		} else if d.client != nil {
 			ctx = contextWithClient(ctx, d.client)
 		}
 		return next(ctx, mc)
 	}
+}
+
+// clientFromBinding returns a durable [Client] for the gRPC endpoint the host
+// delivered via the durable client binding (see [ClientInput]), or nil when no
+// such binding was present or its payload is unusable. Clients are created
+// once per endpoint and reused.
+func (d *Durable) clientFromBinding(mc *sdk.MiddlewareContext) *Client {
+	if mc == nil {
+		return nil
+	}
+	raw, ok := mc.BindingInput(durableClientParamName)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	var data struct {
+		RpcBaseURL string `json:"rpcBaseUrl"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil || data.RpcBaseURL == "" {
+		return nil
+	}
+	return d.cachedClient(data.RpcBaseURL)
+}
+
+// cachedClient dials the gRPC endpoint behind rpcBaseURL once and reuses the
+// resulting [Client] for subsequent invocations carrying the same endpoint.
+// Returns nil if the connection cannot be established.
+func (d *Durable) cachedClient(rpcBaseURL string) *Client {
+	target := grpcTarget(rpcBaseURL)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if c, ok := d.bindingClients[target]; ok {
+		return c
+	}
+	c, err := Dial(target)
+	if err != nil {
+		return nil
+	}
+	if d.bindingClients == nil {
+		d.bindingClients = make(map[string]*Client, 1)
+	}
+	d.bindingClients[target] = c
+	return c
 }
 
 // ProvidedFunctions implements [sdk.FunctionProvider]. It returns the
@@ -155,13 +210,25 @@ func (d *Durable) ProvidedFunctions() []sdk.FunctionRegistration {
 }
 
 // Shutdown implements [sdk.ShutdownProvider]. It closes the durable client's
-// connection if the middleware created it (via [EnvGrpcEndpoint]). A client
-// supplied through [WithClient] is the caller's to close.
+// connection if the middleware created it (via [EnvGrpcEndpoint]) and closes
+// every client created for a host-delivered durable client binding endpoint. A
+// client supplied through [WithClient] is the caller's to close.
 func (d *Durable) Shutdown(ctx context.Context) error {
+	var firstErr error
 	if d.client != nil && d.ownsClient {
-		return d.client.Close()
+		if err := d.client.Close(); err != nil {
+			firstErr = err
+		}
 	}
-	return nil
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, c := range d.bindingClients {
+		if err := c.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	d.bindingClients = nil
+	return firstErr
 }
 
 // orchestrationPlaceholder is the registered body of every orchestrator

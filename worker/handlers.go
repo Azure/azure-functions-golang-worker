@@ -300,6 +300,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	if raw := extractTriggerInputBytes(req, loadedFunc); raw != nil {
 		mc.SetInputBytes(raw)
 	}
+	populateBindingInputs(req, loadedFunc, mc)
 	ctx := sdk.ContextWithMiddleware(context.Background(), mc)
 
 	// Emit a system log with the inbound trace_parent so OTel correlation
@@ -517,6 +518,42 @@ func extractTriggerInputBytes(req *pb.InvocationRequest, lf *LoadedFunction) []b
 		return nil
 	}
 	return nil
+}
+
+// populateBindingInputs surfaces the raw payloads of input bindings other than
+// the primary trigger onto the MiddlewareContext, so middleware can read
+// auxiliary binding data (for example, a durable client binding carrying the
+// host's durable gRPC endpoint). The primary trigger input is already exposed
+// via [sdk.MiddlewareContext.InputBytes] and is skipped here.
+func populateBindingInputs(req *pb.InvocationRequest, lf *LoadedFunction, mc *sdk.MiddlewareContext) {
+	triggerName := ""
+	for _, b := range lf.Function.RawBindings {
+		if b.Direction == "in" {
+			triggerName = b.Name
+			break
+		}
+	}
+	for _, in := range req.GetInputData() {
+		name := in.GetName()
+		if name == "" || name == triggerName {
+			continue
+		}
+		td := in.GetData()
+		if td == nil {
+			continue
+		}
+		var b []byte
+		if s := td.GetString_(); s != "" {
+			b = []byte(s)
+		} else if bs := td.GetBytes(); bs != nil {
+			b = bs
+		} else if j := td.GetJson(); j != "" {
+			b = []byte(j)
+		}
+		if b != nil {
+			mc.SetBindingInput(name, b)
+		}
+	}
 }
 
 // injectInvocationContext propagates ctx into all argument slots that need it

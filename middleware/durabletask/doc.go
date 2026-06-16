@@ -58,6 +58,24 @@
 //   - [sdk.ShutdownProvider]: closes the management [Client]'s gRPC
 //     connection at worker shutdown when the middleware created it.
 //
+// # Management client
+//
+// Starter functions schedule and manage instances through a [Client] obtained
+// from the invocation context via [ClientFromContext]. A starter declares it
+// needs the client by adding [ClientInput] to its registration, which appends
+// a durableClient input binding so the Functions host delivers the durable
+// gRPC endpoint with each invocation; the middleware connects to that endpoint
+// (once per endpoint, reused across invocations) and attaches the client to
+// the context:
+//
+//	app.HTTP("start", StartHelloCities,
+//	    sdk.WithMethods("post"), durabletask.ClientInput())
+//
+// When no binding endpoint is delivered, the middleware falls back to a client
+// dialed from the [EnvGrpcEndpoint] environment variable (if set) or one
+// supplied via [WithClient] — both mainly useful for tests and standalone
+// scenarios.
+//
 // # Distributed tracing
 //
 // No tracing code lives here. Because orchestrator and activity executions

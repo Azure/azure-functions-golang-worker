@@ -104,3 +104,55 @@ func TestHandleInvocationRequest_InputBytesAvailableToMiddleware(t *testing.T) {
 		t.Errorf("mc.InputBytes() = %q, want %q", seen, payload)
 	}
 }
+
+// TestHandleInvocationRequest_BindingInputsAvailableToMiddleware verifies the
+// dispatcher surfaces auxiliary input bindings (beyond the primary trigger) on
+// mc.BindingInput, so a middleware can read them — the seam the durable client
+// binding uses to discover the host's durable gRPC endpoint — while the
+// trigger payload still flows through mc.InputBytes.
+func TestHandleInvocationRequest_BindingInputsAvailableToMiddleware(t *testing.T) {
+	disp := newTestDispatcher("req-bind")
+
+	rf := loadFunc(t, disp, "BindingCapture", func(ctx context.Context, _ bindings.TimerInfo) error {
+		return nil
+	})
+	// Attach a durableClient-style auxiliary input binding to the loaded
+	// function so the dispatcher surfaces its InputData.
+	val, _ := disp.LoadedFunctions.Load(rf.FuncId)
+	lf := val.(*LoadedFunction)
+	lf.Function.RawBindings = append(lf.Function.RawBindings, bindings.Binding{
+		Name:      "durableClient",
+		Type:      "durableClient",
+		Direction: "in",
+	})
+	disp.LoadedFunctions.Store(rf.FuncId, lf)
+
+	const triggerPayload = "timer-payload"
+	const clientPayload = `{"rpcBaseUrl":"http://127.0.0.1:4001/"}`
+	var trigger, aux string
+	var auxOK bool
+	disp.App.Use(sdk.MiddlewareFunc(func(next sdk.Handler) sdk.Handler {
+		return func(ctx context.Context, mc *sdk.MiddlewareContext) error {
+			trigger = string(mc.InputBytes())
+			b, ok := mc.BindingInput("durableClient")
+			aux, auxOK = string(b), ok
+			return next(ctx, mc)
+		}
+	}))
+
+	req := invokeRequest(rf.FuncId, "inv-bind")
+	req.InputData = []*pb.ParameterBinding{
+		{Name: "timer", RpcData: &pb.ParameterBinding_Data{Data: &pb.TypedData{Data: &pb.TypedData_String_{String_: triggerPayload}}}},
+		{Name: "durableClient", RpcData: &pb.ParameterBinding_Data{Data: &pb.TypedData{Data: &pb.TypedData_String_{String_: clientPayload}}}},
+	}
+
+	if _, err := handleInvocationRequest(req, disp, "req-bind"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if trigger != triggerPayload {
+		t.Errorf("mc.InputBytes() = %q, want %q (trigger payload)", trigger, triggerPayload)
+	}
+	if !auxOK || aux != clientPayload {
+		t.Errorf("mc.BindingInput(durableClient) = (%q, %v), want (%q, true)", aux, auxOK, clientPayload)
+	}
+}

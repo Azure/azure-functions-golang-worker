@@ -42,6 +42,14 @@ type MiddlewareContext struct {
 	// binder. Nil when the trigger carried no input.
 	inputBytes []byte
 
+	// bindingInputs holds raw payloads for input bindings other than the
+	// primary trigger, keyed by binding name. The dispatcher populates it
+	// before the middleware chain runs so middleware can read data from
+	// auxiliary input bindings (for example, a durable client binding
+	// carrying the host's durable gRPC endpoint). Nil when the invocation
+	// declared no auxiliary input bindings.
+	bindingInputs map[string][]byte
+
 	// returnValue / hasReturnValue carry the value to encode into
 	// InvocationResponse.ReturnValue. It is set either by the worker's
 	// inner handler (the user function's first non-error return value) or
@@ -149,6 +157,40 @@ func (mc *MiddlewareContext) InputBytes() []byte {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	return mc.inputBytes
+}
+
+// SetBindingInput stores the raw payload of a named input binding other than
+// the primary trigger.
+//
+// Intended for the worker dispatcher, which calls it once per auxiliary input
+// binding before the middleware chain runs. Middleware reads the value via
+// [BindingInput]. Safe to call from multiple goroutines.
+func (mc *MiddlewareContext) SetBindingInput(name string, b []byte) {
+	if mc == nil || name == "" {
+		return
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	if mc.bindingInputs == nil {
+		mc.bindingInputs = make(map[string][]byte, 1)
+	}
+	mc.bindingInputs[name] = b
+}
+
+// BindingInput returns the raw payload the host sent for the named input
+// binding, and whether one was present.
+//
+// This is the seam a middleware uses to read data from an input binding other
+// than the primary trigger. For example, the durable middleware reads its
+// durable client binding to discover the host-supplied durable gRPC endpoint.
+func (mc *MiddlewareContext) BindingInput(name string) ([]byte, bool) {
+	if mc == nil {
+		return nil, false
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	b, ok := mc.bindingInputs[name]
+	return b, ok
 }
 
 // SetReturnValue records the value the worker should encode into

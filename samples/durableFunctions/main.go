@@ -322,15 +322,22 @@ func main() {
 	))
 
 	// Management endpoints are ordinary HTTP functions that use the durable
-	// client from the request context.
+	// client from the request context. durabletask.ClientInput() adds the
+	// durableClient binding so the host delivers the durable gRPC endpoint to
+	// each starter; the middleware connects to it and the handler retrieves
+	// the client via durabletask.ClientFromContext.
 	app.HTTP("StartHelloCities", StartHelloCities,
-		sdk.WithMethods("post"), sdk.WithRoute("hello"), sdk.WithAuth("anonymous"))
+		sdk.WithMethods("post"), sdk.WithRoute("hello"), sdk.WithAuth("anonymous"),
+		durabletask.ClientInput())
 	app.HTTP("SubmitExpense", SubmitExpense,
-		sdk.WithMethods("post"), sdk.WithRoute("expenses"), sdk.WithAuth("anonymous"))
+		sdk.WithMethods("post"), sdk.WithRoute("expenses"), sdk.WithAuth("anonymous"),
+		durabletask.ClientInput())
 	app.HTTP("GetExpenseStatus", GetExpenseStatus,
-		sdk.WithMethods("get"), sdk.WithRoute("expenses/{id}"), sdk.WithAuth("anonymous"))
+		sdk.WithMethods("get"), sdk.WithRoute("expenses/{id}"), sdk.WithAuth("anonymous"),
+		durabletask.ClientInput())
 	app.HTTP("ApproveExpense", ApproveExpense,
-		sdk.WithMethods("post"), sdk.WithRoute("expenses/{id}/approve"), sdk.WithAuth("anonymous"))
+		sdk.WithMethods("post"), sdk.WithRoute("expenses/{id}/approve"), sdk.WithAuth("anonymous"),
+		durabletask.ClientInput())
 
 	worker.Start(app)
 }

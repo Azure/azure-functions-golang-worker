@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -63,6 +64,17 @@ func Dial(endpoint string) (*Client, error) {
 		inner: dtclient.NewTaskHubGrpcClient(conn, backend.DefaultLogger()),
 		conn:  conn,
 	}, nil
+}
+
+// grpcTarget converts a durable client binding's rpcBaseUrl (an HTTP(S) URL
+// like "http://127.0.0.1:54321/", as the Functions host delivers it) into a
+// gRPC dial target ("127.0.0.1:54321"). A value that is already a bare
+// host:port is returned unchanged.
+func grpcTarget(rpcBaseURL string) string {
+	if u, err := url.Parse(rpcBaseURL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return rpcBaseURL
 }
 
 // Close releases the underlying connection if this Client created it.
