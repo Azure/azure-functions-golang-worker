@@ -142,34 +142,60 @@ This is similar to the .NET worker extensions model (`Microsoft.Azure.Functions.
 
 The worker recovers panics that happen **inside your handler** and reports them to the host as a failed invocation with the full Go stack trace — so they show up, diagnosable, in Application Insights.
 
-That safety net does **not** extend to goroutines you start yourself. In Go, an unrecovered panic in *any* goroutine terminates the entire process. A handler that launches background work with a bare `go func() { ... }()` therefore puts the whole worker at risk: one nil-pointer dereference on that goroutine crashes the process, fails every other in-flight invocation with an opaque "worker exited" error, and the real stack never reaches the host or your App Insights.
+That safety net does **not** extend to goroutines you start yourself. In Go, an unrecovered panic in *any* goroutine terminates the entire process. In an Azure Functions worker this is especially dangerous: the worker hosts multiple concurrent invocations (potentially across different functions), so **one panicking goroutine crashes every in-flight request on the worker**, not just the function that spawned it. The host sees "worker exited" and the real stack never reaches your logs.
 
-Use [`sdk.Go`](sdk/safego.go) instead of `go` for fire-and-forget work. It runs your function in a panic-guarded goroutine: a panic is recovered, logged at error level with its stack (correlated to the spawning invocation via `slog`), and the worker stays alive.
+### The pattern: `errgroup` + named-return recover
+
+For work that matters (processing events, calling APIs), use [`errgroup`](https://pkg.go.dev/golang.org/x/sync/errgroup) with a named return so panics propagate as errors and the invocation fails properly — triggering retries instead of silent data loss:
 
 ```go
+import (
+    "fmt"
+    "log/slog"
+    "runtime/debug"
+
+    "golang.org/x/sync/errgroup"
+)
+
 func EventHubHandler(ctx context.Context, events []bindings.EventHubEvent) error {
+    g, ctx := errgroup.WithContext(ctx)
     for _, e := range events {
-        e := e
-        sdk.Go(ctx, func() {
-            // A panic in here is recovered and logged — it will NOT crash the worker.
-            process(e)
+        g.Go(func() (err error) {
+            defer func() {
+                if r := recover(); r != nil {
+                    // Logged with invocation_id, function_name, trigger_type
+                    // via the SDK's slog handler.
+                    slog.ErrorContext(ctx, "panic processing event",
+                        slog.Any("panic", r),
+                        slog.String("stack", string(debug.Stack())))
+                    err = fmt.Errorf("panic processing event: %v", r)
+                }
+            }()
+            return process(e)
         })
     }
-    return nil
+    return g.Wait() // non-nil on panic → invocation fails → host retries
 }
 ```
 
-When you need to control how the goroutine is launched (a `sync.WaitGroup`, a worker pool, a named function), defer [`sdk.Recover`](sdk/safego.go) as the first statement instead:
+The `slog.ErrorContext(ctx, ...)` call is the Functions-specific piece: the SDK installs its log handler as the default, which pulls invocation metadata off `ctx` and attaches `invocation_id`, `function_name`, and `trigger_type` — so the panic shows up correlated in Application Insights.
+
+### Best-effort work: `sdk.Recover`
+
+For genuinely best-effort goroutines where failure doesn't affect correctness (cache warming, fire-and-forget telemetry), defer [`sdk.Recover`](sdk/safego.go) to keep the worker alive without the ceremony of error propagation:
 
 ```go
+var wg sync.WaitGroup
+wg.Add(1)
 go func() {
-    defer sdk.Recover(ctx)
+    defer sdk.Recover(ctx) // catches panic, logs with invocation metadata
     defer wg.Done()
-    doBackgroundWork(ctx)
+    warmCache(ctx)
 }()
+wg.Wait()
 ```
 
-> **Rule of thumb:** inside Functions code, reach for `sdk.Go` / `sdk.Recover` instead of a bare `go`. The cost is one identifier; the payoff is that a defect in background work degrades to a logged error instead of a worker crash.
+> **Rule of thumb:** if a goroutine's failure should fail the invocation, use errgroup with a named-return recover. If the goroutine is truly best-effort, `sdk.Recover` keeps the worker alive with one line.
 
 ---
 

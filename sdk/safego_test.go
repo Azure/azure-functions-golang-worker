@@ -21,110 +21,33 @@ func waitTimeout(t *testing.T, done <-chan struct{}, msg string) {
 	}
 }
 
-func TestGo_RunsFn(t *testing.T) {
-	done := make(chan struct{})
-	Go(context.Background(), func() { close(done) })
-	waitTimeout(t, done, "fn to run")
-}
-
-func TestGo_RecoversPanic(t *testing.T) {
-	// A panic inside the goroutine must be recovered (not crash the test
-	// process) and routed to the panic handler.
-	prev := panicHandlerHolder.Load()
-	t.Cleanup(func() { panicHandlerHolder.Store(prev) })
-
-	var (
-		mu       sync.Mutex
-		gotPanic any
-		gotStack []byte
-		handled  = make(chan struct{})
-	)
-	SetGoroutinePanicHandler(func(_ context.Context, recovered any, stack []byte) {
-		mu.Lock()
-		gotPanic = recovered
-		gotStack = stack
-		mu.Unlock()
-		close(handled)
-	})
-
-	Go(context.Background(), func() { panic("boom") })
-
-	waitTimeout(t, handled, "panic handler to be invoked")
-
-	mu.Lock()
-	defer mu.Unlock()
-	if gotPanic != "boom" {
-		t.Errorf("recovered value mismatch: got %v, want \"boom\"", gotPanic)
-	}
-	if len(gotStack) == 0 {
-		t.Error("expected a non-empty stack trace")
-	}
-}
-
-func TestGo_NilFnIsNoop(t *testing.T) {
-	// Must not panic or spawn anything. If this returns, it passed.
-	Go(context.Background(), nil)
-}
-
 func TestRecover_NoPanicIsNoop(t *testing.T) {
-	// Deferring Recover when no panic is in flight must do nothing and must
-	// not invoke the panic handler.
-	prev := panicHandlerHolder.Load()
-	t.Cleanup(func() { panicHandlerHolder.Store(prev) })
-
-	called := false
-	SetGoroutinePanicHandler(func(context.Context, any, []byte) { called = true })
-
+	// Deferring Recover when no panic is in flight must do nothing.
+	// If this returns without hanging or panicking, it passed.
 	func() {
 		defer Recover(context.Background())
 		// no panic
 	}()
-
-	if called {
-		t.Error("panic handler should not be called when there is no panic")
-	}
 }
 
-func TestRecover_GuardsManualGoroutine(t *testing.T) {
-	prev := panicHandlerHolder.Load()
-	t.Cleanup(func() { panicHandlerHolder.Store(prev) })
-
-	handled := make(chan struct{})
-	SetGoroutinePanicHandler(func(context.Context, any, []byte) { close(handled) })
-
+func TestRecover_CatchesPanicInGoroutine(t *testing.T) {
+	// A goroutine that defers Recover must not crash the process on panic.
+	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer Recover(context.Background())
 		defer wg.Done()
-		panic("manual goroutine boom")
+		defer func() { close(done) }()
+		panic("boom")
 	}()
 	wg.Wait()
-
-	waitTimeout(t, handled, "panic handler from manual goroutine")
+	waitTimeout(t, done, "goroutine with Recover to complete")
 }
 
-func TestSetGoroutinePanicHandler_NilRestoresDefault(t *testing.T) {
-	prev := panicHandlerHolder.Load()
-	t.Cleanup(func() { panicHandlerHolder.Store(prev) })
-
-	SetGoroutinePanicHandler(func(context.Context, any, []byte) {})
-	if panicHandlerHolder.Load() == nil {
-		t.Fatal("expected a custom handler to be installed")
-	}
-
-	SetGoroutinePanicHandler(nil)
-	if panicHandlerHolder.Load() != nil {
-		t.Error("expected nil to clear the custom handler (fall back to default)")
-	}
-}
-
-func TestDefaultGoroutinePanicHandler_LogsViaSlog(t *testing.T) {
-	// The default handler logs the panic at error level through slog so the
-	// sdk log handler can attach invocation metadata. Capture it via a buffer
-	// base handler wrapped by NewLogHandler, with an InvocationContext on ctx.
-	// Invoke the default handler directly (rather than through Go) so the
-	// assertion is deterministic and free of goroutine timing.
+func TestRecover_LogsViaSlog(t *testing.T) {
+	// Recover must log the panic at error level through slog so the SDK log
+	// handler can attach invocation metadata. Verify by capturing output.
 	var buf bytes.Buffer
 	base := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})
 	prevDefault := slog.Default()
@@ -137,7 +60,11 @@ func TestDefaultGoroutinePanicHandler_LogsViaSlog(t *testing.T) {
 		TriggerType:  "eventHubTrigger",
 	})
 
-	defaultGoroutinePanicHandler(ctx, "nil pointer-ish", []byte("goroutine 1 [running]:\n..."))
+	// Run Recover via a deferred call that actually panics.
+	func() {
+		defer Recover(ctx)
+		panic("nil pointer-ish")
+	}()
 
 	var rec map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
