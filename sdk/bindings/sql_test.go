@@ -96,7 +96,9 @@ func TestSQLBinding_MarshalJSON_Shape(t *testing.T) {
 
 // TestSQLChange_JSON_RoundTrip uses the literal wire-format payload shape
 // produced by the SQL extension. Field name casing (capital "Operation",
-// capital "Item") must match exactly or deserialization will fail.
+// capital "Item") must match the struct tags exactly in marshaled output;
+// Go's decoder is case-insensitive, but this test locks down the canonical
+// wire shape so serialization round-trips are stable.
 func TestSQLChange_JSON_RoundTrip(t *testing.T) {
 	payload := `[{"Operation":0,"Item":{"ProductId":1,"Name":"Widget","Cost":100}},{"Operation":1,"Item":{"ProductId":2,"Name":"Gadget","Cost":250}},{"Operation":2,"Item":{"ProductId":3,"Name":"Gizmo","Cost":50}}]`
 

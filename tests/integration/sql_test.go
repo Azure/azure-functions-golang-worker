@@ -88,13 +88,19 @@ func ensureSQLChangeTracking(t *testing.T) {
 	}
 	defer testDB.Close()
 
+	// Create table if it doesn't exist; truncate if it does. Avoid DROP TABLE
+	// because that invalidates the OBJECT_ID stored in az_func.GlobalState,
+	// causing subsequent runs (without a host restart) to hang waiting for the
+	// SQL extension to re-register a listener for the new OBJECT_ID.
 	tableSetup := []string{
-		`IF OBJECT_ID('dbo.Products', 'U') IS NOT NULL DROP TABLE dbo.Products`,
-		`CREATE TABLE dbo.Products (
-			ProductId INT PRIMARY KEY,
-			Name      NVARCHAR(100) NOT NULL,
-			Cost      INT NOT NULL
-		)`,
+		`IF OBJECT_ID('dbo.Products', 'U') IS NULL
+			CREATE TABLE dbo.Products (
+				ProductId INT PRIMARY KEY,
+				Name      NVARCHAR(100) NOT NULL,
+				Cost      INT NOT NULL
+			)
+		ELSE
+			TRUNCATE TABLE dbo.Products`,
 	}
 	for _, q := range tableSetup {
 		if _, err := testDB.ExecContext(ctx, q); err != nil {
@@ -106,6 +112,15 @@ func ensureSQLChangeTracking(t *testing.T) {
 		`ALTER TABLE dbo.Products ENABLE CHANGE_TRACKING WITH (TRACK_COLUMNS_UPDATED = OFF)`,
 	); err != nil && !isChangeTrackingAlreadyEnabled(err) {
 		t.Fatalf("failed to enable change tracking on table: %v", err)
+	}
+
+	// Clean stale extension state so the listener re-registers cleanly.
+	if _, err := testDB.ExecContext(ctx,
+		`IF SCHEMA_ID('az_func') IS NOT NULL AND OBJECT_ID('az_func.GlobalState', 'U') IS NOT NULL
+			DELETE FROM az_func.GlobalState WHERE UserTableID = OBJECT_ID('dbo.Products')`,
+	); err != nil {
+		// Non-fatal: the schema may not exist on a fresh container.
+		t.Logf("warning: could not clean az_func.GlobalState: %v", err)
 	}
 }
 

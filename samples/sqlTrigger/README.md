@@ -36,8 +36,10 @@ to monitor (the sample expects a table named `dbo.Products`):
 
 - [Set up change tracking (Azure Functions SQL trigger prerequisites)](https://learn.microsoft.com/azure/azure-functions/functions-bindings-azure-sql-trigger?tabs=isolated-process,extensionv4&pivots=programming-language-csharp#set-up-change-tracking-required)
 
-Update `local.settings.json` with your SQL connection string if you're not
-using the default local SQL Server credentials.
+Update `local.settings.json` with your SQL connection string — replace
+`<YOUR_SQL_PASSWORD>` with the SA password used by your local SQL Server
+(e.g., the one configured in `tests/emulators/docker-compose.yml` via the
+`SQL_TEST_PASSWORD` env var, defaulting to `StrongP@ssw0rd!`).
 
 ### Sample schema
 
