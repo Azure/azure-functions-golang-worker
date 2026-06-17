@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"runtime/debug"
 )
@@ -39,42 +40,60 @@ import (
 // Application Insights), and lets the goroutine exit cleanly so the worker
 // stays up.
 //
-// Recover intentionally stops the panic from propagating. To surface the
-// failure to the caller, use a named return and convert the panic to an error:
+// Recover intentionally stops the panic from propagating. If the goroutine's
+// failure should fail the invocation (trigger retries, surface in App Insights
+// as an error), use [RecoverTo] instead — it captures the panic as an error
+// via a pointer you supply:
 //
 //	g, ctx := errgroup.WithContext(ctx)
-//	for _, e := range events {
-//	    g.Go(func() (err error) {
-//	        defer func() {
-//	            if r := recover(); r != nil {
-//	                slog.ErrorContext(ctx, "panic processing event",
-//	                    slog.Any("panic", r),
-//	                    slog.String("stack", string(debug.Stack())))
-//	                err = fmt.Errorf("panic: %v", r)
-//	            }
-//	        }()
-//	        return process(e)
-//	    })
-//	}
+//	g.Go(func() (err error) {
+//	    defer sdk.RecoverTo(ctx, &err)
+//	    return process(event)
+//	})
 //	return g.Wait()
-//
-// The named-return pattern gives you both: the panic is logged with invocation
-// metadata (via slog + the SDK log handler), and it propagates as an error so
-// the invocation fails and the host can retry.
 //
 // For truly best-effort work where failure doesn't matter (cache warming,
 // opportunistic telemetry), Recover alone is sufficient — it logs and
 // swallows.
 func Recover(ctx context.Context) {
 	if r := recover(); r != nil {
-		defaultGoroutinePanicHandler(ctx, r, debug.Stack())
+		logRecoveredPanic(ctx, r, debug.Stack())
 	}
 }
 
-// defaultGoroutinePanicHandler logs the recovered panic and its stack at error
-// level. ctx flows through to slog so the sdk log handler can attach
-// invocation metadata (invocation_id, function_name, trigger_type).
-func defaultGoroutinePanicHandler(ctx context.Context, recovered any, stack []byte) {
+// RecoverTo is a panic guard that captures the recovered panic as an error.
+//
+// It is designed for goroutines whose failure should fail the enclosing
+// invocation — triggering host retries and surfacing the error in Application
+// Insights — without the boilerplate of a manual recover + named return:
+//
+//	g, ctx := errgroup.WithContext(ctx)
+//	for _, e := range events {
+//	    g.Go(func() (err error) {
+//	        defer sdk.RecoverTo(ctx, &err)
+//	        return process(e)
+//	    })
+//	}
+//	return g.Wait() // non-nil on panic → invocation fails → host retries
+//
+// errp must be non-nil and should point to a named return value. If a panic
+// occurs, RecoverTo logs the full stack trace (with invocation metadata) and
+// sets *errp to a descriptive error. If *errp is already non-nil (i.e., the
+// function returned an error normally before a deferred panic), the original
+// error is preserved.
+func RecoverTo(ctx context.Context, errp *error) {
+	if r := recover(); r != nil {
+		logRecoveredPanic(ctx, r, debug.Stack())
+		if *errp == nil {
+			*errp = fmt.Errorf("recovered panic: %v", r)
+		}
+	}
+}
+
+// logRecoveredPanic logs the recovered panic and its stack at error level.
+// ctx flows through to slog so the sdk log handler can attach invocation
+// metadata (invocation_id, function_name, trigger_type).
+func logRecoveredPanic(ctx context.Context, recovered any, stack []byte) {
 	slog.ErrorContext(ctx, "recovered panic in goroutine",
 		slog.Any("panic", recovered),
 		slog.String("stack", string(stack)),

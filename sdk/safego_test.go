@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
-	"sync"
 	"testing"
 	"time"
 )
@@ -33,15 +33,11 @@ func TestRecover_NoPanicIsNoop(t *testing.T) {
 func TestRecover_CatchesPanicInGoroutine(t *testing.T) {
 	// A goroutine that defers Recover must not crash the process on panic.
 	done := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
 	go func() {
 		defer Recover(context.Background())
-		defer wg.Done()
 		defer func() { close(done) }()
 		panic("boom")
 	}()
-	wg.Wait()
 	waitTimeout(t, done, "goroutine with Recover to complete")
 }
 
@@ -81,5 +77,59 @@ func TestRecover_LogsViaSlog(t *testing.T) {
 	}
 	if s, ok := rec["stack"].(string); !ok || s == "" {
 		t.Errorf("expected a non-empty stack attribute, got %v", rec["stack"])
+	}
+}
+
+func TestRecoverTo_SetsErrorOnPanic(t *testing.T) {
+	// RecoverTo must capture the panic as an error via the provided pointer.
+	fn := func() (err error) {
+		defer RecoverTo(context.Background(), &err)
+		panic("kaboom")
+	}
+	err := fn()
+	if err == nil {
+		t.Fatal("expected non-nil error after panic")
+	}
+	if got := err.Error(); got != "recovered panic: kaboom" {
+		t.Errorf("unexpected error message: %s", got)
+	}
+}
+
+func TestRecoverTo_PreservesExistingError(t *testing.T) {
+	// If *errp is already non-nil when the panic fires, RecoverTo must not
+	// overwrite it — the original error is the more meaningful signal.
+	original := fmt.Errorf("original error")
+	fn := func() (err error) {
+		defer RecoverTo(context.Background(), &err)
+		err = original
+		panic("secondary boom")
+	}
+	err := fn()
+	if err != original {
+		t.Errorf("expected original error to be preserved, got: %v", err)
+	}
+}
+
+func TestRecoverTo_NoPanicIsNoop(t *testing.T) {
+	// When no panic occurs, RecoverTo must leave *errp untouched.
+	fn := func() (err error) {
+		defer RecoverTo(context.Background(), &err)
+		return nil
+	}
+	if err := fn(); err != nil {
+		t.Errorf("expected nil error when no panic, got: %v", err)
+	}
+}
+
+func TestRecoverTo_NoPanicPreservesReturnedError(t *testing.T) {
+	// When the function returns a real error and no panic happens,
+	// RecoverTo must not interfere.
+	want := fmt.Errorf("real error")
+	fn := func() (err error) {
+		defer RecoverTo(context.Background(), &err)
+		return want
+	}
+	if got := fn(); got != want {
+		t.Errorf("expected %v, got %v", want, got)
 	}
 }

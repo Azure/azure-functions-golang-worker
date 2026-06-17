@@ -144,33 +144,18 @@ The worker recovers panics that happen **inside your handler** and reports them 
 
 That safety net does **not** extend to goroutines you start yourself. In Go, an unrecovered panic in *any* goroutine terminates the entire process. In an Azure Functions worker this is especially dangerous: the worker hosts multiple concurrent invocations (potentially across different functions), so **one panicking goroutine crashes every in-flight request on the worker**, not just the function that spawned it. The host sees "worker exited" and the real stack never reaches your logs.
 
-### The pattern: `errgroup` + named-return recover
+### Propagate panics as errors: `sdk.RecoverTo`
 
-For work that matters (processing events, calling APIs), use [`errgroup`](https://pkg.go.dev/golang.org/x/sync/errgroup) with a named return so panics propagate as errors and the invocation fails properly — triggering retries instead of silent data loss:
+For work that matters (processing events, calling APIs), use [`sdk.RecoverTo`](sdk/safego.go) so panics propagate as errors and the invocation fails properly — triggering retries instead of silent data loss:
 
 ```go
-import (
-    "fmt"
-    "log/slog"
-    "runtime/debug"
-
-    "golang.org/x/sync/errgroup"
-)
+import "golang.org/x/sync/errgroup"
 
 func EventHubHandler(ctx context.Context, events []bindings.EventHubEvent) error {
     g, ctx := errgroup.WithContext(ctx)
     for _, e := range events {
         g.Go(func() (err error) {
-            defer func() {
-                if r := recover(); r != nil {
-                    // Logged with invocation_id, function_name, trigger_type
-                    // via the SDK's slog handler.
-                    slog.ErrorContext(ctx, "panic processing event",
-                        slog.Any("panic", r),
-                        slog.String("stack", string(debug.Stack())))
-                    err = fmt.Errorf("panic processing event: %v", r)
-                }
-            }()
+            defer sdk.RecoverTo(ctx, &err)
             return process(e)
         })
     }
@@ -178,7 +163,7 @@ func EventHubHandler(ctx context.Context, events []bindings.EventHubEvent) error
 }
 ```
 
-The `slog.ErrorContext(ctx, ...)` call is the Functions-specific piece: the SDK installs its log handler as the default, which pulls invocation metadata off `ctx` and attaches `invocation_id`, `function_name`, and `trigger_type` — so the panic shows up correlated in Application Insights.
+`RecoverTo` logs the full stack trace with invocation metadata (via slog + the SDK log handler) and sets `*errp` to a descriptive error. If `*errp` already holds a non-nil error, the original is preserved.
 
 ### Best-effort work: `sdk.Recover`
 
@@ -195,7 +180,7 @@ go func() {
 wg.Wait()
 ```
 
-> **Rule of thumb:** if a goroutine's failure should fail the invocation, use errgroup with a named-return recover. If the goroutine is truly best-effort, `sdk.Recover` keeps the worker alive with one line.
+> **Rule of thumb:** if a goroutine's failure should fail the invocation, use `sdk.RecoverTo`. If the goroutine is truly best-effort, `sdk.Recover` keeps the worker alive with one line.
 
 ---
 
