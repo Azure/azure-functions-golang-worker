@@ -90,3 +90,43 @@ func TestHandleInvocation_SdkRecover_HappyPath(t *testing.T) {
 
 	waitCh(t, done, "guarded goroutine to complete")
 }
+
+// TestHandleInvocation_SdkRecoverTo_PanicFailsInvocation verifies that a
+// panicking goroutine guarded by sdk.RecoverTo propagates the panic as a
+// failed invocation (Failure status), enabling host retries.
+func TestHandleInvocation_SdkRecoverTo_PanicFailsInvocation(t *testing.T) {
+	disp := newTestDispatcher("req-recoverto-panic")
+
+	handled := make(chan struct{})
+	rf := loadFunc(t, disp, "RecoverToPanic", func(ctx context.Context, _ bindings.TimerInfo) error {
+		// Simulate the errgroup pattern: goroutine panics, RecoverTo
+		// captures it as an error, and the handler returns that error.
+		//
+		// Defer ordering matters: wg.Done is registered first so it runs
+		// LAST (after RecoverTo has set err), ensuring the parent reads
+		// the error only after it's been assigned.
+		var err error
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer sdk.RecoverTo(ctx, &err)
+			defer func() { close(handled) }()
+			panic("recoverTo goroutine boom")
+		}()
+		wg.Wait()
+		return err
+	})
+
+	resp, respErr := handleInvocationRequest(invokeRequest(rf.FuncId, "inv-recoverto-panic"), disp, "req-recoverto-panic")
+	if respErr != nil {
+		t.Fatalf("unexpected error: %v", respErr)
+	}
+
+	status := resp.GetInvocationResponse().Result
+	if status.Status != pb.StatusResult_Failure {
+		t.Errorf("expected Failure (panic propagated via RecoverTo), got %v", status.Status)
+	}
+
+	waitCh(t, handled, "RecoverTo goroutine to complete")
+}

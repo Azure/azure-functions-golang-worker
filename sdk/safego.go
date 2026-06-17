@@ -90,7 +90,11 @@ func Recover(ctx context.Context) {
 func RecoverTo(ctx context.Context, errp *error) {
 	if r := recover(); r != nil {
 		logRecoveredPanic(ctx, r, debug.Stack())
-		if *errp == nil {
+		// If errp is nil the caller doesn't need the error value; degrade
+		// gracefully to Recover semantics (log and swallow) rather than
+		// crashing on a nil dereference — which would be unrecoverable
+		// since recover() has already consumed the original panic.
+		if errp != nil && *errp == nil {
 			*errp = fmt.Errorf("recovered panic: %v", r)
 		}
 	}

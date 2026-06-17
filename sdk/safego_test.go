@@ -34,8 +34,12 @@ func TestRecover_CatchesPanicInGoroutine(t *testing.T) {
 	// A goroutine that defers Recover must not crash the process on panic.
 	done := make(chan struct{})
 	go func() {
+		// Test-only ordering: close(done) is first so it runs LAST, ensuring
+		// Recover has finished logging before the test unblocks and the next
+		// test swaps the global slog handler. In production code Recover
+		// should be the first defer (see doc comments).
+		defer close(done)
 		defer Recover(context.Background())
-		defer func() { close(done) }()
 		panic("boom")
 	}()
 	waitTimeout(t, done, "goroutine with Recover to complete")
@@ -122,6 +126,16 @@ func TestRecoverTo_NoPanicIsNoop(t *testing.T) {
 	if err := fn(); err != nil {
 		t.Errorf("expected nil error when no panic, got: %v", err)
 	}
+}
+
+func TestRecoverTo_NilErrpDoesNotCrash(t *testing.T) {
+	// Passing a nil errp must not crash — RecoverTo should degrade to
+	// Recover semantics (log and swallow) rather than nil-dereference.
+	func() {
+		defer RecoverTo(context.Background(), nil)
+		panic("nil errp panic")
+	}()
+	// If we reach here without crashing, the test passed.
 }
 
 func TestRecoverTo_NoPanicPreservesReturnedError(t *testing.T) {
