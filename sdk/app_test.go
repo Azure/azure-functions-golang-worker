@@ -930,15 +930,6 @@ func TestWithTable_PanicsOnEmpty(t *testing.T) {
 	WithTable("")
 }
 
-func TestWithConnection_PanicsOnEmpty(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for empty connection setting name")
-		}
-	}()
-	WithConnection("")
-}
-
 func TestSQL_WithLeasesTable(t *testing.T) {
 	app := FunctionApp()
 	handler := SQLChangeHandler(func(ctx context.Context, changes []bindings.SQLChange) error {

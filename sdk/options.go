@@ -168,11 +168,7 @@ func WithLeasesTable(name string) Option {
 // Works with CosmosDB, EventHub, ServiceBus, Blob, and SQL triggers.
 // For SQL it populates the binding's "connectionStringSetting" field; for
 // the others it populates "connection".
-// Panics if connection is empty — a trigger cannot connect without a setting name.
 func WithConnection(connection string) Option {
-	if connection == "" {
-		panic("WithConnection: connection string setting name must not be empty")
-	}
 	return func(rf *RegisteredFunction) {
 		b := rf.triggerBinding()
 		if b == nil {
