@@ -44,11 +44,14 @@ func TestRecover_CatchesPanicInGoroutine(t *testing.T) {
 func TestRecover_LogsViaSlog(t *testing.T) {
 	// Recover must log the panic at error level through slog so the SDK log
 	// handler can attach invocation metadata. Verify by capturing output.
+	//
+	// We swap the base handler via the SDK's atomic SetDefaultBaseHandler
+	// rather than calling slog.SetDefault, which would mutate the process-wide
+	// slog default and make this test unsafe to run concurrently with others.
 	var buf bytes.Buffer
 	base := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})
-	prevDefault := slog.Default()
-	slog.SetDefault(slog.New(NewLogHandler(base)))
-	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	SetDefaultBaseHandler(base)
+	t.Cleanup(func() { SetDefaultBaseHandler(nil) })
 
 	ctx := NewContext(context.Background(), &InvocationContext{
 		InvocationID: "inv-99",

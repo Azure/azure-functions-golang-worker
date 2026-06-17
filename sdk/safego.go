@@ -27,10 +27,13 @@ import (
 
 // Recover is a panic guard for goroutines you start yourself.
 //
-// Add it as the first defer in any goroutine launched from a handler:
+// It must be the first defer in the goroutine so it runs last and catches
+// panics from all subsequent defers. Defers execute in LIFO order, so the
+// first defer registered is the last to run — placing Recover first
+// guarantees it is the final safety net:
 //
 //	go func() {
-//	    defer sdk.Recover(ctx)
+//	    defer sdk.Recover(ctx)   // ← first defer, runs last: catches everything
 //	    defer wg.Done()
 //	    doWork(ctx)
 //	}()
@@ -62,6 +65,9 @@ func Recover(ctx context.Context) {
 }
 
 // RecoverTo is a panic guard that captures the recovered panic as an error.
+//
+// Like [Recover], it must be the first defer so it runs last and catches
+// panics from all subsequent defers.
 //
 // It is designed for goroutines whose failure should fail the enclosing
 // invocation — triggering host retries and surfacing the error in Application
