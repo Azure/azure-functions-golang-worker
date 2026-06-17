@@ -11,7 +11,7 @@ table tracked by [SQL Change Tracking](https://learn.microsoft.com/sql/relationa
 
 ## Prerequisites
 
-- [Go 1.25+](https://go.dev/dl/)
+- [Go 1.24+](https://go.dev/dl/)
 - [Azure Functions Core Tools](https://www.npmjs.com/package/azure-functions-core-tools/v/4.12.0) 4.12.0 or later (includes Go worker support):
   ```bash
   npm i -g azure-functions-core-tools@4 --unsafe-perm true
@@ -144,6 +144,11 @@ var db *sql.DB
 
 func main() {
     var err error
+    // The trigger binding uses "AzureWebJobsSqlConnectionString" as an app
+    // setting *name* — the host resolves it and injects the actual value as
+    // an environment variable at runtime. For your own database/sql pool you
+    // read that injected env var directly.
+    //
     // For Managed Identity in production, use a connection string with
     // "Authentication=ActiveDirectoryDefault" — go-mssqldb integrates with
     // azidentity's DefaultAzureCredential under that auth mode.

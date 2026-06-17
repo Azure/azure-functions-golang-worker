@@ -189,3 +189,42 @@ func TestSQLBinding_MarshalJSON_NoNestedObject(t *testing.T) {
 			string(data))
 	}
 }
+
+func TestSQLBinding_LeasesTableName_OmittedWhenEmpty(t *testing.T) {
+	trigger := &SQLTrigger{
+		Name:                    "changes",
+		TableName:               "dbo.Products",
+		ConnectionStringSetting: "AzureWebJobsSqlConnectionString",
+	}
+	data, err := json.Marshal(trigger.ToBinding())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(string(data), "leasesTableName") {
+		t.Errorf("expected leasesTableName to be omitted when empty, got: %s", string(data))
+	}
+}
+
+func TestSQLBinding_LeasesTableName_IncludedWhenSet(t *testing.T) {
+	binding := Binding{
+		Name:      "changes",
+		Type:      "sqlTrigger",
+		Direction: "in",
+		SQLBinding: &SQLBinding{
+			TableName:               "dbo.Products",
+			ConnectionStringSetting: "AzureWebJobsSqlConnectionString",
+			LeasesTableName:         "MyCustomLeases",
+		},
+	}
+	data, err := json.Marshal(binding)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got["leasesTableName"] != "MyCustomLeases" {
+		t.Errorf("expected leasesTableName %q, got %v", "MyCustomLeases", got["leasesTableName"])
+	}
+}

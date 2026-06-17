@@ -12,6 +12,11 @@ const SQLTriggerType BindingType = "sqlTrigger"
 type SQLBinding struct {
 	TableName               string `json:"tableName"`
 	ConnectionStringSetting string `json:"connectionStringSetting"`
+	// LeasesTableName optionally overrides the name of the table used to
+	// store change-tracking leases. When empty the host extension generates
+	// a default name of the form Leases_{FunctionId}_{TableId}.
+	// See: https://github.com/Azure/azure-functions-sql-extension/blob/main/docs/TriggerBinding.md#az_funcleasestablename
+	LeasesTableName string `json:"leasesTableName,omitempty"`
 }
 
 // SQLOperation enumerates the change types reported by the SQL trigger.

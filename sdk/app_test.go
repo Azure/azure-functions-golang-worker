@@ -920,3 +920,47 @@ func TestSQL_WithConnectionPopulatesSQLBinding(t *testing.T) {
 		return true
 	})
 }
+
+func TestWithTable_PanicsOnEmpty(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for empty table name")
+		}
+	}()
+	WithTable("")
+}
+
+func TestWithConnection_PanicsOnEmpty(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for empty connection setting name")
+		}
+	}()
+	WithConnection("")
+}
+
+func TestSQL_WithLeasesTable(t *testing.T) {
+	app := FunctionApp()
+	handler := SQLChangeHandler(func(ctx context.Context, changes []bindings.SQLChange) error {
+		return nil
+	})
+
+	app.SQL("productsChanged", handler,
+		WithTable("dbo.Products"),
+		WithConnection("AzureWebJobsSqlConnectionString"),
+		WithLeasesTable("MyCustomLeases"),
+	)
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.SQLBinding == nil {
+			t.Fatal("expected SQLBinding")
+		}
+		if binding.SQLBinding.LeasesTableName != "MyCustomLeases" {
+			t.Errorf("expected leasesTableName %q, got %q",
+				"MyCustomLeases", binding.SQLBinding.LeasesTableName)
+		}
+		return true
+	})
+}

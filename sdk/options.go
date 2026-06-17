@@ -138,10 +138,25 @@ func WithSource(source string) Option {
 
 // WithTable sets the SQL table name for a SQL trigger. The value should be
 // the fully qualified table name including schema (e.g. "dbo.Products").
+// Panics if table is empty — a SQL trigger cannot function without a target table.
 func WithTable(table string) Option {
+	if table == "" {
+		panic("WithTable: table name must not be empty")
+	}
 	return func(rf *RegisteredFunction) {
 		if b := rf.triggerBinding(); b != nil && b.SQLBinding != nil {
 			b.SQLBinding.TableName = table
+		}
+	}
+}
+
+// WithLeasesTable overrides the name of the table the SQL extension uses to
+// store change-tracking leases. If not set, the host generates a default
+// name of the form Leases_{FunctionId}_{TableId}.
+func WithLeasesTable(name string) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.SQLBinding != nil {
+			b.SQLBinding.LeasesTableName = name
 		}
 	}
 }
@@ -153,7 +168,11 @@ func WithTable(table string) Option {
 // Works with CosmosDB, EventHub, ServiceBus, Blob, and SQL triggers.
 // For SQL it populates the binding's "connectionStringSetting" field; for
 // the others it populates "connection".
+// Panics if connection is empty — a trigger cannot connect without a setting name.
 func WithConnection(connection string) Option {
+	if connection == "" {
+		panic("WithConnection: connection string setting name must not be empty")
+	}
 	return func(rf *RegisteredFunction) {
 		b := rf.triggerBinding()
 		if b == nil {

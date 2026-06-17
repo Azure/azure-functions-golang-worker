@@ -291,6 +291,8 @@ func handler(ctx context.Context, docs []bindings.CosmosDocument) error {
 }
 ```
 
+<a id="sql-trigger"></a>
+
 ### 4.7 Example: Core Trigger (SQL)
 
 The SQL trigger is a Core trigger backed by the
