@@ -8,6 +8,8 @@ import (
 	"github.com/microsoft/durabletask-go/api"
 	"github.com/microsoft/durabletask-go/backend"
 	"github.com/microsoft/durabletask-go/task"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
@@ -54,11 +56,45 @@ func (r *orchestrationRunner) loadAndRun(ctx context.Context, encodedRequest str
 		return "", fmt.Errorf("durabletask: execute orchestrator: %w", err)
 	}
 
+	// Record per-turn Durable diagnostics on the active invocation span (when
+	// the app uses the otelfunc middleware). Safe no-op otherwise.
+	annotateTurnSpan(ctx, instanceID, pastEvents, newEvents, results)
+
 	respBytes, err := proto.Marshal(results.Response)
 	if err != nil {
 		return "", fmt.Errorf("durabletask: marshal orchestrator response: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(respBytes), nil
+}
+
+// annotateTurnSpan records per-replay-turn Durable Task diagnostics on the
+// active span — the one the otelfunc middleware started for this orchestrator
+// invocation. The host dispatches every orchestrator replay as its own worker
+// invocation, so each turn gets its own span and these attributes describe
+// exactly one turn without overwriting a previous turn's values.
+//
+// It is best-effort and self-gating: trace.SpanFromContext never returns nil,
+// and when the app does not register the otelfunc middleware (or any tracer)
+// it returns a non-recording no-op span. IsRecording() is then false and the
+// function returns before touching the span, so apps that don't opt into
+// tracing pay nothing. Attribute names follow durabletask-go's durabletask.*
+// convention so they sit alongside the engine's own span attributes.
+func annotateTurnSpan(ctx context.Context, instanceID string, pastEvents, newEvents []*backend.HistoryEvent, results *backend.ExecutionResults) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+	var actionCount int
+	if results != nil && results.Response != nil {
+		actionCount = len(results.Response.Actions)
+	}
+	span.SetAttributes(
+		attribute.String("durabletask.task.instance_id", instanceID),
+		attribute.Bool("durabletask.is_replay", len(pastEvents) > 0),
+		attribute.Int("durabletask.history_event_count", len(pastEvents)),
+		attribute.Int("durabletask.new_events_count", len(newEvents)),
+		attribute.Int("durabletask.action_count", actionCount),
+	)
 }
 
 // decodeOrchestratorRequest extracts the instance ID and the past / new

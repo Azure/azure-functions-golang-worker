@@ -11,6 +11,9 @@ import (
 	"github.com/microsoft/durabletask-go/backend"
 	"github.com/microsoft/durabletask-go/backend/sqlite"
 	"github.com/microsoft/durabletask-go/task"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -120,6 +123,70 @@ func TestOrchestratorReplay_MatchesEngine(t *testing.T) {
 	if !proto.Equal(direct.Response, fresh) {
 		t.Fatalf("middleware response does not match engine response")
 	}
+}
+
+// TestLoadAndRun_AnnotatesTurnSpan verifies that when an active (recording)
+// span is on the context — as the otelfunc middleware arranges — the runner
+// decorates it with per-turn Durable diagnostics. The first turn has no past
+// events (not a replay) and schedules the first activity (>=1 action).
+func TestLoadAndRun_AnnotatesTurnSpan(t *testing.T) {
+	dt := Middleware(
+		WithOrchestrator("HelloCities", helloCities),
+		WithActivity("SayHello", sayHello),
+	)
+
+	be, client := newEmulatorBackend(t)
+	encoded := scheduleAndEncodeRequest(t, be, client, "HelloCities", "")
+
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	ctx, span := tp.Tracer("test").Start(context.Background(), "function:HelloCities")
+
+	if _, err := dt.runner.loadAndRun(ctx, encoded); err != nil {
+		t.Fatalf("loadAndRun: %v", err)
+	}
+	span.End()
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 recorded span, got %d", len(spans))
+	}
+	attrs := spans[0].Attributes
+
+	if v, ok := attrValue(attrs, "durabletask.is_replay"); !ok || v.AsBool() {
+		t.Errorf("durabletask.is_replay = %v (present=%v), want false", v.AsBool(), ok)
+	}
+	if v, ok := attrValue(attrs, "durabletask.history_event_count"); !ok || v.AsInt64() != 0 {
+		t.Errorf("durabletask.history_event_count = %d (present=%v), want 0", v.AsInt64(), ok)
+	}
+	if v, ok := attrValue(attrs, "durabletask.new_events_count"); !ok || v.AsInt64() < 1 {
+		t.Errorf("durabletask.new_events_count = %d (present=%v), want >= 1", v.AsInt64(), ok)
+	}
+	if v, ok := attrValue(attrs, "durabletask.action_count"); !ok || v.AsInt64() < 1 {
+		t.Errorf("durabletask.action_count = %d (present=%v), want >= 1", v.AsInt64(), ok)
+	}
+	if v, ok := attrValue(attrs, "durabletask.task.instance_id"); !ok || v.AsString() == "" {
+		t.Error("durabletask.task.instance_id not set")
+	}
+}
+
+// TestAnnotateTurnSpan_NoActiveSpanIsSafe documents the contract that matters
+// when an app does NOT register the otelfunc middleware: there is no span on
+// the context, trace.SpanFromContext returns a non-recording no-op span, and
+// the annotation degrades to a harmless no-op (no panic, nothing recorded).
+func TestAnnotateTurnSpan_NoActiveSpanIsSafe(t *testing.T) {
+	// Must not panic with a span-less context and nil results.
+	annotateTurnSpan(context.Background(), "inst-1", nil, nil, nil)
+}
+
+// attrValue returns the value of the first attribute matching key.
+func attrValue(attrs []attribute.KeyValue, key string) (attribute.Value, bool) {
+	for _, kv := range attrs {
+		if string(kv.Key) == key {
+			return kv.Value, true
+		}
+	}
+	return attribute.Value{}, false
 }
 
 // TestMiddlewareIntegration_OrchestrationShortCircuits exercises the real SDK
