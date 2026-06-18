@@ -66,12 +66,12 @@ func Recover(ctx context.Context) {
 
 // RecoverTo is a panic guard that captures the recovered panic as an error.
 //
-// Like [Recover], it must be the first defer so it runs last and catches
-// panics from all subsequent defers.
-//
 // It is designed for goroutines whose failure should fail the enclosing
 // invocation — triggering host retries and surfacing the error in Application
-// Insights — without the boilerplate of a manual recover + named return:
+// Insights — without the boilerplate of a manual recover + named return.
+//
+// The recommended pattern is [errgroup], which avoids defer-ordering pitfalls
+// entirely because the closure's return value is read after all defers run:
 //
 //	g, ctx := errgroup.WithContext(ctx)
 //	for _, e := range events {
@@ -81,6 +81,21 @@ func Recover(ctx context.Context) {
 //	    })
 //	}
 //	return g.Wait() // non-nil on panic → invocation fails → host retries
+//
+// If you hand-roll synchronization with a WaitGroup, register the
+// synchronization signal (wg.Done, close) BEFORE RecoverTo so it fires AFTER
+// the error is captured (defers run in LIFO order):
+//
+//	var err error
+//	var wg sync.WaitGroup
+//	wg.Add(1)
+//	go func() {
+//	    defer wg.Done()                // registered first → runs LAST
+//	    defer sdk.RecoverTo(ctx, &err) // registered second → runs FIRST (sets err)
+//	    doWork()
+//	}()
+//	wg.Wait()
+//	return err // safe: err is set before wg.Done unblocks Wait
 //
 // errp must be non-nil and should point to a named return value. If a panic
 // occurs, RecoverTo logs the full stack trace (with invocation metadata) and

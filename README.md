@@ -146,7 +146,9 @@ That safety net does **not** extend to goroutines you start yourself. In Go, an 
 
 ### Propagate panics as errors: `sdk.RecoverTo`
 
-For work that matters (processing events, calling APIs), use [`sdk.RecoverTo`](sdk/safego.go) so panics propagate as errors and the invocation fails properly — triggering retries instead of silent data loss:
+For work that matters (processing events, calling APIs), use [`sdk.RecoverTo`](sdk/safego.go) so panics propagate as errors and the invocation fails properly — triggering retries instead of silent data loss.
+
+**Recommended: errgroup** (no defer-ordering pitfalls — the closure's return is read after all defers run):
 
 ```go
 import "golang.org/x/sync/errgroup"
@@ -161,6 +163,21 @@ func EventHubHandler(ctx context.Context, events []bindings.EventHubEvent) error
     }
     return g.Wait() // non-nil on panic → invocation fails → host retries
 }
+```
+
+**Manual WaitGroup** — register `wg.Done` *before* `RecoverTo` so it fires *after* the error is set (defers run in LIFO order):
+
+```go
+var err error
+var wg sync.WaitGroup
+wg.Add(1)
+go func() {
+    defer wg.Done()                // registered first → runs LAST
+    defer sdk.RecoverTo(ctx, &err) // registered second → runs FIRST (sets err)
+    doWork()
+}()
+wg.Wait()
+return err // safe: err is set before wg.Done unblocks Wait
 ```
 
 `RecoverTo` logs the full stack trace with invocation metadata (via slog + the SDK log handler) and sets `*errp` to a descriptive error. If `*errp` already holds a non-nil error, the original is preserved.
