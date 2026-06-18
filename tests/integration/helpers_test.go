@@ -59,6 +59,10 @@ func requireEventHub(t *testing.T) {
 	t.Helper()
 	requireEmulator(t, "eventhub-emulator", "127.0.0.2:5672")
 }
+func requireSQLServer(t *testing.T) {
+	t.Helper()
+	requireEmulator(t, "sqlserver", "127.0.0.1:1433")
+}
 
 // cleanAzuriteCheckpoints deletes stale checkpoint and receipt containers from
 // Azurite. The Azure Functions host stores trigger state (blob receipts,
@@ -88,8 +92,9 @@ type FuncHostProcess struct {
 	t         *testing.T
 }
 
-// StartFuncHost builds the Go sample binary and starts func host.
-// It waits for the worker to initialize before returning.
+// StartFuncHost starts func host for the given sample and waits for the
+// worker to initialize before returning. func start builds the Go binary
+// automatically.
 func StartFuncHost(t *testing.T, sampleName string, port int, env map[string]string, initTimeout time.Duration) *FuncHostProcess {
 	t.Helper()
 
@@ -99,21 +104,6 @@ func StartFuncHost(t *testing.T, sampleName string, port int, env map[string]str
 	if _, err := os.Stat(sampleDir); os.IsNotExist(err) {
 		t.Fatalf("sample directory not found: %s", sampleDir)
 	}
-
-	// Build the Go binary
-	exeName := "app"
-	if runtime.GOOS == "windows" {
-		exeName = "app.exe"
-	}
-	buildCmd := exec.Command("go", "build", "-o", exeName, ".")
-	buildCmd.Dir = sampleDir
-	buildOut, err := buildCmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go build failed in %s:\n%s", sampleDir, string(buildOut))
-	}
-	t.Cleanup(func() {
-		os.Remove(filepath.Join(sampleDir, exeName))
-	})
 
 	// Create log file
 	logFile, err := os.CreateTemp("", fmt.Sprintf("funchost_%s_*.log", sampleName))

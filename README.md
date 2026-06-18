@@ -9,7 +9,7 @@ The `azure-functions-golang-worker` repository provides the SDK and worker imple
 ## Features
 
 * **Native Go Feel:** Use standard `http.ResponseWriter` and `*http.Request` for HTTP APIs.
-* **Worker-driven Indexing:** No need to manually author `function.json` files. Define your triggers and bindings directly in Go code using a fluent builder API.
+* **Worker-driven Indexing:** No need to manually author `function.json` files. Define your triggers and bindings directly in Go code using a functional options API.
 * **First-Class Performance:** Runs in an out-of-process model utilizing gRPC for highly performant bidirectional communication with the Azure Functions host.
 * **Rich Bindings:** Built-in reflection to map Azure bindings (like blobs, queues, CosmosDB) into strictly typed Go pointers and structs.
 
@@ -58,7 +58,10 @@ func main() {
     app := sdk.FunctionApp()
 
     // Register an HTTP trigger using familiar types
-    app.HTTP("hello", hello).Methods("GET", "POST").Auth("anonymous")
+    app.HTTP("hello", hello,
+        sdk.WithMethods("GET", "POST"),
+        sdk.WithAuth("anonymous"),
+    )
 
     // Start the worker
     worker.Start(app)
@@ -67,7 +70,7 @@ func main() {
 func hello(w http.ResponseWriter, r *http.Request) {
     name := r.URL.Query().Get("name")
     if name == "" {
-    name = "Azure"
+        name = "Azure"
     }
     fmt.Fprintf(w, "Hello, %s! Welcome to Go on Azure Functions.", name)
 }
@@ -92,7 +95,7 @@ The Go Worker organizes triggers into two tiers based on their dependency requir
 
 ### Core Triggers (`sdk/`)
 
-**HTTP, Timer, CosmosDB, ServiceBus, EventHub, EventGrid**
+**HTTP, Timer, CosmosDB, ServiceBus, EventHub, EventGrid, SQL**
 
 These triggers receive data inline via gRPC — the host serializes the trigger payload (JSON documents, messages, events) into the `InvocationRequest` and the worker deserializes it into typed Go structs. They have:
 
@@ -102,8 +105,19 @@ These triggers receive data inline via gRPC — the host serializes the trigger 
 
 ```go
 // Core trigger — typed, no extra imports needed
-app.CosmosDB("processChanges", handler).
-    Database("mydb").Container("mycontainer").Connection("CosmosDBConnection")
+app.CosmosDB("processChanges", handler,
+    sdk.WithDatabase("mydb"),
+    sdk.WithContainer("mycontainer"),
+    sdk.WithConnection("CosmosDBConnection"),
+)
+
+// SQL trigger — invoked with a batch of row changes captured via
+// Change Tracking. See samples/sqlTrigger for the prerequisite
+// ALTER DATABASE / ALTER TABLE statements.
+app.SQL("productsChanged", productsChanged,
+    sdk.WithTable("dbo.Products"),
+    sdk.WithConnection("AzureWebJobsSqlConnectionString"),
+)
 ```
 
 ### Extension Triggers (`triggers/`)
@@ -120,8 +134,10 @@ These triggers provide an authenticated Azure SDK client instead of raw data. Th
 import _ "github.com/azure/azure-functions-golang-worker/triggers/blob" // activate extension
 
 // Extension trigger — handler gets a live SDK client
-app.Blob("processBlobTrigger", handler).
-    Path("samples-workitems/{name}").Connection("AzureWebJobsStorage")
+app.Blob("processBlobTrigger", handler,
+    sdk.WithPath("samples-workitems/{name}"),
+    sdk.WithConnection("AzureWebJobsStorage"),
+)
 ```
 
 ### When is each tier used?

@@ -42,6 +42,11 @@ type EventHubHandler = func(context.Context, bindings.EventHubMessage) error
 // CosmosDBHandler is the handler type for CosmosDB triggered functions.
 type CosmosDBHandler = func(context.Context, []bindings.CosmosDocument) error
 
+// SQLChangeHandler is the handler type for SQL triggered functions.
+// It receives a batch of row changes captured via SQL Change Tracking;
+// each SQLChange carries an Operation and the row data as raw JSON.
+type SQLChangeHandler = func(context.Context, []bindings.SQLChange) error
+
 // EventGridHandler is the handler type for Event Grid triggered functions.
 type EventGridHandler = func(context.Context, bindings.EventGridEvent) error
 

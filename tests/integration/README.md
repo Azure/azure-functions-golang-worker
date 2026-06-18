@@ -4,7 +4,7 @@ Black-box integration tests for the Azure Functions Go Worker. Each test builds 
 
 ## Prerequisites
 
-1. **Go 1.24+**
+1. **Go 1.25+**
 2. **Azure Functions Core Tools** (`func.exe`) — built or installed
 3. **Docker** — for running emulators
 
@@ -19,7 +19,7 @@ This starts:
 - **Service Bus emulator** — (port 5672 on 127.0.0.1)
 - **Event Hub emulator** — (port 5672 on 127.0.0.2)
 - **Cosmos DB emulator** — (port 8081)
-- **SQL Server** — backing store for SB/EH emulators (port 1433)
+- **SQL Server** — backing store for SB/EH emulators, also the target for SQL trigger tests (port 1433)
 
 ## Running
 
@@ -89,6 +89,7 @@ Tests will fail immediately if a required emulator is not running, with a messag
    - `requireCosmosDB(t)` — Cosmos DB trigger tests
    - `requireServiceBus(t)` — Service Bus queue/topic tests
    - `requireEventHub(t)` — Event Hub trigger tests
+   - `requireSQLServer(t)` — SQL trigger tests
 
    To add a new one, use `requireEmulator(t, "name", "host:port")` in `helpers_test.go`.
 

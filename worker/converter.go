@@ -202,6 +202,25 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 		return reflect.ValueOf(v).Elem(), nil
 	}
 
+	// JSON-as-string fallback for slice and map types. Some host extensions
+	// (notably the SQL trigger) deliver structurally-JSON payloads via
+	// TypedData_String_ instead of TypedData_Json. The struct branch below
+	// already handles this case; slices and maps need parallel handling.
+	//
+	// Unlike the struct branch, we propagate json.Unmarshal errors here:
+	// a target of []SomeType or map[K]V is unambiguous about its intent,
+	// so a malformed payload should surface as an explicit decode error
+	// rather than silently degrade to an empty value via reflect.Zero(t).
+	// []byte takes the precedence string→bytes path below, not JSON.
+	if val := data.GetString_(); val != "" && (t.Kind() == reflect.Slice || t.Kind() == reflect.Map) &&
+		!(t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8) {
+		v := reflect.New(t).Interface()
+		if err := json.Unmarshal([]byte(val), v); err != nil {
+			return reflect.Value{}, fmt.Errorf("decode %s from string-typed JSON payload: %w", t, err)
+		}
+		return reflect.ValueOf(v).Elem(), nil
+	}
+
 	// String handling
 	if val := data.GetString_(); val != "" {
 		if t.Kind() == reflect.String {

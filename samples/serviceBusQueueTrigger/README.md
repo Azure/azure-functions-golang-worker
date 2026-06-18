@@ -10,9 +10,9 @@ An Azure Function that triggers when messages arrive on an Azure Service Bus que
 ## Prerequisites
 
 - [Go 1.24+](https://go.dev/dl/)
-- Custom [Azure Functions Core Tools](https://www.npmjs.com/package/@gaaguiar/azure-functions-core-tools) with Go worker support:
+- [Azure Functions Core Tools](https://www.npmjs.com/package/azure-functions-core-tools/v/4.12.0) 4.12.0 or later (includes Go worker support):
   ```bash
-  npm i -g @gaaguiar/azure-functions-core-tools
+  npm i -g azure-functions-core-tools@4 --unsafe-perm true
   ```
 - An Azure Service Bus namespace with a queue named `input-queue`
 
