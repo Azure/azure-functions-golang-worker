@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/azure/azure-functions-golang-worker/middleware/durabletask"
+	"github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
+	"github.com/azure/azure-functions-golang-worker/otelcollector"
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/azure/azure-functions-golang-worker/worker"
 	"github.com/microsoft/durabletask-go/task"
@@ -305,6 +307,12 @@ func instanceIDFromPath(r *http.Request, resource string) string {
 func main() {
 	app := sdk.FunctionApp()
 
+	// otelfunc bridges worker/user telemetry to the global OTel SDK, which
+	// exports OTLP to OTEL_EXPORTER_OTLP_ENDPOINT (the embedded collector at
+	// http://localhost:4318). Added first so it wraps every invocation —
+	// orchestrators, activities, and the HTTP starters — with a span.
+	app.Use(otelfunc.Middleware())
+
 	// Enable Durable Functions. A single middleware registers every
 	// orchestrator and activity (so the host dispatches them) and intercepts
 	// orchestration invocations to replay them. Register as many
@@ -339,5 +347,9 @@ func main() {
 		sdk.WithMethods("post"), sdk.WithRoute("expenses/{id}/approve"), sdk.WithAuth("anonymous"),
 		durabletask.ClientInput())
 
-	worker.Start(app)
+	// otelcollector runs an embedded OTel Collector for the lifetime of the
+	// worker (listening on localhost:4317/4318). It forwards traces/logs to
+	// Azure Monitor via the DCE/DCR OTLP endpoints configured through the
+	// OTEL_DCE_* environment variables.
+	worker.Start(app, otelcollector.WithCollector())
 }
