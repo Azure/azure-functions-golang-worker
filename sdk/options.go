@@ -84,11 +84,17 @@ func WithConsumerGroup(group string) Option {
 
 // --- ServiceBus Queue-specific options ---
 
-// WithQueueName sets the Service Bus queue name.
+// WithQueueName sets the queue name for a Service Bus queue trigger or
+// a Storage Queue trigger.
 func WithQueueName(queueName string) Option {
 	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.ServiceBusBinding != nil {
-			b.ServiceBusBinding.QueueName = queueName
+		if b := rf.triggerBinding(); b != nil {
+			if b.ServiceBusBinding != nil {
+				b.ServiceBusBinding.QueueName = queueName
+			}
+			if b.QueueBinding != nil {
+				b.QueueBinding.QueueName = queueName
+			}
 		}
 	}
 }
@@ -185,6 +191,9 @@ func WithConnection(connection string) Option {
 		}
 		if b.BlobBinding != nil {
 			b.BlobBinding.Connection = connection
+		}
+		if b.QueueBinding != nil {
+			b.QueueBinding.Connection = connection
 		}
 		if b.SQLBinding != nil {
 			b.SQLBinding.ConnectionStringSetting = connection

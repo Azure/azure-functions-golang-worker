@@ -98,6 +98,14 @@ func (app *App) EventGrid(name string, f EventGridHandler, opts ...Option) *Regi
 	return app.registerFunction(name, f, trigger, opts...)
 }
 
+// Queue creates a new Azure Storage Queue triggered function.
+func (app *App) Queue(name string, f QueueHandler, opts ...Option) *RegisteredFunction {
+	trigger := &bindings.QueueStorageTrigger{
+		Name: "message",
+	}
+	return app.registerFunction(name, f, trigger, opts...)
+}
+
 // EventHub creates a new EventHub triggered function.
 func (app *App) EventHub(name string, f EventHubHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.EventHubTrigger{
