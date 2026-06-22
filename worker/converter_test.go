@@ -124,6 +124,129 @@ func TestDecodeProto_BoolFromString(t *testing.T) {
 	}
 }
 
+// TestDecodeProto_Fallbacks is a table-driven test covering decodeProto's
+// fallback paths. The function tries the "natural" TypedData variant for the
+// target Go type first (String_ for string, Int for int64, etc.) and falls
+// through to JSON/bytes handling when that variant is empty. Different host
+// extensions populate different variants — for example the Storage Queue
+// extension sends DequeueCount as TypedData_Json and time fields as
+// JSON-quoted strings — so these fallbacks must be reliable.
+func TestDecodeProto_Fallbacks(t *testing.T) {
+	type payload struct {
+		Name string `json:"name"`
+		Age  int    `json:"age"`
+	}
+
+	tests := []struct {
+		name      string
+		data      *pb.TypedData
+		target    interface{}
+		expected  interface{}
+		expectErr bool
+	}{
+		// --- string target ---
+		{
+			name:     "string from TypedData_String_ (direct, preferred)",
+			data:     &pb.TypedData{Data: &pb.TypedData_String_{String_: "direct"}},
+			target:   "",
+			expected: "direct",
+		},
+		{
+			name:     "string from TypedData_Json (queue ExpirationTime scenario)",
+			data:     &pb.TypedData{Data: &pb.TypedData_Json{Json: `"2026-06-29T19:04:34+00:00"`}},
+			target:   "",
+			expected: "2026-06-29T19:04:34+00:00",
+		},
+		{
+			name:     "string from TypedData_Bytes",
+			data:     &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: []byte("from bytes")}},
+			target:   "",
+			expected: "from bytes",
+		},
+		{
+			name:     "empty TypedData_String_ yields zero value",
+			data:     &pb.TypedData{Data: &pb.TypedData_String_{String_: ""}},
+			target:   "",
+			expected: "",
+		},
+
+		// --- int target ---
+		{
+			name:     "int64 from TypedData_Json (queue DequeueCount scenario)",
+			data:     &pb.TypedData{Data: &pb.TypedData_Json{Json: `1`}},
+			target:   int64(0),
+			expected: int64(1),
+		},
+		{
+			name:     "int from TypedData_Json",
+			data:     &pb.TypedData{Data: &pb.TypedData_Json{Json: `7`}},
+			target:   int(0),
+			expected: int(7),
+		},
+
+		// --- float target ---
+		{
+			name:     "float64 from TypedData_Json",
+			data:     &pb.TypedData{Data: &pb.TypedData_Json{Json: `2.718`}},
+			target:   float64(0),
+			expected: float64(2.718),
+		},
+
+		// --- struct target ---
+		{
+			name:     "struct from TypedData_String_ containing JSON",
+			data:     &pb.TypedData{Data: &pb.TypedData_String_{String_: `{"name":"Alice","age":30}`}},
+			target:   payload{},
+			expected: payload{Name: "Alice", Age: 30},
+		},
+		{
+			name:      "struct from malformed TypedData_Json returns error",
+			data:      &pb.TypedData{Data: &pb.TypedData_Json{Json: `{invalid`}},
+			target:    payload{},
+			expectErr: true,
+		},
+
+		// --- []byte / json.RawMessage target (e.g. QueueMessage.Body) ---
+		{
+			name:     "[]byte from TypedData_Bytes",
+			data:     &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: []byte("raw bytes")}},
+			target:   []byte(nil),
+			expected: []byte("raw bytes"),
+		},
+		{
+			name:     "[]byte from TypedData_String_",
+			data:     &pb.TypedData{Data: &pb.TypedData_String_{String_: "string body"}},
+			target:   []byte(nil),
+			expected: []byte("string body"),
+		},
+		{
+			name:     "[]byte from TypedData_Json (queue body as JSON variant)",
+			data:     &pb.TypedData{Data: &pb.TypedData_Json{Json: `{"k":"v"}`}},
+			target:   []byte(nil),
+			expected: []byte(`{"k":"v"}`),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := decodeProto(tc.data, reflect.TypeOf(tc.target))
+			if tc.expectErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got := v.Interface()
+			if !reflect.DeepEqual(got, tc.expected) {
+				t.Errorf("expected %v (%T), got %v (%T)", tc.expected, tc.expected, got, got)
+			}
+		})
+	}
+}
+
 // --- FromProto tests ---
 
 func TestFromProto_StringInput(t *testing.T) {

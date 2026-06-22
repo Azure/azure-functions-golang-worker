@@ -178,13 +178,16 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 		return reflect.ValueOf(data.GetInt() != 0), nil
 	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
-			if len(data.GetBytes()) == 0 {
-				strVal := data.GetString_()
-				if strVal != "" {
-					return reflect.ValueOf([]byte(strVal)), nil
-				}
+			if b := data.GetBytes(); len(b) > 0 {
+				return reflect.ValueOf(b), nil
 			}
-			return reflect.ValueOf(data.GetBytes()), nil
+			if s := data.GetString_(); s != "" {
+				return reflect.ValueOf([]byte(s)), nil
+			}
+			// Fall through to JSON handling below — host may deliver
+			// the payload as TypedData_Json (e.g. queue messages with
+			// JSON bodies). The bytes fallback at the end of the
+			// function will pick up GetJson() if populated.
 		}
 	case reflect.Int:
 		if data.GetInt() != 0 {
@@ -218,8 +221,11 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 		}
 	}
 
-	// JSON fallback
-	if data.GetJson() != "" {
+	// JSON fallback. Skip when target is []byte — for byte slices we want
+	// to preserve the raw JSON payload (handled by the "Json handling
+	// (bytes support)" block below) rather than attempting to unmarshal a
+	// JSON document into a []byte (which would fail).
+	if data.GetJson() != "" && !(t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8) {
 		v := reflect.New(t).Interface()
 		err := json.Unmarshal([]byte(data.GetJson()), v)
 		if err != nil {

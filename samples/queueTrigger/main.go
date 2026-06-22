@@ -17,6 +17,7 @@ func QueueHandler(ctx context.Context, msg bindings.QueueMessage) error {
 		"dequeue_count", msg.DequeueCount,
 		"pop_receipt", msg.PopReceipt,
 		"expiration_time", msg.ExpirationTime,
+		"insertion_time", msg.InsertionTime,
 		"next_visible_time", msg.NextVisibleTime,
 	)
 	return nil

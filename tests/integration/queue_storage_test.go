@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -10,9 +9,9 @@ import (
 )
 
 var queueStorageEnv = map[string]string{
-	"AzureWebJobsStorage":            azuriteConnStr,
-	"FUNCTIONS_WORKER_RUNTIME":       "native",
-	"FUNCTIONS_CLI_NATIVE_LANGUAGE":  "go",
+	"AzureWebJobsStorage":           azuriteConnStr,
+	"FUNCTIONS_WORKER_RUNTIME":      "native",
+	"FUNCTIONS_CLI_NATIVE_LANGUAGE": "go",
 }
 
 func TestQueueStorageTriggerFires(t *testing.T) {
@@ -68,7 +67,7 @@ func enqueueMessage(t *testing.T, queueName, body string) {
 		t.Fatalf("failed to create queue service client: %v", err)
 	}
 	queueClient := client.NewQueueClient(queueName)
-	_, err = queueClient.EnqueueMessage(context.Background(), fmt.Sprintf("%s", body), nil)
+	_, err = queueClient.EnqueueMessage(context.Background(), body, nil)
 	if err != nil {
 		t.Fatalf("failed to enqueue message: %v", err)
 	}

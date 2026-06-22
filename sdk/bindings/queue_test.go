@@ -77,6 +77,7 @@ func TestQueueMessage_JSON(t *testing.T) {
 		PopReceipt:     "receipt-abc",
 		DequeueCount:   3,
 		ExpirationTime: "2026-07-01T00:00:00Z",
+		InsertionTime:  "2026-06-22T18:57:34Z",
 	}
 
 	data, err := json.Marshal(msg)
@@ -97,5 +98,8 @@ func TestQueueMessage_JSON(t *testing.T) {
 	}
 	if decoded.DequeueCount != 3 {
 		t.Errorf("expected dequeueCount %d, got %d", 3, decoded.DequeueCount)
+	}
+	if decoded.InsertionTime != "2026-06-22T18:57:34Z" {
+		t.Errorf("expected insertionTime %q, got %q", "2026-06-22T18:57:34Z", decoded.InsertionTime)
 	}
 }
