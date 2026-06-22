@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"encoding/json"
 	"net/http"
 	"reflect"
 	"strings"
@@ -393,6 +394,43 @@ func TestConvertToTypeValue_TimerInfo_StringJSON(t *testing.T) {
 }
 
 // --- encodeHTTPResponse tests ---
+
+// TestConvertToTypeValue_AzFuncData_JSONBody is a regression test for the
+// case where a queue (or service bus) message has a JSON object/array as
+// its body. Without the azfuncdata-aware guard in convertToTypeValue, the
+// whole-struct JSON fast-path would silently succeed against the body's
+// JSON (matching no field tags) and return an entirely empty struct —
+// the per-field metadata + azfuncdata fallback would never run.
+func TestConvertToTypeValue_AzFuncData_JSONBody(t *testing.T) {
+	type queueMsg struct {
+		Body         json.RawMessage `json:"azfuncdata"`
+		Id           string          `json:"id"`
+		DequeueCount int64           `json:"dequeueCount"`
+	}
+
+	bodyJSON := `{"orderId":123,"customer":"acme"}`
+	data := &pb.TypedData{Data: &pb.TypedData_Json{Json: bodyJSON}}
+	metadata := map[string]*pb.TypedData{
+		"Id":           {Data: &pb.TypedData_String_{String_: "msg-xyz"}},
+		"DequeueCount": {Data: &pb.TypedData_Json{Json: `2`}},
+	}
+
+	v, err := convertToTypeValue(reflect.TypeOf(queueMsg{}), data, metadata)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := v.Interface().(queueMsg)
+
+	if string(result.Body) != bodyJSON {
+		t.Errorf("expected Body=%q, got %q", bodyJSON, string(result.Body))
+	}
+	if result.Id != "msg-xyz" {
+		t.Errorf("expected Id=%q, got %q", "msg-xyz", result.Id)
+	}
+	if result.DequeueCount != 2 {
+		t.Errorf("expected DequeueCount=2, got %d", result.DequeueCount)
+	}
+}
 
 func TestEncodeHTTPResponse(t *testing.T) {
 	proxy := NewResponseWriterProxy()

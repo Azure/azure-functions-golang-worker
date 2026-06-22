@@ -41,6 +41,36 @@ func FromProto(req *pb.InvocationRequest, fields map[string]*funcField, args []r
 	return nil
 }
 
+// azFuncDataTag is the special json struct-field tag used by SDK binding
+// types (e.g. QueueMessage, ServiceBusMessage) to mark the single field
+// that should receive the raw trigger input body. All other fields on
+// such a struct are populated from trigger metadata, looked up by name.
+const azFuncDataTag = "azfuncdata"
+
+// isAzFuncDataField reports whether field f opts into azFuncDataTag.
+// Matching is case-insensitive and tolerates options like ",omitempty".
+func isAzFuncDataField(f reflect.StructField) bool {
+	tag := f.Tag.Get("json")
+	if idx := strings.Index(tag, ","); idx != -1 {
+		tag = tag[:idx]
+	}
+	return strings.EqualFold(tag, azFuncDataTag)
+}
+
+// hasAzFuncDataField reports whether the struct type t declares any field
+// tagged with azFuncDataTag. Structs that opt into this tag use a single
+// field to hold the raw input body while other fields are populated from
+// trigger metadata, and must NOT be decoded via whole-struct json.Unmarshal
+// of the body.
+func hasAzFuncDataField(t reflect.Type) bool {
+	for i := 0; i < t.NumField(); i++ {
+		if isAzFuncDataField(t.Field(i)) {
+			return true
+		}
+	}
+	return false
+}
+
 // convertToTypeValue returns a native value from protobuf
 func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.TypedData) (reflect.Value, error) {
 	var t reflect.Type
@@ -53,8 +83,17 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 	pv := reflect.New(t)
 	v := pv.Elem()
 
-	// If struct, try JSON decoding first, then fall back to TriggerMetadata field matching
-	if t.Kind() == reflect.Struct {
+	// If struct, try JSON decoding first, then fall back to TriggerMetadata field matching.
+	//
+	// Skip the whole-struct JSON fast-path when the struct declares an
+	// "azfuncdata"-tagged field: that tag signals the input body belongs
+	// in that single field (e.g. QueueMessage.Body, ServiceBusMessage.Body),
+	// not unmarshalled across the whole struct. Without this guard, a queue
+	// message with a JSON object body would silently produce a zero-valued
+	// QueueMessage — the unmarshal succeeds but matches no field tags, the
+	// fast path returns, and the per-field "azfuncdata" + metadata fallback
+	// below is never reached.
+	if t.Kind() == reflect.Struct && !hasAzFuncDataField(t) {
 		// Try direct JSON unmarshal from input data (TypedData_Json or TypedData_String_)
 		jsonStr := data.GetJson()
 		if jsonStr == "" {
@@ -72,35 +111,39 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 				return val, nil
 			}
 		}
+	}
 
+	if t.Kind() == reflect.Struct {
 		// Fall back to field-by-field matching from TriggerMetadata
 		fieldsDecoded := 0
 		for i := 0; i < v.NumField(); i++ {
 			field := t.Field(i)
-			tag := field.Tag.Get("json")
-			// Strip omitempty or other options from the json tag
-			if idx := strings.Index(tag, ","); idx != -1 {
-				tag = tag[:idx]
-			}
 
 			var td *pb.TypedData
-			if strings.EqualFold(tag, "azfuncdata") {
+			if isAzFuncDataField(field) {
 				td = data
 				fieldsDecoded++
-			} else if val, ok := tm[tag]; ok {
-				td = val
-				fieldsDecoded++
 			} else {
-				// Case-insensitive fallback
-				for k, val := range tm {
-					if strings.EqualFold(k, tag) {
-						td = val
-						fieldsDecoded++
-						break
-					}
+				tag := field.Tag.Get("json")
+				// Strip omitempty or other options from the json tag
+				if idx := strings.Index(tag, ","); idx != -1 {
+					tag = tag[:idx]
 				}
-				if td == nil {
-					continue
+				if val, ok := tm[tag]; ok {
+					td = val
+					fieldsDecoded++
+				} else {
+					// Case-insensitive fallback
+					for k, val := range tm {
+						if strings.EqualFold(k, tag) {
+							td = val
+							fieldsDecoded++
+							break
+						}
+					}
+					if td == nil {
+						continue
+					}
 				}
 			}
 
