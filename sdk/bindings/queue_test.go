@@ -77,7 +77,6 @@ func TestQueueMessage_JSON(t *testing.T) {
 		PopReceipt:     "receipt-abc",
 		DequeueCount:   3,
 		ExpirationTime: "2026-07-01T00:00:00Z",
-		InsertionTime:  "2026-06-22T10:00:00Z",
 	}
 
 	data, err := json.Marshal(msg)

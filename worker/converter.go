@@ -137,6 +137,29 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 	return d, nil
 }
 
+// decodeProto converts a single TypedData value from the host into a Go
+// reflect.Value of the requested type t. It is called per-field when
+// populating struct-based trigger messages (e.g. ServiceBusMessage,
+// QueueMessage) from trigger metadata, and also for scalar argument types.
+//
+// TypedData is a protobuf oneof — the host extension chooses which variant
+// to populate (String_, Json, Bytes, Int, Double, Http). Different
+// extensions make different choices for the same logical data type:
+//
+//   - ServiceBus sends time fields as TypedData_String_ ("2026-06-22T...")
+//   - Storage Queues sends time fields as TypedData_Json ("\"2026-06-22T...\"")
+//   - DequeueCount comes as TypedData_Json (bare number: 1) not TypedData_Int
+//
+// The decoding strategy is:
+//  1. Try the "natural" TypedData variant for the target Go type (e.g.
+//     String_ for string, Int for int64, Bytes for []byte).
+//  2. If the natural variant is empty/zero, fall through to the generic
+//     fallback paths at the bottom of the function (JSON unmarshal,
+//     string-to-T conversion, bytes-to-T).
+//
+// This two-phase approach ensures backward compatibility — triggers that
+// already work with TypedData_String_ keep working — while also handling
+// extensions that send values via a different variant.
 func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 	if data == nil {
 		return reflect.Zero(t), nil
@@ -144,7 +167,10 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 
 	switch t.Kind() {
 	case reflect.String:
-		return reflect.ValueOf(data.GetString_()), nil
+		if s := data.GetString_(); s != "" {
+			return reflect.ValueOf(s), nil
+		}
+		// Fall through to JSON/bytes handling below when String_ is empty
 	case reflect.Bool:
 		if val := data.GetString_(); val != "" {
 			return reflect.ValueOf(strings.EqualFold(val, "true")), nil

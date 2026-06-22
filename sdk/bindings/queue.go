@@ -45,6 +45,5 @@ type QueueMessage struct {
 	PopReceipt      string          `json:"popReceipt"`
 	DequeueCount    int64           `json:"dequeueCount"`
 	ExpirationTime  string          `json:"expirationTime"`
-	InsertionTime   string          `json:"insertionTime"`
 	NextVisibleTime string          `json:"nextVisibleTime"`
 }

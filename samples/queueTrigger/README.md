@@ -40,3 +40,17 @@ Demonstrates an Azure Storage Queue triggered function in Go.
 |--------|-------------|
 | `sdk.WithQueueName("myqueue")` | The name of the Azure Storage Queue to monitor |
 | `sdk.WithConnection("AzureWebJobsStorage")` | App setting name containing the storage connection string |
+
+## Message Encoding
+
+The `host.json` in this sample sets `"messageEncoding": "none"` under `extensions.queues`. This tells the host to pass message bodies as-is without Base64 encoding/decoding. If your messages are Base64-encoded (the Azure Functions default), remove this setting or set it to `"base64"`.
+
+```json
+{
+  "extensions": {
+    "queues": {
+      "messageEncoding": "none"
+    }
+  }
+}
+```

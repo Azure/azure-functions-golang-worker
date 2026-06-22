@@ -10,8 +10,9 @@ import (
 )
 
 var queueStorageEnv = map[string]string{
-	"AzureWebJobsStorage":      azuriteConnStr,
-	"FUNCTIONS_WORKER_RUNTIME": "native",
+	"AzureWebJobsStorage":            azuriteConnStr,
+	"FUNCTIONS_WORKER_RUNTIME":       "native",
+	"FUNCTIONS_CLI_NATIVE_LANGUAGE":  "go",
 }
 
 func TestQueueStorageTriggerFires(t *testing.T) {
@@ -43,17 +44,19 @@ func TestQueueStorageTriggerMetadata(t *testing.T) {
 	proc.AssertLogContains("metadata-test-message", 5*time.Second)
 }
 
-// ensureQueue creates the queue in Azurite if it doesn't already exist.
+// ensureQueue deletes any existing queue (clearing stale messages) and
+// recreates it fresh for the test.
 func ensureQueue(t *testing.T, queueName string) {
 	t.Helper()
 	client, err := azqueue.NewServiceClientFromConnectionString(azuriteConnStr, nil)
 	if err != nil {
 		t.Fatalf("failed to create queue service client: %v", err)
 	}
+	// Delete first to clear stale messages from prior runs
+	_, _ = client.DeleteQueue(context.Background(), queueName, nil)
 	_, err = client.CreateQueue(context.Background(), queueName, nil)
 	if err != nil {
-		// Ignore "queue already exists" errors
-		t.Logf("create queue %q (may already exist): %v", queueName, err)
+		t.Fatalf("failed to create queue %q: %v", queueName, err)
 	}
 }
 
