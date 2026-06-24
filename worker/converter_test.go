@@ -432,6 +432,39 @@ func TestConvertToTypeValue_AzFuncData_JSONBody(t *testing.T) {
 	}
 }
 
+// TestConvertToTypeValue_ServiceBusMessage_JSONBody exercises the same
+// azfuncdata fast-path skip on a real bindings.ServiceBusMessage. It is
+// the sibling of the queueMsg case above and guards the Service Bus half
+// of the converter change against silent regressions.
+func TestConvertToTypeValue_ServiceBusMessage_JSONBody(t *testing.T) {
+	bodyJSON := `{"orderId":456,"customer":"contoso"}`
+	data := &pb.TypedData{Data: &pb.TypedData_Json{Json: bodyJSON}}
+	metadata := map[string]*pb.TypedData{
+		"messageId":     {Data: &pb.TypedData_String_{String_: "sb-msg-1"}},
+		"deliveryCount": {Data: &pb.TypedData_Json{Json: `3`}},
+		"contentType":   {Data: &pb.TypedData_String_{String_: "application/json"}},
+	}
+
+	v, err := convertToTypeValue(reflect.TypeOf(bindings.ServiceBusMessage{}), data, metadata)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := v.Interface().(bindings.ServiceBusMessage)
+
+	if string(result.Body) != bodyJSON {
+		t.Errorf("expected Body=%q, got %q", bodyJSON, string(result.Body))
+	}
+	if result.MessageId != "sb-msg-1" {
+		t.Errorf("expected MessageId=%q, got %q", "sb-msg-1", result.MessageId)
+	}
+	if result.DeliveryCount != 3 {
+		t.Errorf("expected DeliveryCount=3, got %d", result.DeliveryCount)
+	}
+	if result.ContentType != "application/json" {
+		t.Errorf("expected ContentType=%q, got %q", "application/json", result.ContentType)
+	}
+}
+
 func TestEncodeHTTPResponse(t *testing.T) {
 	proxy := NewResponseWriterProxy()
 	proxy.Header().Set("Content-Type", "text/plain")

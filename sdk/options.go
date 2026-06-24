@@ -82,7 +82,7 @@ func WithConsumerGroup(group string) Option {
 	}
 }
 
-// --- ServiceBus Queue-specific options ---
+// --- Queue-specific options (Service Bus + Storage Queue) ---
 
 // WithQueueName sets the queue name for a Service Bus queue trigger or
 // a Storage Queue trigger.
