@@ -737,11 +737,11 @@ func classifyTrigger(t string) string {
 		return "http"
 	case "timerTrigger":
 		return "timer"
-	case "blobTrigger", "cosmosDBTrigger":
+	case "blobTrigger", "cosmosDBTrigger", "sqlTrigger":
 		return "datasource"
 	case "eventHubTrigger", "serviceBusTrigger",
 		"serviceBusQueueTrigger", "serviceBusTopicTrigger",
-		"eventGridTrigger":
+		"eventGridTrigger", "queueTrigger":
 		return "pubsub"
 	default:
 		return "other"

@@ -41,6 +41,36 @@ func FromProto(req *pb.InvocationRequest, fields map[string]*funcField, args []r
 	return nil
 }
 
+// azFuncDataTag is the special json struct-field tag used by SDK binding
+// types (e.g. QueueMessage, ServiceBusMessage) to mark the single field
+// that should receive the raw trigger input body. All other fields on
+// such a struct are populated from trigger metadata, looked up by name.
+const azFuncDataTag = "azfuncdata"
+
+// isAzFuncDataField reports whether field f opts into azFuncDataTag.
+// Matching is case-insensitive and tolerates options like ",omitempty".
+func isAzFuncDataField(f reflect.StructField) bool {
+	tag := f.Tag.Get("json")
+	if idx := strings.Index(tag, ","); idx != -1 {
+		tag = tag[:idx]
+	}
+	return strings.EqualFold(tag, azFuncDataTag)
+}
+
+// hasAzFuncDataField reports whether the struct type t declares any field
+// tagged with azFuncDataTag. Structs that opt into this tag use a single
+// field to hold the raw input body while other fields are populated from
+// trigger metadata, and must NOT be decoded via whole-struct json.Unmarshal
+// of the body.
+func hasAzFuncDataField(t reflect.Type) bool {
+	for i := 0; i < t.NumField(); i++ {
+		if isAzFuncDataField(t.Field(i)) {
+			return true
+		}
+	}
+	return false
+}
+
 // convertToTypeValue returns a native value from protobuf
 func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.TypedData) (reflect.Value, error) {
 	var t reflect.Type
@@ -53,8 +83,17 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 	pv := reflect.New(t)
 	v := pv.Elem()
 
-	// If struct, try JSON decoding first, then fall back to TriggerMetadata field matching
-	if t.Kind() == reflect.Struct {
+	// If struct, try JSON decoding first, then fall back to TriggerMetadata field matching.
+	//
+	// Skip the whole-struct JSON fast-path when the struct declares an
+	// "azfuncdata"-tagged field: that tag signals the input body belongs
+	// in that single field (e.g. QueueMessage.Body, ServiceBusMessage.Body),
+	// not unmarshalled across the whole struct. Without this guard, a queue
+	// message with a JSON object body would silently produce a zero-valued
+	// QueueMessage — the unmarshal succeeds but matches no field tags, the
+	// fast path returns, and the per-field "azfuncdata" + metadata fallback
+	// below is never reached.
+	if t.Kind() == reflect.Struct && !hasAzFuncDataField(t) {
 		// Try direct JSON unmarshal from input data (TypedData_Json or TypedData_String_)
 		jsonStr := data.GetJson()
 		if jsonStr == "" {
@@ -72,35 +111,39 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 				return val, nil
 			}
 		}
+	}
 
+	if t.Kind() == reflect.Struct {
 		// Fall back to field-by-field matching from TriggerMetadata
 		fieldsDecoded := 0
 		for i := 0; i < v.NumField(); i++ {
 			field := t.Field(i)
-			tag := field.Tag.Get("json")
-			// Strip omitempty or other options from the json tag
-			if idx := strings.Index(tag, ","); idx != -1 {
-				tag = tag[:idx]
-			}
 
 			var td *pb.TypedData
-			if strings.EqualFold(tag, "azfuncdata") {
+			if isAzFuncDataField(field) {
 				td = data
 				fieldsDecoded++
-			} else if val, ok := tm[tag]; ok {
-				td = val
-				fieldsDecoded++
 			} else {
-				// Case-insensitive fallback
-				for k, val := range tm {
-					if strings.EqualFold(k, tag) {
-						td = val
-						fieldsDecoded++
-						break
-					}
+				tag := field.Tag.Get("json")
+				// Strip omitempty or other options from the json tag
+				if idx := strings.Index(tag, ","); idx != -1 {
+					tag = tag[:idx]
 				}
-				if td == nil {
-					continue
+				if val, ok := tm[tag]; ok {
+					td = val
+					fieldsDecoded++
+				} else {
+					// Case-insensitive fallback
+					for k, val := range tm {
+						if strings.EqualFold(k, tag) {
+							td = val
+							fieldsDecoded++
+							break
+						}
+					}
+					if td == nil {
+						continue
+					}
 				}
 			}
 
@@ -137,6 +180,29 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 	return d, nil
 }
 
+// decodeProto converts a single TypedData value from the host into a Go
+// reflect.Value of the requested type t. It is called per-field when
+// populating struct-based trigger messages (e.g. ServiceBusMessage,
+// QueueMessage) from trigger metadata, and also for scalar argument types.
+//
+// TypedData is a protobuf oneof — the host extension chooses which variant
+// to populate (String_, Json, Bytes, Int, Double, Http). Different
+// extensions make different choices for the same logical data type:
+//
+//   - ServiceBus sends time fields as TypedData_String_ ("2026-06-22T...")
+//   - Storage Queues sends time fields as TypedData_Json ("\"2026-06-22T...\"")
+//   - DequeueCount comes as TypedData_Json (bare number: 1) not TypedData_Int
+//
+// The decoding strategy is:
+//  1. Try the "natural" TypedData variant for the target Go type (e.g.
+//     String_ for string, Int for int64, Bytes for []byte).
+//  2. If the natural variant is empty/zero, fall through to the generic
+//     fallback paths at the bottom of the function (JSON unmarshal,
+//     string-to-T conversion, bytes-to-T).
+//
+// This two-phase approach ensures backward compatibility — triggers that
+// already work with TypedData_String_ keep working — while also handling
+// extensions that send values via a different variant.
 func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 	if data == nil {
 		return reflect.Zero(t), nil
@@ -144,7 +210,10 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 
 	switch t.Kind() {
 	case reflect.String:
-		return reflect.ValueOf(data.GetString_()), nil
+		if s := data.GetString_(); s != "" {
+			return reflect.ValueOf(s), nil
+		}
+		// Fall through to JSON/bytes handling below when String_ is empty
 	case reflect.Bool:
 		if val := data.GetString_(); val != "" {
 			return reflect.ValueOf(strings.EqualFold(val, "true")), nil
@@ -152,13 +221,16 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 		return reflect.ValueOf(data.GetInt() != 0), nil
 	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
-			if len(data.GetBytes()) == 0 {
-				strVal := data.GetString_()
-				if strVal != "" {
-					return reflect.ValueOf([]byte(strVal)), nil
-				}
+			if b := data.GetBytes(); len(b) > 0 {
+				return reflect.ValueOf(b), nil
 			}
-			return reflect.ValueOf(data.GetBytes()), nil
+			if s := data.GetString_(); s != "" {
+				return reflect.ValueOf([]byte(s)), nil
+			}
+			// Fall through to JSON handling below — host may deliver
+			// the payload as TypedData_Json (e.g. queue messages with
+			// JSON bodies). The bytes fallback at the end of the
+			// function will pick up GetJson() if populated.
 		}
 	case reflect.Int:
 		if data.GetInt() != 0 {
@@ -192,8 +264,11 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 		}
 	}
 
-	// JSON fallback
-	if data.GetJson() != "" {
+	// JSON fallback. Skip when target is []byte — for byte slices we want
+	// to preserve the raw JSON payload (handled by the "Json handling
+	// (bytes support)" block below) rather than attempting to unmarshal a
+	// JSON document into a []byte (which would fail).
+	if data.GetJson() != "" && !(t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8) {
 		v := reflect.New(t).Interface()
 		err := json.Unmarshal([]byte(data.GetJson()), v)
 		if err != nil {

@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"encoding/json"
 	"net/http"
 	"reflect"
 	"strings"
@@ -119,6 +120,129 @@ func TestDecodeProto_BoolFromString(t *testing.T) {
 			}
 			if v.Bool() != tc.expected {
 				t.Errorf("expected %v, got %v", tc.expected, v.Bool())
+			}
+		})
+	}
+}
+
+// TestDecodeProto_Fallbacks is a table-driven test covering decodeProto's
+// fallback paths. The function tries the "natural" TypedData variant for the
+// target Go type first (String_ for string, Int for int64, etc.) and falls
+// through to JSON/bytes handling when that variant is empty. Different host
+// extensions populate different variants — for example the Storage Queue
+// extension sends DequeueCount as TypedData_Json and time fields as
+// JSON-quoted strings — so these fallbacks must be reliable.
+func TestDecodeProto_Fallbacks(t *testing.T) {
+	type payload struct {
+		Name string `json:"name"`
+		Age  int    `json:"age"`
+	}
+
+	tests := []struct {
+		name      string
+		data      *pb.TypedData
+		target    interface{}
+		expected  interface{}
+		expectErr bool
+	}{
+		// --- string target ---
+		{
+			name:     "string from TypedData_String_ (direct, preferred)",
+			data:     &pb.TypedData{Data: &pb.TypedData_String_{String_: "direct"}},
+			target:   "",
+			expected: "direct",
+		},
+		{
+			name:     "string from TypedData_Json (queue ExpirationTime scenario)",
+			data:     &pb.TypedData{Data: &pb.TypedData_Json{Json: `"2026-06-29T19:04:34+00:00"`}},
+			target:   "",
+			expected: "2026-06-29T19:04:34+00:00",
+		},
+		{
+			name:     "string from TypedData_Bytes",
+			data:     &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: []byte("from bytes")}},
+			target:   "",
+			expected: "from bytes",
+		},
+		{
+			name:     "empty TypedData_String_ yields zero value",
+			data:     &pb.TypedData{Data: &pb.TypedData_String_{String_: ""}},
+			target:   "",
+			expected: "",
+		},
+
+		// --- int target ---
+		{
+			name:     "int64 from TypedData_Json (queue DequeueCount scenario)",
+			data:     &pb.TypedData{Data: &pb.TypedData_Json{Json: `1`}},
+			target:   int64(0),
+			expected: int64(1),
+		},
+		{
+			name:     "int from TypedData_Json",
+			data:     &pb.TypedData{Data: &pb.TypedData_Json{Json: `7`}},
+			target:   int(0),
+			expected: int(7),
+		},
+
+		// --- float target ---
+		{
+			name:     "float64 from TypedData_Json",
+			data:     &pb.TypedData{Data: &pb.TypedData_Json{Json: `2.718`}},
+			target:   float64(0),
+			expected: float64(2.718),
+		},
+
+		// --- struct target ---
+		{
+			name:     "struct from TypedData_String_ containing JSON",
+			data:     &pb.TypedData{Data: &pb.TypedData_String_{String_: `{"name":"Alice","age":30}`}},
+			target:   payload{},
+			expected: payload{Name: "Alice", Age: 30},
+		},
+		{
+			name:      "struct from malformed TypedData_Json returns error",
+			data:      &pb.TypedData{Data: &pb.TypedData_Json{Json: `{invalid`}},
+			target:    payload{},
+			expectErr: true,
+		},
+
+		// --- []byte / json.RawMessage target (e.g. QueueMessage.Body) ---
+		{
+			name:     "[]byte from TypedData_Bytes",
+			data:     &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: []byte("raw bytes")}},
+			target:   []byte(nil),
+			expected: []byte("raw bytes"),
+		},
+		{
+			name:     "[]byte from TypedData_String_",
+			data:     &pb.TypedData{Data: &pb.TypedData_String_{String_: "string body"}},
+			target:   []byte(nil),
+			expected: []byte("string body"),
+		},
+		{
+			name:     "[]byte from TypedData_Json (queue body as JSON variant)",
+			data:     &pb.TypedData{Data: &pb.TypedData_Json{Json: `{"k":"v"}`}},
+			target:   []byte(nil),
+			expected: []byte(`{"k":"v"}`),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := decodeProto(tc.data, reflect.TypeOf(tc.target))
+			if tc.expectErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got := v.Interface()
+			if !reflect.DeepEqual(got, tc.expected) {
+				t.Errorf("expected %v (%T), got %v (%T)", tc.expected, tc.expected, got, got)
 			}
 		})
 	}
@@ -270,6 +394,76 @@ func TestConvertToTypeValue_TimerInfo_StringJSON(t *testing.T) {
 }
 
 // --- encodeHTTPResponse tests ---
+
+// TestConvertToTypeValue_AzFuncData_JSONBody is a regression test for the
+// case where a queue (or service bus) message has a JSON object/array as
+// its body. Without the azfuncdata-aware guard in convertToTypeValue, the
+// whole-struct JSON fast-path would silently succeed against the body's
+// JSON (matching no field tags) and return an entirely empty struct —
+// the per-field metadata + azfuncdata fallback would never run.
+func TestConvertToTypeValue_AzFuncData_JSONBody(t *testing.T) {
+	type queueMsg struct {
+		Body         json.RawMessage `json:"azfuncdata"`
+		Id           string          `json:"id"`
+		DequeueCount int64           `json:"dequeueCount"`
+	}
+
+	bodyJSON := `{"orderId":123,"customer":"acme"}`
+	data := &pb.TypedData{Data: &pb.TypedData_Json{Json: bodyJSON}}
+	metadata := map[string]*pb.TypedData{
+		"Id":           {Data: &pb.TypedData_String_{String_: "msg-xyz"}},
+		"DequeueCount": {Data: &pb.TypedData_Json{Json: `2`}},
+	}
+
+	v, err := convertToTypeValue(reflect.TypeOf(queueMsg{}), data, metadata)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := v.Interface().(queueMsg)
+
+	if string(result.Body) != bodyJSON {
+		t.Errorf("expected Body=%q, got %q", bodyJSON, string(result.Body))
+	}
+	if result.Id != "msg-xyz" {
+		t.Errorf("expected Id=%q, got %q", "msg-xyz", result.Id)
+	}
+	if result.DequeueCount != 2 {
+		t.Errorf("expected DequeueCount=2, got %d", result.DequeueCount)
+	}
+}
+
+// TestConvertToTypeValue_ServiceBusMessage_JSONBody exercises the same
+// azfuncdata fast-path skip on a real bindings.ServiceBusMessage. It is
+// the sibling of the queueMsg case above and guards the Service Bus half
+// of the converter change against silent regressions.
+func TestConvertToTypeValue_ServiceBusMessage_JSONBody(t *testing.T) {
+	bodyJSON := `{"orderId":456,"customer":"contoso"}`
+	data := &pb.TypedData{Data: &pb.TypedData_Json{Json: bodyJSON}}
+	metadata := map[string]*pb.TypedData{
+		"messageId":     {Data: &pb.TypedData_String_{String_: "sb-msg-1"}},
+		"deliveryCount": {Data: &pb.TypedData_Json{Json: `3`}},
+		"contentType":   {Data: &pb.TypedData_String_{String_: "application/json"}},
+	}
+
+	v, err := convertToTypeValue(reflect.TypeOf(bindings.ServiceBusMessage{}), data, metadata)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := v.Interface().(bindings.ServiceBusMessage)
+
+	if string(result.Body) != bodyJSON {
+		t.Errorf("expected Body=%q, got %q", bodyJSON, string(result.Body))
+	}
+	if result.MessageId != "sb-msg-1" {
+		t.Errorf("expected MessageId=%q, got %q", "sb-msg-1", result.MessageId)
+	}
+	if result.DeliveryCount != 3 {
+		t.Errorf("expected DeliveryCount=3, got %d", result.DeliveryCount)
+	}
+	if result.ContentType != "application/json" {
+		t.Errorf("expected ContentType=%q, got %q", "application/json", result.ContentType)
+	}
+}
 
 func TestEncodeHTTPResponse(t *testing.T) {
 	proxy := NewResponseWriterProxy()

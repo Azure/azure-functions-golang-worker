@@ -295,11 +295,13 @@ func TestClassifyTrigger(t *testing.T) {
 		"timerTrigger":           "timer",
 		"blobTrigger":            "datasource",
 		"cosmosDBTrigger":        "datasource",
+		"sqlTrigger":             "datasource",
 		"eventHubTrigger":        "pubsub",
 		"serviceBusTrigger":      "pubsub",
 		"serviceBusQueueTrigger": "pubsub",
 		"serviceBusTopicTrigger": "pubsub",
 		"eventGridTrigger":       "pubsub",
+		"queueTrigger":           "pubsub",
 		"":                       "other",
 		"someUnknownTriggerType": "other",
 	}

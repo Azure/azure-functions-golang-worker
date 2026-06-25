@@ -50,6 +50,9 @@ type SQLChangeHandler = func(context.Context, []bindings.SQLChange) error
 // EventGridHandler is the handler type for Event Grid triggered functions.
 type EventGridHandler = func(context.Context, bindings.EventGridEvent) error
 
+// QueueHandler is the handler type for Azure Storage Queue triggered functions.
+type QueueHandler = func(context.Context, bindings.QueueMessage) error
+
 // BlobHandler is the handler type for blob triggered functions that receive
 // the blob content as raw bytes. For large blobs or SDK-type blob client
 // access, use the triggers/blob module instead.

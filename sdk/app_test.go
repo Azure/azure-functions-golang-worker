@@ -955,3 +955,74 @@ func TestSQL_WithLeasesTable(t *testing.T) {
 		return true
 	})
 }
+
+// --- Queue Storage tests ---
+
+func TestQueue_BasicRegistration(t *testing.T) {
+	app := FunctionApp()
+	handler := QueueHandler(func(ctx context.Context, msg bindings.QueueMessage) error {
+		return nil
+	})
+
+	rf := app.Queue("processQueue", handler,
+		WithQueueName("myqueue"),
+		WithConnection("AzureWebJobsStorage"),
+	)
+
+	if rf == nil {
+		t.Fatal("expected non-nil RegisteredFunction")
+	}
+	if rf.FuncName != "processQueue" {
+		t.Errorf("expected FuncName %q, got %q", "processQueue", rf.FuncName)
+	}
+	if rf.TriggerType != "queueTrigger" {
+		t.Errorf("expected TriggerType %q, got %q", "queueTrigger", rf.TriggerType)
+	}
+}
+
+func TestQueue_Options(t *testing.T) {
+	app := FunctionApp()
+	handler := QueueHandler(func(ctx context.Context, msg bindings.QueueMessage) error {
+		return nil
+	})
+
+	app.Queue("queueFunc", handler,
+		WithQueueName("testqueue"),
+		WithConnection("StorageConn"),
+	)
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.QueueBinding == nil {
+			t.Fatal("expected QueueBinding")
+		}
+		if binding.QueueBinding.QueueName != "testqueue" {
+			t.Errorf("expected queueName %q, got %q", "testqueue", binding.QueueBinding.QueueName)
+		}
+		if binding.QueueBinding.Connection != "StorageConn" {
+			t.Errorf("expected connection %q, got %q", "StorageConn", binding.QueueBinding.Connection)
+		}
+		return true
+	})
+}
+
+func TestQueue_NoOutputBindings(t *testing.T) {
+	app := FunctionApp()
+	handler := QueueHandler(func(ctx context.Context, msg bindings.QueueMessage) error {
+		return nil
+	})
+
+	app.Queue("queueNoOutput", handler,
+		WithQueueName("q1"),
+		WithConnection("Conn"),
+	)
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		if len(rf.RawBindings) != 1 {
+			t.Errorf("expected 1 binding (trigger only, no $return), got %d", len(rf.RawBindings))
+		}
+		return true
+	})
+}

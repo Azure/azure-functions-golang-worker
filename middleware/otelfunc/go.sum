@@ -1,3 +1,5 @@
+github.com/azure/azure-functions-golang-worker v0.6.0-preview h1:sSXuTZCdVStX0O0TDYpb3EB8iGS1DYQi+p5W9aaQuBE=
+github.com/azure/azure-functions-golang-worker v0.6.0-preview/go.mod h1:jkzgeVs8oQqxoR0keXFrcBMqN288Bidzkaf+RAuk1OQ=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
