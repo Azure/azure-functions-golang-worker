@@ -67,58 +67,48 @@ func WithContainer(containerName string) Option {
 	}
 }
 
+// withCosmos applies f to the trigger's CosmosDBBinding when one is present.
+// Options for other trigger types are silently no-ops on non-Cosmos triggers.
+func withCosmos(f func(*bindings.CosmosDBBinding)) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			f(b.CosmosDBBinding)
+		}
+	}
+}
+
 // WithCreateLeaseContainerIfNotExists controls whether the CosmosDB change-feed
 // extension automatically creates the lease container when it does not already
 // exist. When false (default) the lease container must be provisioned out of
 // band before the function starts.
 func WithCreateLeaseContainerIfNotExists(enabled bool) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.CreateLeaseContainerIfNotExists = enabled
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.CreateLeaseContainerIfNotExists = enabled })
 }
 
 // WithLeaseContainer overrides the name of the container the CosmosDB
 // change-feed extension uses to store leases. Defaults to "leases".
 func WithLeaseContainer(name string) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.LeaseContainerName = name
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseContainerName = name })
 }
 
 // WithLeaseDatabase overrides the name of the database that contains the lease
 // container. Defaults to the monitored database.
 func WithLeaseDatabase(name string) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.LeaseDatabaseName = name
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseDatabaseName = name })
 }
 
 // WithLeaseConnection sets the app-setting name that holds the connection
 // string for the account hosting the lease container. Defaults to the
 // monitored account's connection.
 func WithLeaseConnection(connection string) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.LeaseConnection = connection
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseConnection = connection })
 }
 
 // WithLeaseContainerPrefix sets a prefix used when multiple triggers share the
 // same lease container. Required to avoid collisions when two functions
 // monitor different containers but reuse the same leases container.
 func WithLeaseContainerPrefix(prefix string) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.LeaseContainerPrefix = prefix
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseContainerPrefix = prefix })
 }
 
 // WithLeaseContainerThroughput sets the RU/s provisioned for the lease
@@ -129,11 +119,7 @@ func WithLeaseContainerPrefix(prefix string) Option {
 // binding key is plural (leasesContainerThroughput); this mirrors the
 // property name the Functions host expects.
 func WithLeaseContainerThroughput(ruPerSecond int) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.LeasesContainerThroughput = ruPerSecond
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeasesContainerThroughput = ruPerSecond })
 }
 
 // WithFeedPollDelay sets the delay between polls of a partition for new
@@ -144,11 +130,7 @@ func WithLeaseContainerThroughput(ruPerSecond int) Option {
 // serialized binding, so the host default applies. Pass at least 1ms if you
 // intend to override the default.
 func WithFeedPollDelay(d time.Duration) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.FeedPollDelay = int(d.Milliseconds())
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.FeedPollDelay = int(d.Milliseconds()) })
 }
 
 // WithLeaseRenewInterval sets the renew interval for leases the trigger
@@ -156,11 +138,7 @@ func WithFeedPollDelay(d time.Duration) Option {
 // Positive durations below 1ms truncate to 0 and fall back to the host
 // default.
 func WithLeaseRenewInterval(d time.Duration) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.LeaseRenewInterval = int(d.Milliseconds())
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseRenewInterval = int(d.Milliseconds()) })
 }
 
 // WithLeaseAcquireInterval sets how often the trigger checks whether
@@ -168,11 +146,7 @@ func WithLeaseRenewInterval(d time.Duration) Option {
 // millisecond precision. Default is 13s. Positive durations below 1ms
 // truncate to 0 and fall back to the host default.
 func WithLeaseAcquireInterval(d time.Duration) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.LeaseAcquireInterval = int(d.Milliseconds())
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseAcquireInterval = int(d.Milliseconds()) })
 }
 
 // WithLeaseExpirationInterval sets how long a lease is held on a partition
@@ -180,21 +154,13 @@ func WithLeaseAcquireInterval(d time.Duration) Option {
 // millisecond precision. Default is 60s. Positive durations below 1ms
 // truncate to 0 and fall back to the host default.
 func WithLeaseExpirationInterval(d time.Duration) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.LeaseExpirationInterval = int(d.Milliseconds())
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseExpirationInterval = int(d.Milliseconds()) })
 }
 
 // WithMaxItemsPerInvocation caps the number of documents delivered to a
 // single invocation of the trigger.
 func WithMaxItemsPerInvocation(n int) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.MaxItemsPerInvocation = n
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.MaxItemsPerInvocation = n })
 }
 
 // WithStartFromBeginning controls whether the trigger starts reading the
@@ -203,22 +169,14 @@ func WithMaxItemsPerInvocation(n int) Option {
 // [WithStartFromTime]; if both are supplied, the extension prefers
 // StartFromTime.
 func WithStartFromBeginning(enabled bool) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.StartFromBeginning = enabled
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.StartFromBeginning = enabled })
 }
 
 // WithStartFromTime sets the point in time from which the change-feed read
 // operation begins. The recommended format is ISO 8601 with the UTC
 // designator, e.g. "2021-02-16T14:19:29Z".
 func WithStartFromTime(iso8601 string) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.StartFromTime = iso8601
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.StartFromTime = iso8601 })
 }
 
 // WithPreferredLocations sets preferred regions for a geo-replicated CosmosDB
@@ -229,11 +187,7 @@ func WithStartFromTime(iso8601 string) Option {
 // serializes as "East US,", which the host may reject. Pass only non-empty
 // region names.
 func WithPreferredLocations(locations ...string) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.PreferredLocations = strings.Join(locations, ",")
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.PreferredLocations = strings.Join(locations, ",") })
 }
 
 // WithChangeFeedMode selects the change-feed mode the trigger reads from.
@@ -242,11 +196,7 @@ func WithPreferredLocations(locations ...string) Option {
 // intermediate mutation and delete event (requires the account feature to be
 // enabled).
 func WithChangeFeedMode(mode bindings.CosmosChangeFeedMode) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.ChangeFeedMode = mode
-		}
-	}
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.ChangeFeedMode = mode })
 }
 
 // --- EventHub-specific options ---
