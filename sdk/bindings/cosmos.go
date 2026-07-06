@@ -5,12 +5,41 @@ import "encoding/json"
 // CosmosDBTrigger is the binding type constant for CosmosDB triggers.
 const CosmosDBTriggerType BindingType = "cosmosDBTrigger"
 
+// CosmosChangeFeedMode selects the CosmosDB change-feed mode the trigger reads
+// from. Values correspond to the Microsoft.Azure.WebJobs.Extensions.CosmosDB
+// ChangeFeedMode enum.
+type CosmosChangeFeedMode string
+
+const (
+	// CosmosChangeFeedModeLatestVersion (default) delivers only the latest
+	// version of each changed document.
+	CosmosChangeFeedModeLatestVersion CosmosChangeFeedMode = "LatestVersion"
+	// CosmosChangeFeedModeAllVersionsAndDeletes delivers every intermediate
+	// mutation and delete event. Requires the account to have this feature
+	// enabled.
+	CosmosChangeFeedModeAllVersionsAndDeletes CosmosChangeFeedMode = "AllVersionsAndDeletes"
+)
+
 // CosmosDBBinding is the JSON representation for CosmosDB.
 type CosmosDBBinding struct {
-	DatabaseName                    string `json:"databaseName"`
-	ContainerName                   string `json:"containerName"`
-	Connection                      string `json:"connection"`
-	CreateLeaseContainerIfNotExists bool   `json:"createLeaseContainerIfNotExists,omitempty"`
+	DatabaseName                    string               `json:"databaseName"`
+	ContainerName                   string               `json:"containerName"`
+	Connection                      string               `json:"connection"`
+	LeaseContainerName              string               `json:"leaseContainerName,omitempty"`
+	LeaseDatabaseName               string               `json:"leaseDatabaseName,omitempty"`
+	LeaseConnection                 string               `json:"leaseConnection,omitempty"`
+	CreateLeaseContainerIfNotExists bool                 `json:"createLeaseContainerIfNotExists,omitempty"`
+	LeasesContainerThroughput       int                  `json:"leasesContainerThroughput,omitempty"`
+	LeaseContainerPrefix            string               `json:"leaseContainerPrefix,omitempty"`
+	FeedPollDelay                   int                  `json:"feedPollDelay,omitempty"`
+	LeaseRenewInterval              int                  `json:"leaseRenewInterval,omitempty"`
+	LeaseAcquireInterval            int                  `json:"leaseAcquireInterval,omitempty"`
+	LeaseExpirationInterval         int                  `json:"leaseExpirationInterval,omitempty"`
+	MaxItemsPerInvocation           int                  `json:"maxItemsPerInvocation,omitempty"`
+	StartFromBeginning              bool                 `json:"startFromBeginning,omitempty"`
+	StartFromTime                   string               `json:"startFromTime,omitempty"`
+	PreferredLocations              string               `json:"preferredLocations,omitempty"`
+	ChangeFeedMode                  CosmosChangeFeedMode `json:"changeFeedMode,omitempty"`
 }
 
 // CosmosDocument represents a document from the CosmosDB change feed.
@@ -33,7 +62,21 @@ type CosmosDBTrigger struct {
 	DatabaseName                    string
 	ContainerName                   string
 	Connection                      string
+	LeaseContainerName              string
+	LeaseDatabaseName               string
+	LeaseConnection                 string
 	CreateLeaseContainerIfNotExists bool
+	LeasesContainerThroughput       int
+	LeaseContainerPrefix            string
+	FeedPollDelay                   int
+	LeaseRenewInterval              int
+	LeaseAcquireInterval            int
+	LeaseExpirationInterval         int
+	MaxItemsPerInvocation           int
+	StartFromBeginning              bool
+	StartFromTime                   string
+	PreferredLocations              string
+	ChangeFeedMode                  CosmosChangeFeedMode
 }
 
 func (c *CosmosDBTrigger) GetBindingType() BindingType { return CosmosDBTriggerType }
@@ -47,7 +90,21 @@ func (c *CosmosDBTrigger) ToBinding() Binding {
 			DatabaseName:                    c.DatabaseName,
 			ContainerName:                   c.ContainerName,
 			Connection:                      c.Connection,
+			LeaseContainerName:              c.LeaseContainerName,
+			LeaseDatabaseName:               c.LeaseDatabaseName,
+			LeaseConnection:                 c.LeaseConnection,
 			CreateLeaseContainerIfNotExists: c.CreateLeaseContainerIfNotExists,
+			LeasesContainerThroughput:       c.LeasesContainerThroughput,
+			LeaseContainerPrefix:            c.LeaseContainerPrefix,
+			FeedPollDelay:                   c.FeedPollDelay,
+			LeaseRenewInterval:              c.LeaseRenewInterval,
+			LeaseAcquireInterval:            c.LeaseAcquireInterval,
+			LeaseExpirationInterval:         c.LeaseExpirationInterval,
+			MaxItemsPerInvocation:           c.MaxItemsPerInvocation,
+			StartFromBeginning:              c.StartFromBeginning,
+			StartFromTime:                   c.StartFromTime,
+			PreferredLocations:              c.PreferredLocations,
+			ChangeFeedMode:                  c.ChangeFeedMode,
 		},
 	}
 }

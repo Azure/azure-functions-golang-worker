@@ -1,6 +1,11 @@
 package sdk
 
-import "github.com/azure/azure-functions-golang-worker/sdk/bindings"
+import (
+	"strings"
+	"time"
+
+	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
+)
 
 // --- HTTP-specific options ---
 
@@ -70,6 +75,160 @@ func WithCreateLeaseContainerIfNotExists(enabled bool) Option {
 	return func(rf *RegisteredFunction) {
 		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
 			b.CosmosDBBinding.CreateLeaseContainerIfNotExists = enabled
+		}
+	}
+}
+
+// WithLeaseContainer overrides the name of the container the CosmosDB
+// change-feed extension uses to store leases. Defaults to "leases".
+func WithLeaseContainer(name string) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.LeaseContainerName = name
+		}
+	}
+}
+
+// WithLeaseDatabase overrides the name of the database that contains the lease
+// container. Defaults to the monitored database.
+func WithLeaseDatabase(name string) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.LeaseDatabaseName = name
+		}
+	}
+}
+
+// WithLeaseConnection sets the app-setting name that holds the connection
+// string for the account hosting the lease container. Defaults to the
+// monitored account's connection.
+func WithLeaseConnection(connection string) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.LeaseConnection = connection
+		}
+	}
+}
+
+// WithLeaseContainerPrefix sets a prefix used when multiple triggers share the
+// same lease container. Required to avoid collisions when two functions
+// monitor different containers but reuse the same leases container.
+func WithLeaseContainerPrefix(prefix string) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.LeaseContainerPrefix = prefix
+		}
+	}
+}
+
+// WithLeaseContainerThroughput sets the RU/s provisioned for the lease
+// container when it is auto-created by [WithCreateLeaseContainerIfNotExists].
+// Ignored if the container already exists.
+func WithLeaseContainerThroughput(ruPerSecond int) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.LeasesContainerThroughput = ruPerSecond
+		}
+	}
+}
+
+// WithFeedPollDelay sets the delay between polls of a partition for new
+// changes on the feed after all current changes are drained. Truncated to
+// millisecond precision. Default is 5s.
+func WithFeedPollDelay(d time.Duration) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.FeedPollDelay = int(d.Milliseconds())
+		}
+	}
+}
+
+// WithLeaseRenewInterval sets the renew interval for leases the trigger
+// currently holds. Truncated to millisecond precision. Default is 17s.
+func WithLeaseRenewInterval(d time.Duration) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.LeaseRenewInterval = int(d.Milliseconds())
+		}
+	}
+}
+
+// WithLeaseAcquireInterval sets how often the trigger checks whether
+// partitions are distributed evenly across known host instances. Truncated to
+// millisecond precision. Default is 13s.
+func WithLeaseAcquireInterval(d time.Duration) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.LeaseAcquireInterval = int(d.Milliseconds())
+		}
+	}
+}
+
+// WithLeaseExpirationInterval sets how long a lease is held on a partition
+// before it expires and can be picked up by another instance. Truncated to
+// millisecond precision. Default is 60s.
+func WithLeaseExpirationInterval(d time.Duration) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.LeaseExpirationInterval = int(d.Milliseconds())
+		}
+	}
+}
+
+// WithMaxItemsPerInvocation caps the number of documents delivered to a
+// single invocation of the trigger.
+func WithMaxItemsPerInvocation(n int) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.MaxItemsPerInvocation = n
+		}
+	}
+}
+
+// WithStartFromBeginning controls whether the trigger starts reading the
+// change feed from the beginning of the container's history rather than
+// from the time the function first runs. Mutually exclusive with
+// [WithStartFromTime]; if both are supplied, the extension prefers
+// StartFromTime.
+func WithStartFromBeginning(enabled bool) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.StartFromBeginning = enabled
+		}
+	}
+}
+
+// WithStartFromTime sets the point in time from which the change-feed read
+// operation begins. The recommended format is ISO 8601 with the UTC
+// designator, e.g. "2021-02-16T14:19:29Z".
+func WithStartFromTime(iso8601 string) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.StartFromTime = iso8601
+		}
+	}
+}
+
+// WithPreferredLocations sets preferred regions for a geo-replicated CosmosDB
+// account. Values are joined with commas as required by the binding format,
+// e.g. WithPreferredLocations("East US", "North Europe").
+func WithPreferredLocations(locations ...string) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.PreferredLocations = strings.Join(locations, ",")
+		}
+	}
+}
+
+// WithChangeFeedMode selects the change-feed mode the trigger reads from.
+// Defaults to [bindings.CosmosChangeFeedModeLatestVersion]. Use
+// [bindings.CosmosChangeFeedModeAllVersionsAndDeletes] to receive every
+// intermediate mutation and delete event (requires the account feature to be
+// enabled).
+func WithChangeFeedMode(mode bindings.CosmosChangeFeedMode) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.ChangeFeedMode = mode
 		}
 	}
 }
