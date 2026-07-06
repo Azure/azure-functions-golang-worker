@@ -124,6 +124,10 @@ func WithLeaseContainerPrefix(prefix string) Option {
 // WithLeaseContainerThroughput sets the RU/s provisioned for the lease
 // container when it is auto-created by [WithCreateLeaseContainerIfNotExists].
 // Ignored if the container already exists.
+//
+// Note: the option is singular (LeaseContainer) but the underlying host
+// binding key is plural (leasesContainerThroughput); this mirrors the
+// property name the Functions host expects.
 func WithLeaseContainerThroughput(ruPerSecond int) Option {
 	return func(rf *RegisteredFunction) {
 		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
@@ -135,6 +139,10 @@ func WithLeaseContainerThroughput(ruPerSecond int) Option {
 // WithFeedPollDelay sets the delay between polls of a partition for new
 // changes on the feed after all current changes are drained. Truncated to
 // millisecond precision. Default is 5s.
+//
+// Positive durations below 1ms truncate to 0 and are omitted from the
+// serialized binding, so the host default applies. Pass at least 1ms if you
+// intend to override the default.
 func WithFeedPollDelay(d time.Duration) Option {
 	return func(rf *RegisteredFunction) {
 		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
@@ -145,6 +153,8 @@ func WithFeedPollDelay(d time.Duration) Option {
 
 // WithLeaseRenewInterval sets the renew interval for leases the trigger
 // currently holds. Truncated to millisecond precision. Default is 17s.
+// Positive durations below 1ms truncate to 0 and fall back to the host
+// default.
 func WithLeaseRenewInterval(d time.Duration) Option {
 	return func(rf *RegisteredFunction) {
 		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
@@ -155,7 +165,8 @@ func WithLeaseRenewInterval(d time.Duration) Option {
 
 // WithLeaseAcquireInterval sets how often the trigger checks whether
 // partitions are distributed evenly across known host instances. Truncated to
-// millisecond precision. Default is 13s.
+// millisecond precision. Default is 13s. Positive durations below 1ms
+// truncate to 0 and fall back to the host default.
 func WithLeaseAcquireInterval(d time.Duration) Option {
 	return func(rf *RegisteredFunction) {
 		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
@@ -166,7 +177,8 @@ func WithLeaseAcquireInterval(d time.Duration) Option {
 
 // WithLeaseExpirationInterval sets how long a lease is held on a partition
 // before it expires and can be picked up by another instance. Truncated to
-// millisecond precision. Default is 60s.
+// millisecond precision. Default is 60s. Positive durations below 1ms
+// truncate to 0 and fall back to the host default.
 func WithLeaseExpirationInterval(d time.Duration) Option {
 	return func(rf *RegisteredFunction) {
 		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
@@ -212,6 +224,10 @@ func WithStartFromTime(iso8601 string) Option {
 // WithPreferredLocations sets preferred regions for a geo-replicated CosmosDB
 // account. Values are joined with commas as required by the binding format,
 // e.g. WithPreferredLocations("East US", "North Europe").
+//
+// Empty strings are not filtered: WithPreferredLocations("East US", "")
+// serializes as "East US,", which the host may reject. Pass only non-empty
+// region names.
 func WithPreferredLocations(locations ...string) Option {
 	return func(rf *RegisteredFunction) {
 		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
