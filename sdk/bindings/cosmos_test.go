@@ -2,15 +2,17 @@ package bindings
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
 func TestCosmosDBTrigger_ToBinding(t *testing.T) {
 	trigger := &CosmosDBTrigger{
-		Name:          "docs",
-		DatabaseName:  "mydb",
-		ContainerName: "mycontainer",
-		Connection:    "CosmosDBConnection",
+		Name:                            "docs",
+		DatabaseName:                    "mydb",
+		ContainerName:                   "mycontainer",
+		Connection:                      "CosmosDBConnection",
+		CreateLeaseContainerIfNotExists: true,
 	}
 
 	binding := trigger.ToBinding()
@@ -32,6 +34,61 @@ func TestCosmosDBTrigger_ToBinding(t *testing.T) {
 	}
 	if binding.CosmosDBBinding.Connection != "CosmosDBConnection" {
 		t.Errorf("expected connection %q, got %q", "CosmosDBConnection", binding.CosmosDBBinding.Connection)
+	}
+	if !binding.CosmosDBBinding.CreateLeaseContainerIfNotExists {
+		t.Error("expected CreateLeaseContainerIfNotExists to be propagated as true")
+	}
+}
+
+func TestCosmosDBTrigger_ToBinding_DefaultsLeaseContainerFalse(t *testing.T) {
+	trigger := &CosmosDBTrigger{Name: "docs"}
+	binding := trigger.ToBinding()
+	if binding.CosmosDBBinding == nil {
+		t.Fatal("expected CosmosDBBinding")
+	}
+	if binding.CosmosDBBinding.CreateLeaseContainerIfNotExists {
+		t.Error("expected CreateLeaseContainerIfNotExists default to be false")
+	}
+}
+
+func TestCosmosDBBinding_JSON_OmitsCreateLeaseContainerWhenFalse(t *testing.T) {
+	trigger := &CosmosDBTrigger{
+		Name:          "docs",
+		DatabaseName:  "mydb",
+		ContainerName: "mycontainer",
+		Connection:    "CosmosDBConnection",
+	}
+	data, err := json.Marshal(trigger.ToBinding())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if contains := string(data); strings.Contains(contains, "createLeaseContainerIfNotExists") {
+		t.Errorf("expected createLeaseContainerIfNotExists to be omitted when false; got %s", contains)
+	}
+}
+
+func TestCosmosDBBinding_JSON_EmitsCreateLeaseContainerWhenTrue(t *testing.T) {
+	trigger := &CosmosDBTrigger{
+		Name:                            "docs",
+		DatabaseName:                    "mydb",
+		ContainerName:                   "mycontainer",
+		Connection:                      "CosmosDBConnection",
+		CreateLeaseContainerIfNotExists: true,
+	}
+	data, err := json.Marshal(trigger.ToBinding())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	v, ok := decoded["createLeaseContainerIfNotExists"]
+	if !ok {
+		t.Fatalf("expected createLeaseContainerIfNotExists key in %s", string(data))
+	}
+	if b, _ := v.(bool); !b {
+		t.Errorf("expected createLeaseContainerIfNotExists=true, got %v", v)
 	}
 }
 

@@ -62,6 +62,18 @@ func WithContainer(containerName string) Option {
 	}
 }
 
+// WithCreateLeaseContainerIfNotExists controls whether the CosmosDB change-feed
+// extension automatically creates the lease container when it does not already
+// exist. When false (default) the lease container must be provisioned out of
+// band before the function starts.
+func WithCreateLeaseContainerIfNotExists(enabled bool) Option {
+	return func(rf *RegisteredFunction) {
+		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
+			b.CosmosDBBinding.CreateLeaseContainerIfNotExists = enabled
+		}
+	}
+}
+
 // --- EventHub-specific options ---
 
 // WithEventHubName sets the EventHub name.

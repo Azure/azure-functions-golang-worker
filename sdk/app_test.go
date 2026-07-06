@@ -181,6 +181,54 @@ func TestCosmosDB_Options(t *testing.T) {
 
 // --- EventGrid tests ---
 
+func TestCosmosDB_WithCreateLeaseContainerIfNotExists(t *testing.T) {
+	app := FunctionApp()
+	handler := CosmosDBHandler(func(ctx context.Context, docs []bindings.CosmosDocument) error {
+		return nil
+	})
+
+	app.CosmosDB("cosmosAutoLease", handler,
+		WithDatabase("mydb"),
+		WithContainer("mycontainer"),
+		WithConnection("CosmosDBConnection"),
+		WithCreateLeaseContainerIfNotExists(true),
+	)
+
+	found := false
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.CosmosDBBinding == nil {
+			t.Fatal("expected CosmosDBBinding")
+		}
+		if !binding.CosmosDBBinding.CreateLeaseContainerIfNotExists {
+			t.Error("expected CreateLeaseContainerIfNotExists=true after applying option")
+		}
+		found = true
+		return true
+	})
+	if !found {
+		t.Fatal("expected at least one registered function")
+	}
+}
+
+func TestWithCreateLeaseContainerIfNotExists_NonCosmosTriggerIsNoop(t *testing.T) {
+	app := FunctionApp()
+	handler := HTTPHandler(func(w http.ResponseWriter, r *http.Request) {})
+
+	// Applying a Cosmos-only option to an HTTP trigger must not panic and
+	// must not mutate the HTTP binding.
+	app.HTTP("hello", handler, WithCreateLeaseContainerIfNotExists(true))
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		if rf.RawBindings[0].CosmosDBBinding != nil {
+			t.Error("expected no CosmosDBBinding on an HTTP trigger")
+		}
+		return true
+	})
+}
+
 func TestEventGrid_BasicRegistration(t *testing.T) {
 	app := FunctionApp()
 	handler := EventGridHandler(func(ctx context.Context, event bindings.EventGridEvent) error {

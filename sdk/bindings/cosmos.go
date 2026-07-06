@@ -7,9 +7,10 @@ const CosmosDBTriggerType BindingType = "cosmosDBTrigger"
 
 // CosmosDBBinding is the JSON representation for CosmosDB.
 type CosmosDBBinding struct {
-	DatabaseName  string `json:"databaseName"`
-	ContainerName string `json:"containerName"`
-	Connection    string `json:"connection"`
+	DatabaseName                    string `json:"databaseName"`
+	ContainerName                   string `json:"containerName"`
+	Connection                      string `json:"connection"`
+	CreateLeaseContainerIfNotExists bool   `json:"createLeaseContainerIfNotExists,omitempty"`
 }
 
 // CosmosDocument represents a document from the CosmosDB change feed.
@@ -28,10 +29,11 @@ type CosmosDocument struct {
 
 // CosmosDBTrigger is the user-facing configuration for a CosmosDB trigger.
 type CosmosDBTrigger struct {
-	Name          string
-	DatabaseName  string
-	ContainerName string
-	Connection    string
+	Name                            string
+	DatabaseName                    string
+	ContainerName                   string
+	Connection                      string
+	CreateLeaseContainerIfNotExists bool
 }
 
 func (c *CosmosDBTrigger) GetBindingType() BindingType { return CosmosDBTriggerType }
@@ -42,9 +44,10 @@ func (c *CosmosDBTrigger) ToBinding() Binding {
 		Type:      string(c.GetBindingType()),
 		Direction: "in",
 		CosmosDBBinding: &CosmosDBBinding{
-			DatabaseName:  c.DatabaseName,
-			ContainerName: c.ContainerName,
-			Connection:    c.Connection,
+			DatabaseName:                    c.DatabaseName,
+			ContainerName:                   c.ContainerName,
+			Connection:                      c.Connection,
+			CreateLeaseContainerIfNotExists: c.CreateLeaseContainerIfNotExists,
 		},
 	}
 }
