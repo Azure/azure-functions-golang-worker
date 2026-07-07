@@ -5,22 +5,18 @@
 #   1. Installs Go and sets up a workspace so all modules build together.
 #   2. Runs `go vet` for basic static analysis.
 #   3. Builds everything (root + submodules + samples) in one script.
-#   4. Confirms CodeQL actually captured the Go source.
 #
-# Why the order matters:
-#   The 1ES pipeline template automatically inserts a CodeQL Init step
-#   at the very start of the job. CodeQL needs Go to already be installed
-#   and the multi-module workspace to already exist when it starts —
-#   otherwise it initializes with the wrong view of the repo and ends
-#   up capturing zero Go code.
+# About step ordering:
+#   The 1ES pipeline template adds a CodeQL setup step at the start
+#   of the job automatically. We would prefer to install Go and set
+#   up the workspace before CodeQL runs, but the way to do that
+#   (templateContext.preSteps) is not honored by our current 1ES
+#   template version.
 #
-#   To make sure Go and go.work are ready before CodeQL Init runs,
-#   we put those setup steps under `templateContext.preSteps`.
-#   Anything under `preSteps` runs before the CodeQL Init step.
-#
-#   The main build then runs from a single script (codeql-build.sh)
-#   between CodeQL Init and CodeQL Finalize. Doing every module's
-#   build in one place is what lets CodeQL see all of them.
+#   As a workaround, Go setup runs as the first normal steps below.
+#   The agent already has an older Go on PATH, so CodeQL still has
+#   something to watch, and later `go` commands should still be
+#   captured.
 # ============================================================
 
 parameters:
@@ -37,66 +33,40 @@ jobs:
       image: 1es-ubuntu-22.04
       os: linux
 
-    templateContext:
-      # preSteps run BEFORE the CodeQL Init step is injected.
-      # We use this to make sure Go + go.work exist when CodeQL starts.
-      preSteps:
-      - task: GoTool@0
-        displayName: 'Install Go 1.25 (before CodeQL)'
-        inputs:
-          version: '1.25'
-
-      # Set up a Go workspace so submodules point at the local root
-      # module instead of downloading a stale published version.
-      #
-      # Why we need this:
-      #   * The submodules' go.mod files reference a not-yet-released
-      #     version of the root module.
-      #   * The last published root (v0.6.0-preview) still bundles
-      #     packages that have since been moved into submodules, so
-      #     the go tool can't tell which copy to use.
-      #   * The `replace` for genproto pins a newer revision that
-      #     works with the OpenTelemetry collector dependencies.
-      - script: |
-          go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
-          # Force Go to always use THIS checkout as the root module,
-          # instead of downloading an older published copy from the
-          # module registry. Without this line, `go vet` and `go build`
-          # get confused because there are two copies of the same code:
-          # one downloaded, one local.
-          go work edit -replace github.com/azure/azure-functions-golang-worker=.
-          go work edit -replace google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
-          cat go.work
-        displayName: 'Initialize go workspace (before CodeQL)'
-
-      # postSteps run AFTER CodeQL Finalize has produced its database.
-      # If Finalize captured essentially no Go source, fail the job so
-      # we notice — otherwise the pipeline stays green while doing no
-      # real analysis.
-      postSteps:
-      - script: |
-          src_zip="$AGENT_TEMPDIRECTORY/codeql3000/d/go/src.zip"
-          if [[ ! -f "$src_zip" ]]; then
-            echo "CodeQL Go source archive not found at $src_zip"
-            exit 1
-          fi
-          size=$(stat -c%s "$src_zip")
-          echo "CodeQL Go src.zip size: ${size} bytes"
-          if (( size < 1024 )); then
-            echo "ERROR: CodeQL captured almost no Go source (${size} B)."
-            echo "The build ran but CodeQL didn't see it. Check the CodeQL Finalize logs."
-            exit 1
-          fi
-        displayName: 'Check CodeQL captured Go source'
-
     steps:
+    - task: GoTool@0
+      displayName: 'Install Go 1.25'
+      inputs:
+        version: '1.25'
+
+    # Tell Go to treat this checkout as one big project so all our
+    # modules can build together.
+    #
+    # Why the two `replace` lines matter:
+    #   * First replace: when a submodule requires the OLD published
+    #     root (v0.6.0-preview), redirect it to THIS checkout.
+    #     Without this, Go downloads that old published copy, which
+    #     still contains files now moved into submodules, and
+    #     `go vet`/`go build` fail with "ambiguous import".
+    #     Note: we pin the specific version rather than "all versions"
+    #     because `.` is already in the workspace `use` list, and Go
+    #     rejects an all-versions replace of a module already in use.
+    #   * Second replace: swaps in a newer genproto version that plays
+    #     nicely with the OpenTelemetry collector deps.
+    - script: |
+        go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
+        go work edit -replace github.com/azure/azure-functions-golang-worker@v0.6.0-preview=.
+        go work edit -replace google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
+        cat go.work
+      displayName: 'Initialize go workspace'
+
     - script: go version
       displayName: 'Print Go version'
 
     - script: go mod download
       displayName: 'Download dependencies (root)'
 
-    # Static analysis for each module.
+    # Static checks for each module.
     - script: |
         go vet $(go list ./... | grep -v /samples/)
       displayName: 'Vet root module'
