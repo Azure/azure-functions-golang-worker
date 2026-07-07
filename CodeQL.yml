@@ -1,0 +1,38 @@
+# CodeQL configuration for the azure-functions-golang-worker repository.
+#
+# Consumed by the 1ES CodeQL 3000 extension (https://aka.ms/codeql3000).
+# Path classifiers below determine how findings are categorized:
+#   - test:      excluded from most security query results
+#   - generated: excluded (auto-generated code)
+#   - library:   treated as third-party (analyzed with reduced noise)
+#
+# --- Path decisions -------------------------------------------------
+# Classified (see path_classifiers below):
+#   **/*_test.go       -> test       Go unit test files (repo-wide).
+#   tests/**           -> test       Python integration/emulator tests
+#                                     (non-Go; defensive classification).
+#   worker/proto/**    -> generated  Protobuf-generated code
+#                                     (FunctionRpc.pb.go, ClaimsIdentityRpc.pb.go,
+#                                      NullableTypes.pb.go, FunctionRpc_grpc.pb.go).
+#   samples/**         -> library    Standalone sample apps, each its own
+#                                     module (samples/*/go.mod is gitignored).
+#                                     Not production code shipped with the worker.
+#
+# NOT classified — analyzed as production code:
+#   .                  root module (Go worker entry points, config, etc.).
+#   worker/            core worker runtime (excluding worker/proto/**).
+#   sdk/, sdk/bindings core SDK surface consumed by function authors.
+#   middleware/otelfunc  OpenTelemetry middleware submodule.
+#   otelcollector/     OTel collector submodule.
+#   triggers/blob/     Blob trigger submodule.
+#   proxy/             Proxy component.
+# --------------------------------------------------------------------
+
+path_classifiers:
+  test:
+    - "**/*_test.go"
+    - tests/**
+  generated:
+    - worker/proto/**
+  library:
+    - samples/**

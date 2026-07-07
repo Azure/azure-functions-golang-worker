@@ -1,7 +1,23 @@
-# ---------------------------------------------------------------
-# Job Template: Build
-# Compiles the Go worker and runs go vet for static analysis.
-# ---------------------------------------------------------------
+# ============================================================
+# Build job for the Go worker.
+#
+# What this job does:
+#   1. Installs Go and sets up a workspace so all modules build together.
+#   2. Runs `go vet` for basic static analysis.
+#   3. Builds everything (root + submodules + samples) in one script.
+#
+# About step ordering:
+#   The 1ES pipeline template adds a CodeQL setup step at the start
+#   of the job automatically. We would prefer to install Go and set
+#   up the workspace before CodeQL runs, but the way to do that
+#   (templateContext.preSteps) is not honored by our current 1ES
+#   template version.
+#
+#   As a workaround, Go setup runs as the first normal steps below.
+#   The agent already has an older Go on PATH, so CodeQL still has
+#   something to watch, and later `go` commands should still be
+#   captured.
+# ============================================================
 
 parameters:
   - name: PoolName
@@ -23,52 +39,56 @@ jobs:
       inputs:
         version: '1.25'
 
-    - script: go version
-      displayName: 'Print Go version'
-
-    # Initialize a go workspace so submodules resolve the root module locally
-    # instead of from the proxy. This is required because:
-    #   * submodule go.mod files reference an unreleased root version
-    #   * the currently published root (v0.6.0-preview) still contains packages
-    #     that have since been split into submodules, causing ambiguity
-    # The genproto replace pins a newer revision compatible with the OTel
-    # collector dependency tree.
+    # Tell Go to treat this checkout as one big project so all our
+    # modules can build together.
+    #
+    # Why the two `replace` lines matter:
+    #   * First replace: submodules pin the published root module
+    #     (github.com/azure/azure-functions-golang-worker) at some
+    #     version. Without a replace, Go downloads that published
+    #     copy, which still contains files now moved into submodules,
+    #     and `go vet`/`go build` fail with "ambiguous import".
+    #     We read the version from a submodule's go.mod at runtime
+    #     so releases don't require CI edits. A version-scoped
+    #     replace is used because `.` is already in the workspace
+    #     `use` list, and Go rejects an all-versions replace of a
+    #     module already in use.
+    #   * Second replace: swaps in a newer genproto version that plays
+    #     nicely with the OpenTelemetry collector deps.
     - script: |
         go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
+        ROOT_VER=$(awk '$1=="require" && $2=="github.com/azure/azure-functions-golang-worker" {print $3}' middleware/otelfunc/go.mod)
+        echo "Detected root module version: ${ROOT_VER}"
+        go work edit -replace github.com/azure/azure-functions-golang-worker@${ROOT_VER}=.
         go work edit -replace google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
         cat go.work
       displayName: 'Initialize go workspace'
 
+    - script: go version
+      displayName: 'Print Go version'
+
     - script: go mod download
       displayName: 'Download dependencies (root)'
 
+    # Static checks for each module.
     - script: |
         go vet $(go list ./... | grep -v /samples/)
-      displayName: 'Run go vet (root)'
+      displayName: 'Vet root module'
 
     - script: |
-        go build $(go list ./... | grep -v /samples/)
-      displayName: 'Run go build (root)'
+        cd middleware/otelfunc && go vet ./...
+      displayName: 'Vet middleware/otelfunc'
 
     - script: |
-        cd middleware/otelfunc && go vet ./... && go build ./...
-      displayName: 'Build middleware/otelfunc'
+        cd otelcollector && go vet ./...
+      displayName: 'Vet otelcollector'
 
     - script: |
-        cd otelcollector && go vet ./... && go build ./...
-      displayName: 'Build otelcollector'
+        cd triggers/blob && go vet ./...
+      displayName: 'Vet triggers/blob'
 
+    # Build every module in one script so CodeQL sees them all.
     - script: |
-        cd triggers/blob && go vet ./... && go build ./...
-      displayName: 'Build triggers/blob'
-
-    - script: |
-        failed=0
-        for d in samples/*/; do
-          if [ -f "$d/main.go" ]; then
-            echo "Building $d ..."
-            (cd "$d" && go build .) || { echo "FAILED: $d"; failed=1; }
-          fi
-        done
-        exit $failed
-      displayName: 'Build samples'
+        chmod +x eng/ci/scripts/codeql-build.sh
+        eng/ci/scripts/codeql-build.sh
+      displayName: 'Build all Go modules'
