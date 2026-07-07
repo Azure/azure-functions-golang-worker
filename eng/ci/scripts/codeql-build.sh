@@ -25,6 +25,10 @@ echo "==> Initializing go workspace"
 # the genproto replace.
 if [[ ! -f go.work ]]; then
   go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
+  # Force Go to use the local checkout as the root module instead of
+  # downloading an older published copy. See build.yml for the full
+  # explanation.
+  go work edit -replace github.com/azure/azure-functions-golang-worker=.
   go work edit -replace \
     google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
 fi

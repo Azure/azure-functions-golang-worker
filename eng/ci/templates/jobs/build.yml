@@ -59,6 +59,12 @@ jobs:
       #     works with the OpenTelemetry collector dependencies.
       - script: |
           go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
+          # Force Go to always use THIS checkout as the root module,
+          # instead of downloading an older published copy from the
+          # module registry. Without this line, `go vet` and `go build`
+          # get confused because there are two copies of the same code:
+          # one downloaded, one local.
+          go work edit -replace github.com/azure/azure-functions-golang-worker=.
           go work edit -replace google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
           cat go.work
         displayName: 'Initialize go workspace (before CodeQL)'
