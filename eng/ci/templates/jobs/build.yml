@@ -1,7 +1,27 @@
-# ---------------------------------------------------------------
-# Job Template: Build
-# Compiles the Go worker and runs go vet for static analysis.
-# ---------------------------------------------------------------
+# ============================================================
+# Build job for the Go worker.
+#
+# What this job does:
+#   1. Installs Go and sets up a workspace so all modules build together.
+#   2. Runs `go vet` for basic static analysis.
+#   3. Builds everything (root + submodules + samples) in one script.
+#   4. Confirms CodeQL actually captured the Go source.
+#
+# Why the order matters:
+#   The 1ES pipeline template automatically inserts a CodeQL Init step
+#   at the very start of the job. CodeQL needs Go to already be installed
+#   and the multi-module workspace to already exist when it starts —
+#   otherwise it initializes with the wrong view of the repo and ends
+#   up capturing zero Go code.
+#
+#   To make sure Go and go.work are ready before CodeQL Init runs,
+#   we put those setup steps under `templateContext.preSteps`.
+#   Anything under `preSteps` runs before the CodeQL Init step.
+#
+#   The main build then runs from a single script (codeql-build.sh)
+#   between CodeQL Init and CodeQL Finalize. Doing every module's
+#   build in one place is what lets CodeQL see all of them.
+# ============================================================
 
 parameters:
   - name: PoolName
@@ -17,58 +37,78 @@ jobs:
       image: 1es-ubuntu-22.04
       os: linux
 
-    steps:
-    - task: GoTool@0
-      displayName: 'Install Go 1.25'
-      inputs:
-        version: '1.25'
+    templateContext:
+      # preSteps run BEFORE the CodeQL Init step is injected.
+      # We use this to make sure Go + go.work exist when CodeQL starts.
+      preSteps:
+      - task: GoTool@0
+        displayName: 'Install Go 1.25 (before CodeQL)'
+        inputs:
+          version: '1.25'
 
+      # Set up a Go workspace so submodules point at the local root
+      # module instead of downloading a stale published version.
+      #
+      # Why we need this:
+      #   * The submodules' go.mod files reference a not-yet-released
+      #     version of the root module.
+      #   * The last published root (v0.6.0-preview) still bundles
+      #     packages that have since been moved into submodules, so
+      #     the go tool can't tell which copy to use.
+      #   * The `replace` for genproto pins a newer revision that
+      #     works with the OpenTelemetry collector dependencies.
+      - script: |
+          go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
+          go work edit -replace google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
+          cat go.work
+        displayName: 'Initialize go workspace (before CodeQL)'
+
+      # postSteps run AFTER CodeQL Finalize has produced its database.
+      # If Finalize captured essentially no Go source, fail the job so
+      # we notice — otherwise the pipeline stays green while doing no
+      # real analysis.
+      postSteps:
+      - script: |
+          src_zip="$AGENT_TEMPDIRECTORY/codeql3000/d/go/src.zip"
+          if [[ ! -f "$src_zip" ]]; then
+            echo "CodeQL Go source archive not found at $src_zip"
+            exit 1
+          fi
+          size=$(stat -c%s "$src_zip")
+          echo "CodeQL Go src.zip size: ${size} bytes"
+          if (( size < 1024 )); then
+            echo "ERROR: CodeQL captured almost no Go source (${size} B)."
+            echo "The build ran but CodeQL didn't see it. Check the CodeQL Finalize logs."
+            exit 1
+          fi
+        displayName: 'Check CodeQL captured Go source'
+
+    steps:
     - script: go version
       displayName: 'Print Go version'
-
-    # Initialize a go workspace so submodules resolve the root module locally
-    # instead of from the proxy. This is required because:
-    #   * submodule go.mod files reference an unreleased root version
-    #   * the currently published root (v0.6.0-preview) still contains packages
-    #     that have since been split into submodules, causing ambiguity
-    # The genproto replace pins a newer revision compatible with the OTel
-    # collector dependency tree.
-    - script: |
-        go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
-        go work edit -replace google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
-        cat go.work
-      displayName: 'Initialize go workspace'
 
     - script: go mod download
       displayName: 'Download dependencies (root)'
 
+    # Static analysis for each module.
     - script: |
         go vet $(go list ./... | grep -v /samples/)
-      displayName: 'Run go vet (root)'
+      displayName: 'Vet root module'
 
     - script: |
-        go build $(go list ./... | grep -v /samples/)
-      displayName: 'Run go build (root)'
+        cd middleware/otelfunc && go vet ./...
+      displayName: 'Vet middleware/otelfunc'
 
     - script: |
-        cd middleware/otelfunc && go vet ./... && go build ./...
-      displayName: 'Build middleware/otelfunc'
+        cd otelcollector && go vet ./...
+      displayName: 'Vet otelcollector'
 
     - script: |
-        cd otelcollector && go vet ./... && go build ./...
-      displayName: 'Build otelcollector'
+        cd triggers/blob && go vet ./...
+      displayName: 'Vet triggers/blob'
 
+    # Build every module in one script so CodeQL sees them all.
     - script: |
-        cd triggers/blob && go vet ./... && go build ./...
-      displayName: 'Build triggers/blob'
-
-    - script: |
-        failed=0
-        for d in samples/*/; do
-          if [ -f "$d/main.go" ]; then
-            echo "Building $d ..."
-            (cd "$d" && go build .) || { echo "FAILED: $d"; failed=1; }
-          fi
-        done
-        exit $failed
-      displayName: 'Build samples'
+        chmod +x eng/ci/scripts/codeql-build.sh
+        eng/ci/scripts/codeql-build.sh
+      displayName: 'Build all Go modules'

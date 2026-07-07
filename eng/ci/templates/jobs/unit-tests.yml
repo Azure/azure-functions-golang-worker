@@ -1,7 +1,25 @@
-# ---------------------------------------------------------------
-# Job Template: Unit Tests
-# Runs Go unit tests and publishes results.
-# ---------------------------------------------------------------
+# ============================================================
+# Unit Tests job for the Go worker.
+#
+# What this job does:
+#   1. Installs Go and sets up a workspace (shared with the Build job).
+#   2. Runs golangci-lint (informational — does not fail the build).
+#   3. Runs `go test` for the root and each submodule.
+#   4. Publishes JUnit test results and Cobertura coverage.
+#
+# CodeQL note:
+#   We turn CodeQL off for this job (via templateContext.sdl.codeql).
+#   CodeQL only needs to run once per pipeline, and it already runs
+#   on the Build job where a full traced build produces a real
+#   database. Running it here would just produce another empty
+#   database because `go test` alone doesn't feed the extractor
+#   the same way `go build` does.
+# ============================================================
+
+parameters:
+  - name: PoolName
+    type: string
+    default: 1es-pool-azfunc-public
 
 jobs:
   - job: UnitTests
@@ -12,13 +30,22 @@ jobs:
       image: 1es-ubuntu-22.04
       os: linux
 
+    templateContext:
+      # Turn off the auto-injected CodeQL tasks for this job.
+      # See the "CodeQL note" at the top of this file.
+      sdl:
+        codeql:
+          compiled:
+            enabled: false
+
     steps:
     - task: GoTool@0
       displayName: 'Install Go 1.25'
       inputs:
         version: '1.25'
 
-    # See eng/ci/templates/jobs/build.yml for rationale.
+    # Same workspace setup as the Build job. See eng/ci/templates/jobs/build.yml
+    # for why this workspace + genproto replace is needed.
     - script: |
         go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
         go work edit -replace google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
