@@ -8,3 +8,6 @@ pipelines:
           lastModifiedDate: 2026-03-11
         armory:
           lastModifiedDate: 2026-03-11
+      binary:
+        binskim:
+          lastModifiedDate: 2026-07-08
