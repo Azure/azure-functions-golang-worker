@@ -33,6 +33,19 @@ jobs:
       image: 1es-ubuntu-22.04
       os: linux
 
+    templateContext:
+      # Diagnostic: publish CodeQL extractor logs so we can debug
+      # when the database ends up empty. Uploaded via 1ES PT outputs
+      # (raw PublishPipelineArtifact@1 is blocked). Safe to remove
+      # once CodeQL is stable.
+      outputs:
+        - output: pipelineArtifact
+          displayName: 'Publish CodeQL logs (diagnostic)'
+          condition: always()
+          targetPath: '/mnt/vss/_work/_temp/codeql3000/d/log'
+          artifactName: 'codeql-logs-$(System.JobAttempt)'
+          sbomEnabled: false
+
     steps:
     - task: GoTool@0
       displayName: 'Install Go 1.25'
@@ -92,12 +105,3 @@ jobs:
         chmod +x eng/ci/scripts/codeql-build.sh
         eng/ci/scripts/codeql-build.sh
       displayName: 'Build all Go modules'
-
-    # Diagnostic: publish CodeQL extractor logs so we can debug when
-    # the database ends up empty. Safe to remove once CodeQL is stable.
-    - task: PublishPipelineArtifact@1
-      condition: always()
-      displayName: 'Publish CodeQL logs (diagnostic)'
-      inputs:
-        targetPath: '/mnt/vss/_work/_temp/codeql3000/d/log'
-        artifactName: 'codeql-logs-$(System.JobAttempt)'
