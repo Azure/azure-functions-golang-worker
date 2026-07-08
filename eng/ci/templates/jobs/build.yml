@@ -92,3 +92,12 @@ jobs:
         chmod +x eng/ci/scripts/codeql-build.sh
         eng/ci/scripts/codeql-build.sh
       displayName: 'Build all Go modules'
+
+    # Diagnostic: publish CodeQL extractor logs so we can debug when
+    # the database ends up empty. Safe to remove once CodeQL is stable.
+    - task: PublishPipelineArtifact@1
+      condition: always()
+      displayName: 'Publish CodeQL logs (diagnostic)'
+      inputs:
+        targetPath: '/mnt/vss/_work/_temp/codeql3000/d/log'
+        artifactName: 'codeql-logs-$(System.JobAttempt)'
