@@ -33,6 +33,21 @@ jobs:
       image: 1es-ubuntu-22.04
       os: linux
 
+    templateContext:
+      # Diagnostic: publish CodeQL extractor logs so we can debug
+      # when the database ends up empty. Uploaded via 1ES PT outputs
+      # (raw PublishPipelineArtifact@1 is blocked). The staging step
+      # below copies the logs into a stable path first, since
+      # /mnt/vss/_work/_temp/ may be cleaned up before outputs run.
+      # Safe to remove once CodeQL is stable.
+      outputs:
+        - output: pipelineArtifact
+          displayName: 'Publish CodeQL logs (diagnostic)'
+          condition: always()
+          targetPath: '$(Build.ArtifactStagingDirectory)/codeql-logs'
+          artifactName: 'codeql-logs-$(System.JobAttempt)'
+          sbomEnabled: false
+
     steps:
     - task: GoTool@0
       displayName: 'Install Go 1.25'
@@ -93,11 +108,23 @@ jobs:
         eng/ci/scripts/codeql-build.sh
       displayName: 'Build all Go modules'
 
-    # Diagnostic: publish CodeQL extractor logs so we can debug when
-    # the database ends up empty. Safe to remove once CodeQL is stable.
-    - task: PublishPipelineArtifact@1
+    # Stage CodeQL diagnostic logs into the artifact staging dir so
+    # the templateContext output above can publish them. Runs before
+    # Post-Job cleanup wipes /mnt/vss/_work/_temp. Tolerant of the
+    # log dir not existing so we still get a (possibly empty) artifact.
+    - script: |
+        set -x
+        mkdir -p "$(Build.ArtifactStagingDirectory)/codeql-logs"
+        echo "=== agent temp layout ==="
+        ls -la /mnt/vss/_work/_temp/ || true
+        ls -la /mnt/vss/_work/_temp/codeql3000/ || true
+        ls -la /mnt/vss/_work/_temp/codeql3000/d/ || true
+        if [ -d /mnt/vss/_work/_temp/codeql3000/d/log ]; then
+          cp -r /mnt/vss/_work/_temp/codeql3000/d/log/. \
+                "$(Build.ArtifactStagingDirectory)/codeql-logs/"
+        else
+          echo "CodeQL log dir not found." \
+            > "$(Build.ArtifactStagingDirectory)/codeql-logs/README.txt"
+        fi
+      displayName: 'Stage CodeQL logs (diagnostic)'
       condition: always()
-      displayName: 'Publish CodeQL logs (diagnostic)'
-      inputs:
-        targetPath: '/mnt/vss/_work/_temp/codeql3000/d/log'
-        artifactName: 'codeql-logs-$(System.JobAttempt)'
