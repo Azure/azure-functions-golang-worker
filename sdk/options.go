@@ -1,6 +1,11 @@
 package sdk
 
-import "github.com/azure/azure-functions-golang-worker/sdk/bindings"
+import (
+	"strings"
+	"time"
+
+	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
+)
 
 // --- HTTP-specific options ---
 
@@ -44,22 +49,142 @@ func WithSchedule(schedule string) Option {
 
 // --- CosmosDB-specific options ---
 
-// WithDatabase sets the CosmosDB database name.
-func WithDatabase(dbName string) Option {
+// withCosmos applies f to the trigger's CosmosDBBinding when one is present.
+// Options for other trigger types are silently no-ops on non-Cosmos triggers.
+func withCosmos(f func(*bindings.CosmosDBBinding)) Option {
 	return func(rf *RegisteredFunction) {
 		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.DatabaseName = dbName
+			f(b.CosmosDBBinding)
 		}
 	}
 }
 
+// WithDatabase sets the CosmosDB database name.
+func WithDatabase(dbName string) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.DatabaseName = dbName })
+}
+
 // WithContainer sets the CosmosDB container name.
 func WithContainer(containerName string) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.ContainerName = containerName
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.ContainerName = containerName })
+}
+
+// WithCreateLeaseContainerIfNotExists controls whether the CosmosDB change-feed
+// extension automatically creates the lease container when it does not already
+// exist. When false (default) the lease container must be provisioned out of
+// band before the function starts.
+func WithCreateLeaseContainerIfNotExists(enabled bool) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.CreateLeaseContainerIfNotExists = enabled })
+}
+
+// WithLeaseContainer overrides the name of the container the CosmosDB
+// change-feed extension uses to store leases. Defaults to "leases".
+func WithLeaseContainer(name string) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseContainerName = name })
+}
+
+// WithLeaseDatabase overrides the name of the database that contains the lease
+// container. Defaults to the monitored database.
+func WithLeaseDatabase(name string) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseDatabaseName = name })
+}
+
+// WithLeaseConnection sets the app-setting name that holds the connection
+// string for the account hosting the lease container. Defaults to the
+// monitored account's connection.
+func WithLeaseConnection(connection string) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseConnection = connection })
+}
+
+// WithLeaseContainerPrefix sets a prefix used when multiple triggers share the
+// same lease container. Required to avoid collisions when two functions
+// monitor different containers but reuse the same leases container.
+func WithLeaseContainerPrefix(prefix string) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseContainerPrefix = prefix })
+}
+
+// WithLeaseContainerThroughput sets the RU/s provisioned for the lease
+// container when it is auto-created by [WithCreateLeaseContainerIfNotExists].
+// Ignored if the container already exists.
+//
+// Note: the option is singular (LeaseContainer) but the underlying host
+// binding key is plural (leasesContainerThroughput); this mirrors the
+// property name the Functions host expects.
+func WithLeaseContainerThroughput(ruPerSecond int) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeasesContainerThroughput = ruPerSecond })
+}
+
+// WithFeedPollDelay sets the delay between polls of a partition for new
+// changes on the feed after all current changes are drained. Truncated to
+// millisecond precision. Default is 5s.
+//
+// Positive durations below 1ms truncate to 0 and are omitted from the
+// serialized binding, so the host default applies. Pass at least 1ms if you
+// intend to override the default.
+func WithFeedPollDelay(d time.Duration) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.FeedPollDelay = int(d.Milliseconds()) })
+}
+
+// WithLeaseRenewInterval sets the renew interval for leases the trigger
+// currently holds. Truncated to millisecond precision. Default is 17s.
+// Positive durations below 1ms truncate to 0 and fall back to the host
+// default.
+func WithLeaseRenewInterval(d time.Duration) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseRenewInterval = int(d.Milliseconds()) })
+}
+
+// WithLeaseAcquireInterval sets how often the trigger checks whether
+// partitions are distributed evenly across known host instances. Truncated to
+// millisecond precision. Default is 13s. Positive durations below 1ms
+// truncate to 0 and fall back to the host default.
+func WithLeaseAcquireInterval(d time.Duration) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseAcquireInterval = int(d.Milliseconds()) })
+}
+
+// WithLeaseExpirationInterval sets how long a lease is held on a partition
+// before it expires and can be picked up by another instance. Truncated to
+// millisecond precision. Default is 60s. Positive durations below 1ms
+// truncate to 0 and fall back to the host default.
+func WithLeaseExpirationInterval(d time.Duration) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.LeaseExpirationInterval = int(d.Milliseconds()) })
+}
+
+// WithMaxItemsPerInvocation caps the number of documents delivered to a
+// single invocation of the trigger.
+func WithMaxItemsPerInvocation(n int) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.MaxItemsPerInvocation = n })
+}
+
+// WithStartFromBeginning controls whether the trigger starts reading the
+// change feed from the beginning of the container's history rather than
+// from the time the function first runs. Mutually exclusive with
+// [WithStartFromTime]; if both are supplied, the extension prefers
+// StartFromTime.
+func WithStartFromBeginning(enabled bool) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.StartFromBeginning = enabled })
+}
+
+// WithStartFromTime sets the point in time from which the change-feed read
+// operation begins. The recommended format is ISO 8601 with the UTC
+// designator, e.g. "2021-02-16T14:19:29Z".
+func WithStartFromTime(iso8601 string) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.StartFromTime = iso8601 })
+}
+
+// WithPreferredLocations sets preferred regions for a geo-replicated CosmosDB
+// account. Values are joined with commas as required by the binding format,
+// e.g. WithPreferredLocations("East US", "North Europe"). Empty strings are
+// filtered out.
+func WithPreferredLocations(locations ...string) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) {
+		filtered := locations[:0:0]
+		for _, l := range locations {
+			if l != "" {
+				filtered = append(filtered, l)
+			}
 		}
-	}
+		c.PreferredLocations = strings.Join(filtered, ",")
+	})
 }
 
 // --- EventHub-specific options ---

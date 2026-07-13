@@ -179,6 +179,179 @@ func TestCosmosDB_Options(t *testing.T) {
 	})
 }
 
+func TestCosmosDB_WithCreateLeaseContainerIfNotExists(t *testing.T) {
+	app := FunctionApp()
+	handler := CosmosDBHandler(func(ctx context.Context, docs []bindings.CosmosDocument) error {
+		return nil
+	})
+
+	app.CosmosDB("cosmosAutoLease", handler,
+		WithDatabase("mydb"),
+		WithContainer("mycontainer"),
+		WithConnection("CosmosDBConnection"),
+		WithCreateLeaseContainerIfNotExists(true),
+	)
+
+	found := false
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		binding := rf.RawBindings[0]
+		if binding.CosmosDBBinding == nil {
+			t.Fatal("expected CosmosDBBinding")
+		}
+		if !binding.CosmosDBBinding.CreateLeaseContainerIfNotExists {
+			t.Error("expected CreateLeaseContainerIfNotExists=true after applying option")
+		}
+		found = true
+		return true
+	})
+	if !found {
+		t.Fatal("expected at least one registered function")
+	}
+}
+
+func TestWithCreateLeaseContainerIfNotExists_NonCosmosTriggerIsNoop(t *testing.T) {
+	app := FunctionApp()
+	handler := HTTPHandler(func(w http.ResponseWriter, r *http.Request) {})
+
+	// Applying a Cosmos-only option to an HTTP trigger must not panic and
+	// must not mutate the HTTP binding.
+	app.HTTP("hello", handler, WithCreateLeaseContainerIfNotExists(true))
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		if rf.RawBindings[0].CosmosDBBinding != nil {
+			t.Error("expected no CosmosDBBinding on an HTTP trigger")
+		}
+		return true
+	})
+}
+
+func TestCosmosDB_AllOptions(t *testing.T) {
+	app := FunctionApp()
+	handler := CosmosDBHandler(func(ctx context.Context, docs []bindings.CosmosDocument) error {
+		return nil
+	})
+
+	app.CosmosDB("cosmosFull", handler,
+		WithDatabase("mydb"),
+		WithContainer("mycontainer"),
+		WithConnection("CosmosDBConnection"),
+		WithLeaseContainer("myleases"),
+		WithLeaseDatabase("leasesdb"),
+		WithLeaseConnection("LeaseConnection"),
+		WithLeaseContainerPrefix("triggerA_"),
+		WithCreateLeaseContainerIfNotExists(true),
+		WithLeaseContainerThroughput(1000),
+		WithFeedPollDelay(2*time.Second),
+		WithLeaseRenewInterval(20*time.Second),
+		WithLeaseAcquireInterval(15*time.Second),
+		WithLeaseExpirationInterval(90*time.Second),
+		WithMaxItemsPerInvocation(50),
+		WithStartFromBeginning(true),
+		WithStartFromTime("2021-02-16T14:19:29Z"),
+		WithPreferredLocations("East US", "North Europe"),
+	)
+
+	found := false
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		b := rf.RawBindings[0].CosmosDBBinding
+		if b == nil {
+			t.Fatal("expected CosmosDBBinding")
+		}
+		checks := []struct {
+			name string
+			got  any
+			want any
+		}{
+			{"LeaseContainerName", b.LeaseContainerName, "myleases"},
+			{"LeaseDatabaseName", b.LeaseDatabaseName, "leasesdb"},
+			{"LeaseConnection", b.LeaseConnection, "LeaseConnection"},
+			{"LeaseContainerPrefix", b.LeaseContainerPrefix, "triggerA_"},
+			{"CreateLeaseContainerIfNotExists", b.CreateLeaseContainerIfNotExists, true},
+			{"LeasesContainerThroughput", b.LeasesContainerThroughput, 1000},
+			{"FeedPollDelay", b.FeedPollDelay, 2000},
+			{"LeaseRenewInterval", b.LeaseRenewInterval, 20000},
+			{"LeaseAcquireInterval", b.LeaseAcquireInterval, 15000},
+			{"LeaseExpirationInterval", b.LeaseExpirationInterval, 90000},
+			{"MaxItemsPerInvocation", b.MaxItemsPerInvocation, 50},
+			{"StartFromBeginning", b.StartFromBeginning, true},
+			{"StartFromTime", b.StartFromTime, "2021-02-16T14:19:29Z"},
+			{"PreferredLocations", b.PreferredLocations, "East US,North Europe"},
+		}
+		for _, c := range checks {
+			if c.got != c.want {
+				t.Errorf("%s: got %v, want %v", c.name, c.got, c.want)
+			}
+		}
+		found = true
+		return true
+	})
+	if !found {
+		t.Fatal("expected at least one registered function")
+	}
+}
+
+func TestCosmosDB_DurationOptions_TruncateToMilliseconds(t *testing.T) {
+	app := FunctionApp()
+	handler := CosmosDBHandler(func(ctx context.Context, docs []bindings.CosmosDocument) error {
+		return nil
+	})
+
+	// 1500 microseconds truncates to 1 ms; 999 nanoseconds truncates to 0 ms.
+	app.CosmosDB("cosmosTrunc", handler,
+		WithFeedPollDelay(1500*time.Microsecond),
+		WithLeaseRenewInterval(999*time.Nanosecond),
+	)
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		b := rf.RawBindings[0].CosmosDBBinding
+		if b == nil {
+			t.Fatal("expected CosmosDBBinding")
+		}
+		if b.FeedPollDelay != 1 {
+			t.Errorf("FeedPollDelay: expected 1 ms, got %d", b.FeedPollDelay)
+		}
+		if b.LeaseRenewInterval != 0 {
+			t.Errorf("LeaseRenewInterval: expected 0 ms, got %d", b.LeaseRenewInterval)
+		}
+		return true
+	})
+}
+
+func TestCosmosOptions_NonCosmosTriggerIsNoop(t *testing.T) {
+	app := FunctionApp()
+	handler := HTTPHandler(func(w http.ResponseWriter, r *http.Request) {})
+
+	// Applying every new Cosmos-only option to an HTTP trigger must not
+	// panic and must not attach a CosmosDBBinding.
+	app.HTTP("hello", handler,
+		WithLeaseContainer("myleases"),
+		WithLeaseDatabase("leasesdb"),
+		WithLeaseConnection("LeaseConnection"),
+		WithLeaseContainerPrefix("triggerA_"),
+		WithLeaseContainerThroughput(1000),
+		WithFeedPollDelay(2*time.Second),
+		WithLeaseRenewInterval(20*time.Second),
+		WithLeaseAcquireInterval(15*time.Second),
+		WithLeaseExpirationInterval(90*time.Second),
+		WithMaxItemsPerInvocation(50),
+		WithStartFromBeginning(true),
+		WithStartFromTime("2021-02-16T14:19:29Z"),
+		WithPreferredLocations("East US"),
+	)
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		rf := value.(*RegisteredFunction)
+		if rf.RawBindings[0].CosmosDBBinding != nil {
+			t.Error("expected no CosmosDBBinding on an HTTP trigger")
+		}
+		return true
+	})
+}
+
 // --- EventGrid tests ---
 
 func TestEventGrid_BasicRegistration(t *testing.T) {

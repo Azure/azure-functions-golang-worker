@@ -53,3 +53,18 @@ func start --no-build
 ## Test
 
 Create or update a document in the `Items` container of the `ToDoList` database. The function will trigger and log the document ID and data.
+
+## Auto-provision the lease container
+
+By default the lease container must exist before the function starts. To have the CosmosDB extension create it on first run, add `sdk.WithCreateLeaseContainerIfNotExists(true)`:
+
+```go
+app.CosmosDB("docs", CosmosDBTriggerHandler,
+    sdk.WithDatabase("ToDoList"),
+    sdk.WithContainer("Items"),
+    sdk.WithConnection("CosmosDBConnection"),
+    sdk.WithCreateLeaseContainerIfNotExists(true),
+)
+```
+
+See [`sdk/options.go`](../../sdk/options.go) for the full set of Cosmos change-feed knobs (`WithLeaseContainer`, `WithLeaseContainerThroughput`, `WithFeedPollDelay`, `WithStartFromTime`, etc.).
