@@ -49,24 +49,6 @@ func WithSchedule(schedule string) Option {
 
 // --- CosmosDB-specific options ---
 
-// WithDatabase sets the CosmosDB database name.
-func WithDatabase(dbName string) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.DatabaseName = dbName
-		}
-	}
-}
-
-// WithContainer sets the CosmosDB container name.
-func WithContainer(containerName string) Option {
-	return func(rf *RegisteredFunction) {
-		if b := rf.triggerBinding(); b != nil && b.CosmosDBBinding != nil {
-			b.CosmosDBBinding.ContainerName = containerName
-		}
-	}
-}
-
 // withCosmos applies f to the trigger's CosmosDBBinding when one is present.
 // Options for other trigger types are silently no-ops on non-Cosmos triggers.
 func withCosmos(f func(*bindings.CosmosDBBinding)) Option {
@@ -75,6 +57,16 @@ func withCosmos(f func(*bindings.CosmosDBBinding)) Option {
 			f(b.CosmosDBBinding)
 		}
 	}
+}
+
+// WithDatabase sets the CosmosDB database name.
+func WithDatabase(dbName string) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.DatabaseName = dbName })
+}
+
+// WithContainer sets the CosmosDB container name.
+func WithContainer(containerName string) Option {
+	return withCosmos(func(c *bindings.CosmosDBBinding) { c.ContainerName = containerName })
 }
 
 // WithCreateLeaseContainerIfNotExists controls whether the CosmosDB change-feed
@@ -181,22 +173,18 @@ func WithStartFromTime(iso8601 string) Option {
 
 // WithPreferredLocations sets preferred regions for a geo-replicated CosmosDB
 // account. Values are joined with commas as required by the binding format,
-// e.g. WithPreferredLocations("East US", "North Europe").
-//
-// Empty strings are not filtered: WithPreferredLocations("East US", "")
-// serializes as "East US,", which the host may reject. Pass only non-empty
-// region names.
+// e.g. WithPreferredLocations("East US", "North Europe"). Empty strings are
+// filtered out.
 func WithPreferredLocations(locations ...string) Option {
-	return withCosmos(func(c *bindings.CosmosDBBinding) { c.PreferredLocations = strings.Join(locations, ",") })
-}
-
-// WithChangeFeedMode selects the change-feed mode the trigger reads from.
-// Defaults to [bindings.CosmosChangeFeedModeLatestVersion]. Use
-// [bindings.CosmosChangeFeedModeAllVersionsAndDeletes] to receive every
-// intermediate mutation and delete event (requires the account feature to be
-// enabled).
-func WithChangeFeedMode(mode bindings.CosmosChangeFeedMode) Option {
-	return withCosmos(func(c *bindings.CosmosDBBinding) { c.ChangeFeedMode = mode })
+	return withCosmos(func(c *bindings.CosmosDBBinding) {
+		filtered := locations[:0:0]
+		for _, l := range locations {
+			if l != "" {
+				filtered = append(filtered, l)
+			}
+		}
+		c.PreferredLocations = strings.Join(filtered, ",")
+	})
 }
 
 // --- EventHub-specific options ---

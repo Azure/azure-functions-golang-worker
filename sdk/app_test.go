@@ -251,7 +251,6 @@ func TestCosmosDB_AllOptions(t *testing.T) {
 		WithStartFromBeginning(true),
 		WithStartFromTime("2021-02-16T14:19:29Z"),
 		WithPreferredLocations("East US", "North Europe"),
-		WithChangeFeedMode(bindings.CosmosChangeFeedModeAllVersionsAndDeletes),
 	)
 
 	found := false
@@ -280,7 +279,6 @@ func TestCosmosDB_AllOptions(t *testing.T) {
 			{"StartFromBeginning", b.StartFromBeginning, true},
 			{"StartFromTime", b.StartFromTime, "2021-02-16T14:19:29Z"},
 			{"PreferredLocations", b.PreferredLocations, "East US,North Europe"},
-			{"ChangeFeedMode", b.ChangeFeedMode, bindings.CosmosChangeFeedModeAllVersionsAndDeletes},
 		}
 		for _, c := range checks {
 			if c.got != c.want {
@@ -343,7 +341,6 @@ func TestCosmosOptions_NonCosmosTriggerIsNoop(t *testing.T) {
 		WithStartFromBeginning(true),
 		WithStartFromTime("2021-02-16T14:19:29Z"),
 		WithPreferredLocations("East US"),
-		WithChangeFeedMode(bindings.CosmosChangeFeedModeLatestVersion),
 	)
 
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {

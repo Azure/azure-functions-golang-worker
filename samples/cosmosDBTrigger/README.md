@@ -67,4 +67,4 @@ app.CosmosDB("docs", CosmosDBTriggerHandler,
 )
 ```
 
-See [`sdk/options.go`](../../sdk/options.go) for the full set of Cosmos change-feed knobs (`WithLeaseContainer`, `WithLeaseContainerThroughput`, `WithFeedPollDelay`, `WithStartFromTime`, `WithChangeFeedMode`, etc.).
+See [`sdk/options.go`](../../sdk/options.go) for the full set of Cosmos change-feed knobs (`WithLeaseContainer`, `WithLeaseContainerThroughput`, `WithFeedPollDelay`, `WithStartFromTime`, etc.).

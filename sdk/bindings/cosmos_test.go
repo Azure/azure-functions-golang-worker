@@ -145,7 +145,6 @@ func TestCosmosDBTrigger_ToBinding_PropagatesAllFields(t *testing.T) {
 		StartFromBeginning:              true,
 		StartFromTime:                   "2021-02-16T14:19:29Z",
 		PreferredLocations:              "East US,North Europe",
-		ChangeFeedMode:                  CosmosChangeFeedModeAllVersionsAndDeletes,
 	}
 	b := trigger.ToBinding().CosmosDBBinding
 	if b == nil {
@@ -169,7 +168,6 @@ func TestCosmosDBTrigger_ToBinding_PropagatesAllFields(t *testing.T) {
 		{"StartFromBeginning", b.StartFromBeginning, true},
 		{"StartFromTime", b.StartFromTime, "2021-02-16T14:19:29Z"},
 		{"PreferredLocations", b.PreferredLocations, "East US,North Europe"},
-		{"ChangeFeedMode", b.ChangeFeedMode, CosmosChangeFeedModeAllVersionsAndDeletes},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -208,7 +206,6 @@ func TestCosmosDBBinding_JSON_OmitsOptionalFieldsWhenZero(t *testing.T) {
 		"startFromBeginning",
 		"startFromTime",
 		"preferredLocations",
-		"changeFeedMode",
 	}
 	for _, key := range omitted {
 		if strings.Contains(string(data), key) {
@@ -239,7 +236,6 @@ func TestCosmosDBBinding_JSON_EmitsOptionalFieldsWhenSet(t *testing.T) {
 		StartFromBeginning:              true,
 		StartFromTime:                   "2021-02-16T14:19:29Z",
 		PreferredLocations:              "East US,North Europe",
-		ChangeFeedMode:                  CosmosChangeFeedModeAllVersionsAndDeletes,
 	}
 	data, err := json.Marshal(trigger.ToBinding())
 	if err != nil {
@@ -264,7 +260,6 @@ func TestCosmosDBBinding_JSON_EmitsOptionalFieldsWhenSet(t *testing.T) {
 		"startFromBeginning":              true,
 		"startFromTime":                   "2021-02-16T14:19:29Z",
 		"preferredLocations":              "East US,North Europe",
-		"changeFeedMode":                  "AllVersionsAndDeletes",
 	}
 	for key, w := range want {
 		got, ok := decoded[key]
