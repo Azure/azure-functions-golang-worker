@@ -27,6 +27,9 @@ parameters:
 jobs:
   - job: Build
     displayName: 'Build Go Worker'
+    # Give CodeQL 3000 Finalize enough time to zip + upload the
+    # database/log artifacts if Init or Finalize is slow to cancel.
+    cancelTimeoutInMinutes: 45
 
     pool:
       name: ${{ parameters.PoolName }}
@@ -34,25 +37,20 @@ jobs:
       os: linux
 
     variables:
+      # CodeQL 3000 tuning. See:
+      # https://eng.ms/docs/coreai/devdiv/one-engineering-system-1es/1es-docs/codeql/configuring-codeql3000-ado-pipelines
+      #
       # Run CodeQL on every build. Default (72h) throttles most PR
       # builds into an early exit with no database.
       - name: Codeql.Cadence
         value: 0
-
-    templateContext:
-      # Diagnostic: publish CodeQL extractor logs so we can debug
-      # when the database ends up empty. Uploaded via 1ES PT outputs
-      # (raw PublishPipelineArtifact@1 is blocked). The staging step
-      # below copies the logs into a stable path first, since
-      # /mnt/vss/_work/_temp/ may be cleaned up before outputs run.
-      # Safe to remove once CodeQL is stable.
-      outputs:
-        - output: pipelineArtifact
-          displayName: 'Publish CodeQL logs (diagnostic)'
-          condition: always()
-          targetPath: '$(Build.ArtifactStagingDirectory)/codeql-logs'
-          artifactName: 'codeql-logs-$(System.JobAttempt)'
-          sbomEnabled: false
+      # Publish CodeQL CLI logs and the (partial) database as
+      # pipeline artifacts. Uses the built-in CodeQL 3000 Finalize
+      # publisher, so we don't have to scrape agent temp dirs.
+      - name: Codeql.PublishDatabaseLog
+        value: true
+      - name: Codeql.PublishDatabase
+        value: true
 
     steps:
     - task: GoTool@0
@@ -114,34 +112,3 @@ jobs:
         eng/ci/scripts/codeql-build.sh
       displayName: 'Build all Go modules'
 
-    # Stage CodeQL diagnostic logs into the artifact staging dir so
-    # the templateContext output above can publish them. Runs before
-    # Post-Job cleanup wipes $(Agent.TempDirectory). The CodeQL3000
-    # log dir has moved around across tool versions, so probe every
-    # plausible location and copy whatever we find. Safe to remove
-    # once CodeQL is stable.
-    - script: |
-        set -x
-        STAGE="$(Build.ArtifactStagingDirectory)/codeql-logs"
-        mkdir -p "${STAGE}"
-        echo "=== agent temp layout ==="
-        ls -la "$(Agent.TempDirectory)" || true
-        find "$(Agent.TempDirectory)" -maxdepth 4 -type d -name codeql3000 -print 2>/dev/null || true
-
-        found=0
-        while IFS= read -r logdir; do
-          [ -z "${logdir}" ] && continue
-          echo "Copying logs from ${logdir}"
-          dest="${STAGE}/$(echo "${logdir}" | tr '/' '_' | sed 's/^_//')"
-          mkdir -p "${dest}"
-          cp -r "${logdir}/." "${dest}/" || true
-          found=1
-        done < <(find "$(Agent.TempDirectory)" -type d -name log \
-                   -path '*/codeql3000/*' 2>/dev/null)
-
-        if [ "${found}" -eq 0 ]; then
-          echo "CodeQL log dir not found under $(Agent.TempDirectory)." \
-            > "${STAGE}/README.txt"
-        fi
-      displayName: 'Stage CodeQL logs (diagnostic)'
-      condition: always()
