@@ -33,6 +33,12 @@ jobs:
       image: 1es-ubuntu-22.04
       os: linux
 
+    variables:
+      # Run CodeQL on every build. Default (72h) throttles most PR
+      # builds into an early exit with no database.
+      - name: Codeql.Cadence
+        value: 0
+
     templateContext:
       # Diagnostic: publish CodeQL extractor logs so we can debug
       # when the database ends up empty. Uploaded via 1ES PT outputs
@@ -110,21 +116,32 @@ jobs:
 
     # Stage CodeQL diagnostic logs into the artifact staging dir so
     # the templateContext output above can publish them. Runs before
-    # Post-Job cleanup wipes /mnt/vss/_work/_temp. Tolerant of the
-    # log dir not existing so we still get a (possibly empty) artifact.
+    # Post-Job cleanup wipes $(Agent.TempDirectory). The CodeQL3000
+    # log dir has moved around across tool versions, so probe every
+    # plausible location and copy whatever we find. Safe to remove
+    # once CodeQL is stable.
     - script: |
         set -x
-        mkdir -p "$(Build.ArtifactStagingDirectory)/codeql-logs"
+        STAGE="$(Build.ArtifactStagingDirectory)/codeql-logs"
+        mkdir -p "${STAGE}"
         echo "=== agent temp layout ==="
-        ls -la /mnt/vss/_work/_temp/ || true
-        ls -la /mnt/vss/_work/_temp/codeql3000/ || true
-        ls -la /mnt/vss/_work/_temp/codeql3000/d/ || true
-        if [ -d /mnt/vss/_work/_temp/codeql3000/d/log ]; then
-          cp -r /mnt/vss/_work/_temp/codeql3000/d/log/. \
-                "$(Build.ArtifactStagingDirectory)/codeql-logs/"
-        else
-          echo "CodeQL log dir not found." \
-            > "$(Build.ArtifactStagingDirectory)/codeql-logs/README.txt"
+        ls -la "$(Agent.TempDirectory)" || true
+        find "$(Agent.TempDirectory)" -maxdepth 4 -type d -name codeql3000 -print 2>/dev/null || true
+
+        found=0
+        while IFS= read -r logdir; do
+          [ -z "${logdir}" ] && continue
+          echo "Copying logs from ${logdir}"
+          dest="${STAGE}/$(echo "${logdir}" | tr '/' '_' | sed 's/^_//')"
+          mkdir -p "${dest}"
+          cp -r "${logdir}/." "${dest}/" || true
+          found=1
+        done < <(find "$(Agent.TempDirectory)" -type d -name log \
+                   -path '*/codeql3000/*' 2>/dev/null)
+
+        if [ "${found}" -eq 0 ]; then
+          echo "CodeQL log dir not found under $(Agent.TempDirectory)." \
+            > "${STAGE}/README.txt"
         fi
       displayName: 'Stage CodeQL logs (diagnostic)'
       condition: always()
