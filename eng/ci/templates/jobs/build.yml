@@ -107,7 +107,17 @@ jobs:
       displayName: 'Vet triggers/blob'
 
     # Build every module in one script so CodeQL sees them all.
+    #
+    # Source the CodeQL tracing script first so `go build` runs
+    # under the tracer. Without this the database ends up empty.
     - script: |
+        TRACE_SCRIPT="$(Agent.TempDirectory)/codeql3000/d/temp/tracingEnvironment/start-tracing.sh"
+        if [ -f "${TRACE_SCRIPT}" ]; then
+          echo "Sourcing CodeQL tracing env from ${TRACE_SCRIPT}"
+          source "${TRACE_SCRIPT}"
+        else
+          echo "CodeQL tracing script not found at ${TRACE_SCRIPT}; continuing without it."
+        fi
         chmod +x eng/ci/scripts/codeql-build.sh
         eng/ci/scripts/codeql-build.sh
       displayName: 'Build all Go modules'
