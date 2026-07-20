@@ -1,0 +1,61 @@
+# ============================================================
+# Dedicated CodeQL job for the Go worker.
+#
+# Why this exists:
+#   CodeQL 3000 traces the compiler to build a database. On Linux,
+#   Go 1.21+ binaries are statically linked, so the CodeQL tracer
+#   can no longer intercept `go build` — a traced build produces
+#   an empty database. See:
+#   https://eng.ms/docs/coreai/devdiv/one-engineering-system-1es/1es-docs/codeql/troubleshooting/onboarding/language-compiled
+#
+#   The 1ES-recommended fix for Go 1.21+ is to run CodeQL in a
+#   separate job with `Codeql.BuildMode: autobuild`. The Go
+#   autobuilder discovers every go.mod under the source root and
+#   runs `go build ./...` per module without needing tracing.
+#
+# What this job does:
+#   Installs Go, then hands off to the auto-injected CodeQL 3000
+#   Init/Finalize tasks. The autobuilder does the actual build.
+# ============================================================
+
+parameters:
+  - name: PoolName
+    type: string
+    default: 1es-pool-azfunc-public
+
+jobs:
+  - job: codeql
+    displayName: 'CodeQL Scan (Go)'
+    # Give CodeQL 3000 Finalize enough time to zip + upload the
+    # database and log artifacts.
+    cancelTimeoutInMinutes: 45
+
+    pool:
+      name: ${{ parameters.PoolName }}
+      image: 1es-ubuntu-22.04
+      os: linux
+
+    variables:
+      # Autobuild lets the CodeQL Go extractor build every go.mod
+      # module itself, sidestepping the Go 1.21+ static-binary
+      # tracing issue.
+      Codeql.BuildMode: autobuild
+      # Run CodeQL on every trigger of this pipeline. Default
+      # cadence (72h) would skip most PR/CI runs.
+      Codeql.Cadence: 0
+      # Publish CodeQL CLI logs and the resulting database as
+      # pipeline artifacts for debugging.
+      Codeql.PublishDatabaseLog: true
+      Codeql.PublishDatabase: true
+
+    steps:
+    - task: GoTool@0
+      displayName: 'Install Go 1.25'
+      inputs:
+        version: '1.25'
+
+    # Placeholder step. The CodeQL 3000 Init and Finalize tasks
+    # are auto-injected by the 1ES template around user steps;
+    # the Go autobuilder runs between them.
+    - script: echo "CodeQL scan for autobuild go"
+      displayName: 'CodeQL autobuild marker'

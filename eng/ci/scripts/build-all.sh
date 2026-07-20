@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------
-# eng/ci/scripts/codeql-build.sh
+# eng/ci/scripts/build-all.sh
 #
-# One script that builds every Go module in this repo.
-#
-# Why this exists:
-# CodeQL only sees Go code that gets compiled while it is watching.
-# When each module is built in a separate pipeline step, CodeQL
-# can miss some of them. Doing every build here, in one place,
-# makes sure CodeQL sees everything.
+# Builds every Go module in this repo (root + submodules) in one
+# script, using a temporary go.work so submodules resolve local
+# code instead of the published root module.
 #
 # Before running this script:
 #   * Install Go and make sure it is on PATH.
@@ -41,23 +37,11 @@ echo "==> Downloading dependencies (root)"
 go mod download
 
 echo "==> Building root module"
-# Samples are standalone apps, built separately below.
+# Samples are standalone apps with their own (gitignored) go.mod
+# files; they are excluded from CI builds and from CodeQL analysis.
 go build $(go list ./... | grep -v /samples/)
 
 for mod in middleware/otelfunc otelcollector triggers/blob; do
   echo "==> Building submodule: ${mod}"
   ( cd "${mod}" && go build ./... )
 done
-
-echo "==> Building samples"
-failed=0
-for d in samples/*/; do
-  if [[ -f "${d}main.go" ]]; then
-    echo "  -> ${d}"
-    if ! ( cd "${d}" && go build . ); then
-      echo "  FAILED: ${d}"
-      failed=1
-    fi
-  fi
-done
-exit "${failed}"

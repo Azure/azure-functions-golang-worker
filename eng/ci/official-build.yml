@@ -69,3 +69,11 @@ extends:
           - template: /eng/ci/templates/jobs/unit-tests.yml@self
             parameters:
               PoolName: 1es-pool-azfunc
+
+      - stage: CodeQL
+        displayName: 'CodeQL Scan'
+        dependsOn: []
+        jobs:
+          - template: /eng/ci/templates/jobs/codeql.yml@self
+            parameters:
+              PoolName: 1es-pool-azfunc

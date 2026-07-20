@@ -39,6 +39,17 @@ extends:
         compiled:
           enabled: true
         language: go
+        # On PR builds against main, additionally run CodeQL analysis
+        # locally in the pipeline so results (SARIF + database) are
+        # available for review before merge. Results appear as the
+        # `CodeAnalysisLogs` pipeline artifact and, if the SARIF SAST
+        # Scans Tab ADO extension is installed, in the pipeline run's
+        # "Scans" tab. Note: PR-mode analysis does NOT upload to CAP
+        # Central or clear S360 alerts — a default-branch run is still
+        # required for compliance.
+        ${{ if startsWith(variables['Build.SourceBranch'], 'refs/pull/') }}:
+          enabledOnNonDefaultBranches: true
+          analyzeInPipeline: true
 
     settings:
       skipBuildTagsForGitHubPullRequests: ${{ variables['System.PullRequest.IsFork'] }}
@@ -54,5 +65,13 @@ extends:
         dependsOn: []
         jobs:
           - template: /eng/ci/templates/jobs/unit-tests.yml@self
+            parameters:
+              PoolName: 1es-pool-azfunc-public
+
+      - stage: CodeQL
+        displayName: 'CodeQL Scan'
+        dependsOn: []
+        jobs:
+          - template: /eng/ci/templates/jobs/codeql.yml@self
             parameters:
               PoolName: 1es-pool-azfunc-public
