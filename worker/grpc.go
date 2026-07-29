@@ -81,6 +81,14 @@ func waitForConnReady(conn readyConn, timeout time.Duration) error {
 		if state == connectivity.Ready {
 			return nil
 		}
+		// Shutdown is terminal — the channel can never become Ready again,
+		// so waiting for the full timeout would only add startup latency
+		// and hide the real failure. Idle/Connecting/TransientFailure are
+		// all recoverable; gRPC drives its own retries and backoff between
+		// them, so we just keep observing.
+		if state == connectivity.Shutdown {
+			return fmt.Errorf("gRPC connection is in terminal state %s and cannot become ready", state)
+		}
 		if !conn.WaitForStateChange(ctx, state) {
 			return fmt.Errorf("timed out after %s waiting for gRPC connection to become ready (last state: %s): %w",
 				timeout, state, ctx.Err())

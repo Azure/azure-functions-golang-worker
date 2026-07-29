@@ -101,10 +101,11 @@ func TestStartSender_SendErrorClosesDoneAndRejectsFutureSends(t *testing.T) {
 }
 
 // fakeReadyConn drives waitForConnReady in tests without needing a real gRPC
-// client. States are consumed in order: each GetState() pop reflects the next
-// scripted state, and WaitForStateChange blocks (respecting ctx) until either
-// another state is pushed or the deadline expires. This models gRPC's own
-// state-notification semantics closely enough for the retry-timing tests.
+// client. GetState() returns the most recently pushed state (matching gRPC's
+// "current state" semantics — nothing is consumed). WaitForStateChange blocks,
+// respecting ctx, until a state different from sourceState has been pushed or
+// the deadline expires. This models gRPC's own state-notification semantics
+// closely enough for the retry-timing tests.
 type fakeReadyConn struct {
 	mu             sync.Mutex
 	states         []connectivity.State
@@ -184,6 +185,23 @@ func TestWaitForConnReady_ReturnsWhenReady(t *testing.T) {
 	}
 }
 
+func TestWaitForConnReady_AlreadyReady(t *testing.T) {
+	// If the channel is already Ready when we check, waitForConnReady
+	// should return immediately without waiting for any state change.
+	conn := newFakeReadyConn(connectivity.Ready)
+
+	start := time.Now()
+	if err := waitForConnReady(conn, 2*time.Second); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("already-ready conn should return immediately, took %s", elapsed)
+	}
+	if !conn.connectCalled {
+		t.Fatal("Connect() was not called")
+	}
+}
+
 func TestWaitForConnReady_TimesOutWhenNeverReady(t *testing.T) {
 	// Conn parked in TRANSIENT_FAILURE and never recovers — models the host
 	// being unreachable for the full timeout window.
@@ -199,6 +217,10 @@ func TestWaitForConnReady_TimesOutWhenNeverReady(t *testing.T) {
 	if !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("error should mention timeout, got: %v", err)
 	}
+	if !strings.Contains(err.Error(), connectivity.TransientFailure.String()) {
+		t.Fatalf("error should include last observed state %q, got: %v",
+			connectivity.TransientFailure, err)
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error should wrap context.DeadlineExceeded, got: %v", err)
 	}
@@ -207,5 +229,28 @@ func TestWaitForConnReady_TimesOutWhenNeverReady(t *testing.T) {
 	}
 	if elapsed > 500*time.Millisecond {
 		t.Fatalf("returned well after deadline (leak?): %s", elapsed)
+	}
+}
+
+func TestWaitForConnReady_FailsFastOnShutdown(t *testing.T) {
+	// Shutdown is terminal — waitForConnReady must return immediately
+	// rather than waiting for the full timeout.
+	conn := newFakeReadyConn(connectivity.Shutdown)
+
+	start := time.Now()
+	err := waitForConnReady(conn, 5*time.Second)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error for terminal Shutdown state, got nil")
+	}
+	if !strings.Contains(err.Error(), connectivity.Shutdown.String()) {
+		t.Fatalf("error should mention Shutdown state, got: %v", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown should fail fast, not via deadline: %v", err)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("Shutdown should return immediately, took %s", elapsed)
 	}
 }
