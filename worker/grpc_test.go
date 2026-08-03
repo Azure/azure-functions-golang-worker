@@ -3,15 +3,15 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
-	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -100,157 +100,15 @@ func TestStartSender_SendErrorClosesDoneAndRejectsFutureSends(t *testing.T) {
 	}
 }
 
-// fakeReadyConn drives waitForConnReady in tests without needing a real gRPC
-// client. GetState() returns the most recently pushed state (matching gRPC's
-// "current state" semantics — nothing is consumed). WaitForStateChange blocks,
-// respecting ctx, until a state different from sourceState has been pushed or
-// the deadline expires. This models gRPC's own state-notification semantics
-// closely enough for the retry-timing tests.
-type fakeReadyConn struct {
-	mu             sync.Mutex
-	states         []connectivity.State
-	changeCh       chan struct{}
-	connectCalled  bool
-}
-
-func newFakeReadyConn(initial connectivity.State) *fakeReadyConn {
-	return &fakeReadyConn{
-		states:   []connectivity.State{initial},
-		changeCh: make(chan struct{}, 16),
+func TestConnectToHost_PreservesOpenStreamError(t *testing.T) {
+	openErr := fmt.Errorf("open stream: %w", context.DeadlineExceeded)
+	open := func(string, int) (grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error) {
+		return nil, openErr
 	}
-}
 
-func (f *fakeReadyConn) Connect() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.connectCalled = true
-}
+	_, err := connectToHostWith("host", 1024, "worker-id", open)
 
-func (f *fakeReadyConn) GetState() connectivity.State {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.states[len(f.states)-1]
-}
-
-func (f *fakeReadyConn) WaitForStateChange(ctx context.Context, sourceState connectivity.State) bool {
-	// Loop until the observed state differs from sourceState, or ctx expires.
-	for {
-		f.mu.Lock()
-		current := f.states[len(f.states)-1]
-		f.mu.Unlock()
-		if current != sourceState {
-			return true
-		}
-		select {
-		case <-f.changeCh:
-			// A new state was pushed; loop to re-read.
-		case <-ctx.Done():
-			return false
-		}
-	}
-}
-
-// pushState appends a new state and wakes anyone parked in WaitForStateChange.
-func (f *fakeReadyConn) pushState(s connectivity.State) {
-	f.mu.Lock()
-	f.states = append(f.states, s)
-	f.mu.Unlock()
-	select {
-	case f.changeCh <- struct{}{}:
-	default:
-	}
-}
-
-func TestWaitForConnReady_ReturnsWhenReady(t *testing.T) {
-	conn := newFakeReadyConn(connectivity.Idle)
-
-	// Simulate the host coming up shortly after the worker starts to dial:
-	// IDLE -> CONNECTING -> READY.
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		conn.pushState(connectivity.Connecting)
-		time.Sleep(20 * time.Millisecond)
-		conn.pushState(connectivity.Ready)
-	}()
-
-	start := time.Now()
-	if err := waitForConnReady(conn, 2*time.Second); err != nil {
-		t.Fatalf("expected nil, got %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("waited too long for ready state: %s", elapsed)
-	}
-	if !conn.connectCalled {
-		t.Fatal("Connect() was not called to nudge the conn out of IDLE")
-	}
-}
-
-func TestWaitForConnReady_AlreadyReady(t *testing.T) {
-	// If the channel is already Ready when we check, waitForConnReady
-	// should return immediately without waiting for any state change.
-	conn := newFakeReadyConn(connectivity.Ready)
-
-	start := time.Now()
-	if err := waitForConnReady(conn, 2*time.Second); err != nil {
-		t.Fatalf("expected nil, got %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
-		t.Fatalf("already-ready conn should return immediately, took %s", elapsed)
-	}
-	if !conn.connectCalled {
-		t.Fatal("Connect() was not called")
-	}
-}
-
-func TestWaitForConnReady_TimesOutWhenNeverReady(t *testing.T) {
-	// Conn parked in TRANSIENT_FAILURE and never recovers — models the host
-	// being unreachable for the full timeout window.
-	conn := newFakeReadyConn(connectivity.TransientFailure)
-
-	start := time.Now()
-	err := waitForConnReady(conn, 100*time.Millisecond)
-	elapsed := time.Since(start)
-
-	if err == nil {
-		t.Fatal("expected timeout error, got nil")
-	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Fatalf("error should mention timeout, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), connectivity.TransientFailure.String()) {
-		t.Fatalf("error should include last observed state %q, got: %v",
-			connectivity.TransientFailure, err)
-	}
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("error should wrap context.DeadlineExceeded, got: %v", err)
-	}
-	if elapsed < 100*time.Millisecond {
-		t.Fatalf("returned before deadline elapsed: %s", elapsed)
-	}
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("returned well after deadline (leak?): %s", elapsed)
-	}
-}
-
-func TestWaitForConnReady_FailsFastOnShutdown(t *testing.T) {
-	// Shutdown is terminal — waitForConnReady must return immediately
-	// rather than waiting for the full timeout.
-	conn := newFakeReadyConn(connectivity.Shutdown)
-
-	start := time.Now()
-	err := waitForConnReady(conn, 5*time.Second)
-	elapsed := time.Since(start)
-
-	if err == nil {
-		t.Fatal("expected error for terminal Shutdown state, got nil")
-	}
-	if !strings.Contains(err.Error(), connectivity.Shutdown.String()) {
-		t.Fatalf("error should mention Shutdown state, got: %v", err)
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Shutdown should fail fast, not via deadline: %v", err)
-	}
-	if elapsed > 100*time.Millisecond {
-		t.Fatalf("Shutdown should return immediately, took %s", elapsed)
+		t.Fatalf("connectToHostWith() error = %v, want wrapped context.DeadlineExceeded", err)
 	}
 }

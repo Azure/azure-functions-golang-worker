@@ -7,13 +7,11 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
-	"time"
 
+	"github.com/azure/azure-functions-golang-worker/internal/hostclient"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/connectivity"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // outboundQueueSize is the capacity, in messages, of the buffered channel
@@ -28,80 +26,23 @@ type streamSender func(*pb.StreamingMessage) error
 
 func connectToHost(hostAddress string, maxMsgSize int, workerId string) (
 	grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error) {
-	client, err := getBidiStreamClient(hostAddress, maxMsgSize)
+	return connectToHostWith(hostAddress, maxMsgSize, workerId, hostclient.OpenEventStream)
+}
+
+type hostStreamOpener func(string, int) (grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error)
+
+func connectToHostWith(hostAddress string, maxMsgSize int, workerId string, open hostStreamOpener) (
+	grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error) {
+	client, err := open(hostAddress, maxMsgSize)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to gRPC stream: %v", err)
+		return nil, fmt.Errorf("failed to connect to gRPC stream: %w", err)
 	}
 
 	if err := sendStartStreamMessage(client, workerId); err != nil {
-		return nil, fmt.Errorf("failed to send start stream message: %v", err)
+		return nil, fmt.Errorf("failed to send start stream message: %w", err)
 	}
 
 	return client, nil
-}
-
-func getBidiStreamClient(address string, maxMsgSize int) (grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error) {
-	opts := []grpc.DialOption{
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxMsgSize), grpc.MaxCallSendMsgSize(maxMsgSize)),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	}
-	conn, err := grpc.NewClient(address, opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	// Drive the connection to READY before opening the stream. Otherwise
-	// EventStream would fast-fail if the host isn't listening yet, which
-	// happens when the host launches the worker as part of its startup.
-	if err := waitForConnReady(conn, connectTimeout); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-
-	client := pb.NewFunctionRpcClient(conn)
-	return client.EventStream(context.Background())
-}
-
-// connectTimeout bounds the initial wait for the host's gRPC server. If it
-// isn't listening within this window, fail loudly instead of hanging.
-const connectTimeout = 5 * time.Second
-
-// waitForConnReady blocks until conn reaches connectivity.Ready or the
-// timeout expires. gRPC handles dial retries and backoff internally.
-func waitForConnReady(conn readyConn, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// grpc.NewClient is lazy: the connection stays in IDLE until the first
-	// RPC. Without this call the loop below has nothing to observe and
-	// every startup would hang for the full connectTimeout.
-	conn.Connect()
-	for {
-		state := conn.GetState()
-		if state == connectivity.Ready {
-			return nil
-		}
-		// Shutdown is terminal — the channel can never become Ready again,
-		// so waiting for the full timeout would only add startup latency
-		// and hide the real failure. Idle/Connecting/TransientFailure are
-		// all recoverable; gRPC drives its own retries and backoff between
-		// them, so we just keep observing.
-		if state == connectivity.Shutdown {
-			return fmt.Errorf("gRPC connection is in terminal state %s and cannot become ready", state)
-		}
-		if !conn.WaitForStateChange(ctx, state) {
-			return fmt.Errorf("timed out after %s waiting for gRPC connection to become ready (last state: %s): %w",
-				timeout, state, ctx.Err())
-		}
-	}
-}
-
-// readyConn is the subset of *grpc.ClientConn used by waitForConnReady,
-// carved out so tests can supply a fake.
-type readyConn interface {
-	Connect()
-	GetState() connectivity.State
-	WaitForStateChange(ctx context.Context, sourceState connectivity.State) bool
 }
 
 // sendStartStreamMessage performs the worker -> host handshake, after which
