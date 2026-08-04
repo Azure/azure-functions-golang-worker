@@ -12,10 +12,11 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// connectionTimeout matches the Functions host's default ProcessStartupTimeout.
-// Using the full host startup budget avoids terminating a recoverable connection
-// early, which would add the host's ProcessRestartInterval to the cold start.
-const connectionTimeout = 60 * time.Second
+// connectionTimeout stays below the Functions host's 60-second
+// ProcessStartupTimeout so readiness failures can be logged before the host
+// terminates the worker. The remaining budget covers EventStream setup and the
+// StartStream handshake.
+const connectionTimeout = 50 * time.Second
 
 var connectParams = grpc.ConnectParams{
 	Backoff: backoff.Config{

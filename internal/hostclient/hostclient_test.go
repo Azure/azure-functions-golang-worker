@@ -76,8 +76,8 @@ func (f *fakeConnection) pushState(state connectivity.State) {
 }
 
 func TestConnectionPolicy(t *testing.T) {
-	if connectionTimeout != 60*time.Second {
-		t.Fatalf("connectionTimeout = %s, want 60s", connectionTimeout)
+	if connectionTimeout != 50*time.Second {
+		t.Fatalf("connectionTimeout = %s, want 50s", connectionTimeout)
 	}
 	if connectParams.Backoff.BaseDelay != 100*time.Millisecond {
 		t.Fatalf("BaseDelay = %s, want 100ms", connectParams.Backoff.BaseDelay)
