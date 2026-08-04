@@ -9,9 +9,7 @@ import (
 )
 
 var queueStorageEnv = map[string]string{
-	"AzureWebJobsStorage":           azuriteConnStr,
-	"FUNCTIONS_WORKER_RUNTIME":      "native",
-	"FUNCTIONS_CLI_NATIVE_LANGUAGE": "go",
+	"AzureWebJobsStorage": azuriteConnStr,
 }
 
 func TestQueueStorageTriggerFires(t *testing.T) {

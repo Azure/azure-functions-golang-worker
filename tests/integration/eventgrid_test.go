@@ -8,7 +8,6 @@ import (
 
 var eventGridEnv = map[string]string{
 	"AzureWebJobsStorage":      "UseDevelopmentStorage=true",
-	"FUNCTIONS_WORKER_RUNTIME": "golang",
 }
 
 func TestEventGridTriggerRegisters(t *testing.T) {

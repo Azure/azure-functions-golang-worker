@@ -19,7 +19,6 @@ const azuriteConnStr = "DefaultEndpointsProtocol=http;" +
 
 var blobEnv = map[string]string{
 	"AzureWebJobsStorage":      azuriteConnStr,
-	"FUNCTIONS_WORKER_RUNTIME": "golang",
 }
 
 func TestBlobTriggerFires(t *testing.T) {

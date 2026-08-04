@@ -1,116 +1,205 @@
 # Integration Tests
 
-Black-box integration tests for the Azure Functions Go Worker. Each test builds a sample app, starts it via `func.exe`, and verifies behavior through log output and SDK clients.
+Black-box integration tests for the Azure Functions Go Worker. The suite verifies
+that Azure Functions Core Tools can start the Functions host, establish the
+worker channel, index Go functions, invoke them, and return or process the
+expected output.
+
+The tests use local Docker emulators only. They do not require Azure credentials
+or deployed Azure resources.
 
 ## Prerequisites
 
 1. **Go 1.25+**
-2. **Azure Functions Core Tools** (`func.exe`) — built or installed
-3. **Docker** — for running emulators
+2. **Azure Functions Core Tools 4.12.0**
+3. **Docker with Docker Compose**
 
-### Start emulators
+Core Tools must be available as `func` on `PATH`. To use another executable,
+set `FUNC_EXE`:
 
 ```bash
-docker compose -f ../emulators/docker-compose.yml up -d
+export FUNC_EXE=/path/to/func
 ```
 
-This starts:
-- **Azurite** — Azure Storage emulator (ports 10000-10002)
-- **Service Bus emulator** — (port 5672 on 127.0.0.1)
-- **Event Hub emulator** — (port 5672 on 127.0.0.2)
-- **Cosmos DB emulator** — (port 8081)
-- **SQL Server** — backing store for SB/EH emulators, also the target for SQL trigger tests (port 1433)
+```powershell
+$env:FUNC_EXE = "C:\path\to\func.exe"
+```
 
-## Running
+The runner validates the Core Tools version and Docker Compose before starting
+the suite.
+
+## Running the suite
+
+Run the complete suite from the integration-test module:
 
 ```bash
 cd tests/integration
-
-# Run all tests (requires func on PATH)
-go test -v -timeout 300s ./...
-
-# Run a specific test
-go test -v -timeout 120s -run TestHttpTrigger ./...
+go run ./cmd/integrationtest
 ```
 
-To use a custom `func` binary (e.g. a local build), set `FUNC_EXE`:
+The runner:
+
+1. Validates required tools.
+2. Creates the artifact directory.
+3. Starts each required emulator profile.
+4. Waits for service-level readiness.
+5. Runs the tests assigned to that profile.
+6. Captures Go test, Functions host, and container logs.
+7. Stops only the containers it started.
+
+The suite runs emulator profiles sequentially to reduce resource usage and keep
+failures attributable to one subsystem:
+
+```text
+Azurite
+  ├── HTTP
+  ├── Timer
+  ├── Blob Storage
+  ├── Queue Storage
+  └── Event Grid registration
+
+Event Hubs + Azurite
+  └── Event Hub trigger
+
+Cosmos DB + Azurite
+  └── Cosmos DB trigger
+
+Service Bus + SQL Server + Azurite
+  ├── Service Bus queue trigger
+  └── Service Bus topic trigger
+
+SQL Server + Azurite
+  └── SQL trigger
+```
+
+If a required emulator is already running under the repository's Compose
+project, the runner reuses it and leaves it running. Containers created by the
+runner are removed after diagnostics are captured.
+
+## Azure DevOps integration
+
+Azure DevOps runs the same integration-test command in a Linux host job for
+pull requests:
+
 ```bash
-export FUNC_EXE=/path/to/func               # Linux/macOS
-$env:FUNC_EXE = "C:\path\to\func.exe"       # PowerShell
+cd tests/integration
+go run ./cmd/integrationtest
 ```
 
-Tests will fail immediately if a required emulator is not running, with a message showing which emulator is missing and how to start it.
+The pipeline provisions Go, the pinned Core Tools release, and Docker before
+invoking the runner. Pipeline YAML owns agent and tool provisioning only;
+emulator lifecycle, readiness, test selection, diagnostics, and cleanup remain
+implemented by the repository runner.
 
-## Adding a new integration test
+The integration-test job is a required pre-merge PR check. Azure DevOps
+publishes the JUnit results and the complete artifact directory even when the
+runner fails, so host and emulator diagnostics are available from the failed
+build.
 
-1. **Create a sample app** in `../../samples/<name>/` with a `main.go` and `host.json`.
+## Success criteria
 
-2. **Create a test file** named `<name>_test.go` in this directory. Use `StartFuncHost` from `helpers_test.go`:
+A test passes only when:
 
-   ```go
-   package integration
+1. Its required emulators report ready.
+2. Core Tools starts the Functions host.
+3. The host establishes the Go worker channel.
+4. The expected function is indexed.
+5. The scenario-specific invocation or trigger completes.
+6. The test observes the expected response, metadata, or log output.
+7. The host and emulator processes remain alive until the scenario completes.
 
-   import (
-       "testing"
-       "time"
-   )
+Timing is informational. The suite does not enforce host-startup or invocation
+performance thresholds.
 
-   var myEnv = map[string]string{
-       "AzureWebJobsStorage":      "UseDevelopmentStorage=true",
-       "FUNCTIONS_WORKER_RUNTIME": "golang",
-       // Add any connection strings the trigger needs
-   }
+## Artifacts
 
-   func TestMyTriggerFires(t *testing.T) {
-       requireAzurite(t)  // fail fast if emulator is down
-       proc := StartFuncHost(t, "mySample", 7220, myEnv, 30*time.Second)
+Each run writes diagnostics beneath `tests/integration/artifacts`. Existing
+files for the same run and test names are replaced.
 
-       // Use an Azure SDK client to send an event / upload data / etc.
+```text
+artifacts/
+├── run.json
+├── go-test.xml
+├── go-test.log
+├── profiles/
+│   ├── azurite.log
+│   ├── eventhubs.log
+│   ├── cosmosdb.log
+│   ├── servicebus.log
+│   └── sqlserver.log
+└── hosts/
+    ├── TestHttpTriggerGet/
+    │   └── httpTrigger-host.log
+    └── <test-name>/
+        └── <sample-name>-host.log
+```
 
-       proc.AssertLogContains("expected log output", 30*time.Second)
-       proc.AssertLogContains("Succeeded", 5*time.Second)
-   }
-   ```
+- `run.json` records tool versions, emulator image digests, timestamps, and the
+  source revision.
+- `go-test.xml` contains JUnit test results.
+- `go-test.log` contains complete Go test output.
+- `profiles/*.log` contains complete emulator output.
+- `hosts/*/*.log` contains complete Functions host and worker output.
 
-3. **Pick a unique port** — check existing tests to avoid collisions (current range: 7201-7209).
-
-4. **If the test needs a new Azure SDK**, add it to `go.mod`:
-   ```bash
-   cd tests/integration
-   go get github.com/Azure/azure-sdk-for-go/sdk/...@latest
-   go mod tidy
-   ```
-   This only affects the test module — the worker library's `go.mod` is not touched.
-
-5. **If the test needs a new emulator**, add the service to `../emulators/docker-compose.yml`.
-
-6. **Add a `require*` call** as the first line of each test function. This ensures the test fails immediately with a clear message if the emulator isn't running, rather than timing out waiting for `func.exe` to start. Available helpers:
-   - `requireAzurite(t)` — all tests need this (backs `AzureWebJobsStorage`)
-   - `requireCosmosDB(t)` — Cosmos DB trigger tests
-   - `requireServiceBus(t)` — Service Bus queue/topic tests
-   - `requireEventHub(t)` — Event Hub trigger tests
-   - `requireSQLServer(t)` — SQL trigger tests
-
-   To add a new one, use `requireEmulator(t, "name", "host:port")` in `helpers_test.go`.
-
-### `FuncHostProcess` API
-
-- `StartFuncHost(t, sampleName, port, env, initTimeout)` — builds the sample, starts `func.exe`, waits for initialization
-- `proc.AssertLogContains(pattern, timeout)` — fails the test if the pattern doesn't appear within timeout
-- `proc.WaitForLog(pattern, timeout) bool` — returns true/false without failing
-- `proc.ReadLog() string` — returns the current log contents
-- Cleanup (kill process, remove binary) is automatic via `t.Cleanup`
+On failure, the runner captures container status and logs before cleanup. A
+cleanup error is reported without replacing the original test failure.
 
 ## Architecture
 
-This directory is a **separate Go module** (`tests/integration/go.mod`) so that test-only SDK dependencies (`azcosmos`, `azeventhubs`, `azservicebus`) don't pollute the worker library's dependency tree.
+This directory is a separate Go module so test-only Azure SDK dependencies do
+not affect the worker library's dependency tree.
 
-Tests are fully black-box — they don't import any code from the worker module. Instead they:
+```text
+cmd/integrationtest
+        |
+        v
+internal/testrunner
+  - validates tools
+  - owns emulator profiles
+  - waits for readiness
+  - runs Go tests
+  - captures artifacts
+  - performs cleanup
+        |
+        v
+internal/testhost
+  - allocates a dynamic port
+  - starts Core Tools
+  - configures the native Go worker
+  - waits for worker and host readiness
+  - monitors unexpected exits
+  - captures the complete host log
+  - terminates the process tree
+        |
+        v
+trigger-specific test
+  - provisions test data
+  - sends the stimulus
+  - asserts functional behavior
+```
 
-1. `go build` a sample app from `../../samples/<name>/`
-2. Start `func.exe` pointing at that sample directory
-3. Wait for `"Worker process started and initialized"` in the log
-4. Use Azure SDK clients to send events / upload blobs / insert documents
-5. Assert expected log patterns appear within a timeout
+### Ownership boundaries
 
-The shared test harness is in `helpers_test.go` (`StartFuncHost`, `FuncHostProcess`).
+- The **runner** owns shared tools, emulator lifecycle, readiness, suite
+  selection, artifacts, and cleanup.
+- `TestHost` owns one Functions host process and its Go worker children.
+- A **test scenario** owns only resource setup, stimulus, and behavioral
+  assertions.
+
+Tests do not start Docker containers, choose fixed host ports, install tools, or
+implement process cleanup.
+
+## Emulator endpoints
+
+| Emulator | Host endpoint | Readiness |
+|---|---|---|
+| Azurite Blob | `127.0.0.1:10000` | Blob service request |
+| Azurite Queue | `127.0.0.1:10001` | Queue service request |
+| Azurite Table | `127.0.0.1:10002` | Table service request |
+| Event Hubs | `127.0.0.1:5672` | Management health endpoint |
+| Cosmos DB | `127.0.0.1:8081` | `http://127.0.0.1:8080/ready` |
+| Service Bus | `127.0.0.1:5672` | `http://127.0.0.1:5300/health` |
+| SQL Server | `127.0.0.1:1433` | `SELECT 1` |
+
+Emulator images are pinned in `tests/emulators/docker-compose.yml`. Update image
+versions deliberately and validate the full affected profile after each update.

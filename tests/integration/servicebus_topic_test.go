@@ -9,9 +9,8 @@ import (
 )
 
 var serviceBusTopicEnv = map[string]string{
-	"AzureWebJobsStorage":      "UseDevelopmentStorage=true",
-	"FUNCTIONS_WORKER_RUNTIME": "golang",
-	"ServiceBusConnection":     sbConnStr,
+	"AzureWebJobsStorage":  "UseDevelopmentStorage=true",
+	"ServiceBusConnection": sbConnStr,
 }
 
 func TestServiceBusTopicTriggerFires(t *testing.T) {
