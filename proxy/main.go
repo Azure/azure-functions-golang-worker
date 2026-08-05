@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"log"
@@ -14,10 +13,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/azure/azure-functions-golang-worker/internal/hostclient"
 	"github.com/azure/azure-functions-golang-worker/worker"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const defaultAppDir = "/home/site/wwwroot"
@@ -36,7 +35,6 @@ func appBinaryPath(dir string) string {
 type Proxy struct {
 	pb.UnimplementedFunctionRpcServer
 
-	hostClient pb.FunctionRpcClient
 	hostStream grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage]
 
 	childStream    pb.FunctionRpc_EventStreamServer
@@ -127,21 +125,13 @@ func main() {
 }
 
 func (p *Proxy) connectToHost() error {
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(p.config.FunctionsGrpcMaxMessageLength),
-			grpc.MaxCallSendMsgSize(p.config.FunctionsGrpcMaxMessageLength),
-		),
-	}
+	return p.connectToHostWith(hostclient.OpenEventStream)
+}
 
-	conn, err := grpc.NewClient(p.config.FunctionsUri, opts...)
-	if err != nil {
-		return err
-	}
+type hostStreamOpener func(string, int) (grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error)
 
-	p.hostClient = pb.NewFunctionRpcClient(conn)
-	stream, err := p.hostClient.EventStream(context.Background())
+func (p *Proxy) connectToHostWith(open hostStreamOpener) error {
+	stream, err := open(p.config.FunctionsUri, p.config.FunctionsGrpcMaxMessageLength)
 	if err != nil {
 		return err
 	}

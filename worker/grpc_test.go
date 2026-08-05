@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -95,5 +97,18 @@ func TestStartSender_SendErrorClosesDoneAndRejectsFutureSends(t *testing.T) {
 
 	if err := send(&pb.StreamingMessage{}); !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("send after sender failure: got %v want %v", err, io.ErrClosedPipe)
+	}
+}
+
+func TestConnectToHost_PreservesOpenStreamError(t *testing.T) {
+	openErr := fmt.Errorf("open stream: %w", context.DeadlineExceeded)
+	open := func(string, int) (grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage], error) {
+		return nil, openErr
+	}
+
+	_, err := connectToHostWith("host", 1024, "worker-id", open)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("connectToHostWith() error = %v, want wrapped context.DeadlineExceeded", err)
 	}
 }
