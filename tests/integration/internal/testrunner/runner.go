@@ -63,11 +63,20 @@ func (r Runner) Run(ctx context.Context) (runErr error) {
 	}
 
 	composeArgs := []string{"compose", "-f", r.ComposeFile}
-	output, err = command(ctx, "docker", append(composeArgs, "ps", "--status", "running", "--services")...)
+
+	// Query whether a container exists at all (any state) to determine ownership.
+	output, err = command(ctx, "docker", append(composeArgs, "ps", "-a", "-q", "azurite")...)
 	if err != nil {
 		return fmt.Errorf("inspect Azurite container: %w\n%s", err, output)
 	}
-	owned := !containsLine(string(output), "azurite")
+	owned := strings.TrimSpace(string(output)) == ""
+
+	// Query whether the container is currently running to decide if startup is needed.
+	output, err = command(ctx, "docker", append(composeArgs, "ps", "--status", "running", "-q", "azurite")...)
+	if err != nil {
+		return fmt.Errorf("inspect Azurite running state: %w\n%s", err, output)
+	}
+	running := strings.TrimSpace(string(output)) != ""
 
 	// Register diagnostics and cleanup before startup. Docker Compose can return
 	// an error after creating a container, so deferring later could leak it.
@@ -93,7 +102,7 @@ func (r Runner) Run(ctx context.Context) (runErr error) {
 
 	// Reuse developer-owned containers. Only containers absent at runner startup
 	// are considered runner-owned and eligible for removal.
-	if owned {
+	if !running {
 		output, err = command(ctx, "docker", append(composeArgs, "up", "-d", "azurite")...)
 		if err != nil {
 			return fmt.Errorf("start Azurite: %w\n%s", err, output)
@@ -169,14 +178,4 @@ func waitHTTPReady(ctx context.Context, client *http.Client, endpoint string, in
 		case <-ticker.C:
 		}
 	}
-}
-
-// containsLine avoids treating similarly named Compose services as Azurite.
-func containsLine(output, expected string) bool {
-	for _, line := range strings.Split(output, "\n") {
-		if strings.TrimSpace(line) == expected {
-			return true
-		}
-	}
-	return false
 }

@@ -34,7 +34,9 @@ func TestWaitHTTPReadyPollsUntilServiceResponds(t *testing.T) {
 	}
 }
 
-func TestRunStartsTestsCapturesLogsAndCleansOwnedAzurite(t *testing.T) {
+// TestRunNoExistingContainer covers: two ps queries, starts Azurite, runs tests,
+// captures logs, and removes the container it created.
+func TestRunNoExistingContainer(t *testing.T) {
 	artifactDir := t.TempDir()
 	var commands []string
 	command := func(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -45,8 +47,10 @@ func TestRunStartsTestsCapturesLogsAndCleansOwnedAzurite(t *testing.T) {
 			return []byte("4.12.0\n"), nil
 		case call == "docker compose version":
 			return []byte("Docker Compose version v2.39.4"), nil
-		case strings.Contains(call, "ps --status running --services"):
-			return nil, nil
+		case strings.Contains(call, "ps -a -q azurite"):
+			return []byte(""), nil // no container
+		case strings.Contains(call, "ps --status running -q azurite"):
+			return []byte(""), nil // not running
 		case strings.Contains(call, "up -d azurite"):
 			return []byte("started azurite"), nil
 		case strings.Contains(call, "logs --no-color azurite"):
@@ -73,14 +77,16 @@ func TestRunStartsTestsCapturesLogsAndCleansOwnedAzurite(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
+	cf := filepath.Join("tests", "emulators", "docker-compose.yml")
 	wantCommands := []string{
 		"func --version",
 		"docker compose version",
-		"docker compose -f " + filepath.Join("tests", "emulators", "docker-compose.yml") + " ps --status running --services",
-		"docker compose -f " + filepath.Join("tests", "emulators", "docker-compose.yml") + " up -d azurite",
+		"docker compose -f " + cf + " ps -a -q azurite",
+		"docker compose -f " + cf + " ps --status running -q azurite",
+		"docker compose -f " + cf + " up -d azurite",
 		"go test -v -count=1 -timeout 120s -run ^TestHttpTriggerGet$ .",
-		"docker compose -f " + filepath.Join("tests", "emulators", "docker-compose.yml") + " logs --no-color azurite",
-		"docker compose -f " + filepath.Join("tests", "emulators", "docker-compose.yml") + " rm -f -s azurite",
+		"docker compose -f " + cf + " logs --no-color azurite",
+		"docker compose -f " + cf + " rm -f -s azurite",
 	}
 	if strings.Join(commands, "\n") != strings.Join(wantCommands, "\n") {
 		t.Fatalf("commands:\n%s\nwant:\n%s", strings.Join(commands, "\n"), strings.Join(wantCommands, "\n"))
@@ -90,7 +96,8 @@ func TestRunStartsTestsCapturesLogsAndCleansOwnedAzurite(t *testing.T) {
 	assertFileContains(t, filepath.Join(artifactDir, "azurite.log"), "azurite diagnostics")
 }
 
-func TestRunReusesExistingAzuriteWithoutRemovingIt(t *testing.T) {
+// TestRunExistingRunningContainer covers: two ps queries, no startup, no removal.
+func TestRunExistingRunningContainer(t *testing.T) {
 	var commands []string
 	command := func(_ context.Context, name string, args ...string) ([]byte, error) {
 		call := strings.Join(append([]string{name}, args...), " ")
@@ -100,8 +107,10 @@ func TestRunReusesExistingAzuriteWithoutRemovingIt(t *testing.T) {
 			return []byte("4.12.0\n"), nil
 		case call == "docker compose version":
 			return []byte("Docker Compose version v2.39.4"), nil
-		case strings.Contains(call, "ps --status running --services"):
-			return []byte("azurite\n"), nil
+		case strings.Contains(call, "ps -a -q azurite"):
+			return []byte("abc123\n"), nil // container exists
+		case strings.Contains(call, "ps --status running -q azurite"):
+			return []byte("abc123\n"), nil // container is running
 		case strings.Contains(call, "logs --no-color azurite"):
 			return nil, nil
 		case strings.HasPrefix(call, "go test"):
@@ -123,10 +132,63 @@ func TestRunReusesExistingAzuriteWithoutRemovingIt(t *testing.T) {
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	for _, command := range commands {
-		if strings.Contains(command, "up -d") || strings.Contains(command, "rm -f") {
-			t.Fatalf("runner changed existing Azurite lifecycle: %s", command)
+	for _, c := range commands {
+		if strings.Contains(c, "up -d") || strings.Contains(c, "rm -f") {
+			t.Fatalf("runner changed lifecycle of pre-existing running container: %s", c)
 		}
+	}
+}
+
+// TestRunExistingStoppedContainer covers: two ps queries, starts container, does NOT remove it.
+func TestRunExistingStoppedContainer(t *testing.T) {
+	var commands []string
+	command := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		call := strings.Join(append([]string{name}, args...), " ")
+		commands = append(commands, call)
+		switch {
+		case call == "func --version":
+			return []byte("4.12.0\n"), nil
+		case call == "docker compose version":
+			return []byte("Docker Compose version v2.39.4"), nil
+		case strings.Contains(call, "ps -a -q azurite"):
+			return []byte("abc123\n"), nil // container exists (stopped)
+		case strings.Contains(call, "ps --status running -q azurite"):
+			return []byte(""), nil // not running
+		case strings.Contains(call, "up -d azurite"):
+			return []byte("started stopped container"), nil
+		case strings.Contains(call, "logs --no-color azurite"):
+			return nil, nil
+		case strings.HasPrefix(call, "go test"):
+			return []byte("PASS\n"), nil
+		default:
+			return nil, errors.New("unexpected command: " + call)
+		}
+	}
+
+	runner := Runner{
+		ComposeFile:      "compose.yml",
+		ArtifactDir:      t.TempDir(),
+		TestPattern:      "^TestHttpTriggerGet$",
+		FuncExe:          "func",
+		CoreToolsVersion: "4.12.0",
+		command:          command,
+		waitReady:        func(context.Context) error { return nil },
+	}
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	startedAzurite := false
+	for _, c := range commands {
+		if strings.Contains(c, "up -d azurite") {
+			startedAzurite = true
+		}
+		if strings.Contains(c, "rm -f") {
+			t.Fatalf("runner removed pre-existing stopped container: %s", c)
+		}
+	}
+	if !startedAzurite {
+		t.Fatal("runner did not start the stopped container")
 	}
 }
 
@@ -161,8 +223,10 @@ func TestRunCleansAzuriteAfterPartialStartupFailure(t *testing.T) {
 			return []byte("4.12.0\n"), nil
 		case call == "docker compose version":
 			return []byte("Docker Compose version v2.39.4"), nil
-		case strings.Contains(call, "ps --status running --services"):
-			return nil, nil
+		case strings.Contains(call, "ps -a -q azurite"):
+			return []byte(""), nil // no container before runner
+		case strings.Contains(call, "ps --status running -q azurite"):
+			return []byte(""), nil // not running
 		case strings.Contains(call, "up -d azurite"):
 			return []byte("container created before startup failure"), errors.New("compose startup failed")
 		case strings.Contains(call, "logs --no-color azurite"):
