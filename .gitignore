@@ -424,3 +424,6 @@ samples/*/go.sum
 .deploy-stage/
 test-int*.log
 test-race.log
+
+# Generated documentation site
+site/
