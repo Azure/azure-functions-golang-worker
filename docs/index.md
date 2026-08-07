@@ -13,9 +13,10 @@ running Go applications natively on Azure Functions.
   - [Architecture](concepts/architecture.md)
   - [Triggers and bindings](concepts/triggers-and-bindings.md)
 - Guides
+  - [Container images](guides/container-images.md)
   - [Deployment](guides/deployment.md)
-  - [Observability](guides/observability.md)
-  - [Error handling](guides/error-handling.md)
+  - [Error and panic handling](guides/error-handling.md)
+  - [Logging and observability](guides/observability.md)
 - [Samples](samples/index.md)
 
 ## Resources

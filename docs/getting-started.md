@@ -1,7 +1,7 @@
 # Getting started
 
-Install the required tools, create a Go function application, and run it
-locally with Azure Functions Core Tools.
+Install the required tools and create the Azure resources for a Go function
+application.
 
 ## Prerequisites
 
