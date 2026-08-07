@@ -10,8 +10,12 @@ import (
 	"github.com/azure/azure-functions-golang-worker/tests/integration/internal/testrunner"
 )
 
+// suiteTimeout bounds the complete integration suite, including prerequisite
+// checks, emulator startup, test execution, diagnostics, and cleanup.
+const suiteTimeout = 3 * time.Minute
+
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), suiteTimeout)
 	defer cancel()
 
 	if err := defaultRunner().Run(ctx); err != nil {
@@ -26,10 +30,10 @@ func defaultRunner() testrunner.Runner {
 		funcExe = "func"
 	}
 	return testrunner.Runner{
-		ComposeFile:      filepath.Join("..", "emulators", "docker-compose.yml"),
-		ArtifactDir:      "artifacts",
-		TestPattern:      "^TestHttpTriggerGet$",
-		FuncExe:          funcExe,
-		CoreToolsVersion: "4.12.0",
+		ComposeFile:             filepath.Join("..", "emulators", "docker-compose.yml"),
+		ArtifactDir:             "artifacts",
+		TestPattern:             "^TestHttpTriggerGet$",
+		FuncExe:                 funcExe,
+		MinimumCoreToolsVersion: "4.12.0",
 	}
 }

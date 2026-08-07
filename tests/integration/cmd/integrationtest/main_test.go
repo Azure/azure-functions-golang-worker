@@ -3,6 +3,7 @@ package main
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDefaultRunnerTargetsHTTPAzuriteMilestone(t *testing.T) {
@@ -21,7 +22,10 @@ func TestDefaultRunnerTargetsHTTPAzuriteMilestone(t *testing.T) {
 	if runner.FuncExe != "func" {
 		t.Fatalf("FuncExe = %q", runner.FuncExe)
 	}
-	if runner.CoreToolsVersion != "4.12.0" {
-		t.Fatalf("CoreToolsVersion = %q", runner.CoreToolsVersion)
+	if runner.MinimumCoreToolsVersion != "4.12.0" {
+		t.Fatalf("MinimumCoreToolsVersion = %q", runner.MinimumCoreToolsVersion)
+	}
+	if suiteTimeout != 3*time.Minute {
+		t.Fatalf("suiteTimeout = %s", suiteTimeout)
 	}
 }

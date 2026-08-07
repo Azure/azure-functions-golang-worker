@@ -69,7 +69,7 @@ are written to the artifacts directory.
 ## Prerequisites
 
 1. **Go 1.25+**
-2. **Azure Functions Core Tools 4.12.0**
+2. **Azure Functions Core Tools 4.12.0 or later**
 3. **Docker with Docker Compose**
 
 Core Tools must be available as `func` on `PATH`. To use another executable,
@@ -104,7 +104,7 @@ go run ./cmd/integrationtest
 
 The runner executes these steps in order:
 
-1. Validates Core Tools 4.12.0 and Docker Compose.
+1. Validates Core Tools 4.12.0 or later and Docker Compose.
 2. Creates the `artifacts` directory.
 3. Starts Azurite if no container exists or if an existing container is stopped;
    reuses it if it is already running.
