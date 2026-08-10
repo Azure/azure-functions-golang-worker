@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -11,9 +12,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/azure/azure-functions-golang-worker/tests/integration/internal/process"
 )
 
 type commandFunc func(context.Context, string, ...string) ([]byte, error)
+type streamingCommandFunc func(context.Context, io.Writer, string, ...string) error
+
+const cleanupTimeout = 30 * time.Second
 
 // Runner owns the shared integration-test lifecycle around the Go tests:
 // prerequisite validation, emulator startup/readiness, diagnostics, and cleanup.
@@ -24,8 +30,10 @@ type Runner struct {
 	FuncExe                 string
 	MinimumCoreToolsVersion string
 
-	command   commandFunc
-	waitReady func(context.Context) error
+	command     commandFunc
+	testCommand streamingCommandFunc
+	output      io.Writer
+	waitReady   func(context.Context) error
 }
 
 func (r Runner) Run(ctx context.Context) (runErr error) {
@@ -34,6 +42,14 @@ func (r Runner) Run(ctx context.Context) (runErr error) {
 	command := r.command
 	if command == nil {
 		command = runCommand
+	}
+	testCommand := r.testCommand
+	if testCommand == nil {
+		testCommand = runStreamingCommand
+	}
+	outputWriter := r.output
+	if outputWriter == nil {
+		outputWriter = os.Stdout
 	}
 	waitReady := r.waitReady
 	if waitReady == nil {
@@ -82,24 +98,31 @@ func (r Runner) Run(ctx context.Context) (runErr error) {
 
 	// Register diagnostics and cleanup before startup. Docker Compose can return
 	// an error after creating a container, so deferring later could leak it.
-	// Named return runErr preserves the original test/startup failure; cleanup
-	// failures become the result only when no earlier failure exists.
+	// The original failure remains visible if cleanup also reports a problem.
 	defer func() {
-		logOutput, logErr := command(context.Background(), "docker",
+		var cleanupErrs []error
+
+		// Cleanup gets a fresh, limited window even when the suite has timed out.
+		logCtx, cancelLogs := context.WithTimeout(context.Background(), cleanupTimeout)
+		logOutput, logErr := command(logCtx, "docker",
 			append(composeArgs, "logs", "--no-color", "azurite")...)
-		if writeErr := os.WriteFile(filepath.Join(r.ArtifactDir, "azurite.log"), logOutput, 0o600); runErr == nil && writeErr != nil {
-			runErr = fmt.Errorf("write Azurite log: %w", writeErr)
+		cancelLogs()
+		if writeErr := os.WriteFile(filepath.Join(r.ArtifactDir, "azurite.log"), logOutput, 0o600); writeErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("write Azurite log: %w", writeErr))
 		}
-		if runErr == nil && logErr != nil {
-			runErr = fmt.Errorf("collect Azurite log: %w", logErr)
+		if logErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("collect Azurite log: %w", logErr))
 		}
 		if owned {
-			cleanupOutput, cleanupErr := command(context.Background(), "docker",
+			removeCtx, cancelRemove := context.WithTimeout(context.Background(), cleanupTimeout)
+			cleanupOutput, cleanupErr := command(removeCtx, "docker",
 				append(composeArgs, "rm", "-f", "-s", "azurite")...)
-			if runErr == nil && cleanupErr != nil {
-				runErr = fmt.Errorf("remove Azurite: %w\n%s", cleanupErr, cleanupOutput)
+			cancelRemove()
+			if cleanupErr != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Errorf("remove Azurite: %w\n%s", cleanupErr, cleanupOutput))
 			}
 		}
+		runErr = errors.Join(append([]error{runErr}, cleanupErrs...)...)
 	}()
 
 	// Reuse developer-owned containers. Only containers absent at runner startup
@@ -117,15 +140,25 @@ func (r Runner) Run(ctx context.Context) (runErr error) {
 		return fmt.Errorf("wait for Azurite readiness: %w", err)
 	}
 
-	// Keep Go test execution as a child process so local and CI runs use the same
-	// test selection, timeout, output, and exit status.
-	testArgs := []string{"test", "-v", "-count=1", "-timeout", "120s", "-run", r.TestPattern, "."}
-	testOutput, err := command(ctx, "go", testArgs...)
-	if writeErr := os.WriteFile(filepath.Join(r.ArtifactDir, "go-test.log"), testOutput, 0o600); writeErr != nil {
-		return fmt.Errorf("write Go test log: %w", writeErr)
-	}
+	// Run the selected tests consistently for local and Azure DevOps runs.
+	testArgs := []string{"test", "-v", "-count=1", "-run", r.TestPattern, "."}
+	testLogPath := filepath.Join(r.ArtifactDir, "go-test.log")
+	testLog, err := os.OpenFile(testLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return fmt.Errorf("run integration tests: %w\n%s", err, testOutput)
+		return fmt.Errorf("create Go test log: %w", err)
+	}
+	// Show progress live and save the same output for troubleshooting.
+	testErr := testCommand(ctx, io.MultiWriter(outputWriter, testLog), "go", testArgs...)
+	closeErr := testLog.Close()
+	if testErr != nil {
+		runErr := fmt.Errorf("run integration tests: %w (output: %s)", testErr, testLogPath)
+		if closeErr != nil {
+			return errors.Join(runErr, fmt.Errorf("close Go test log: %w", closeErr))
+		}
+		return runErr
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close Go test log: %w", closeErr)
 	}
 	return nil
 }
@@ -133,6 +166,18 @@ func (r Runner) Run(ctx context.Context) (runErr error) {
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	return cmd.CombinedOutput()
+}
+
+func runStreamingCommand(ctx context.Context, output io.Writer, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = output
+	cmd.Stderr = output
+	process.Configure(cmd)
+	// If the suite is cancelled, stop the test and anything it started.
+	cmd.Cancel = func() error {
+		return process.TerminateTree(cmd)
+	}
+	return cmd.Run()
 }
 
 func validateMinimumVersion(actualOutput, minimumVersion string) error {

@@ -7,7 +7,7 @@ import (
 )
 
 var eventGridEnv = map[string]string{
-	"AzureWebJobsStorage":      "UseDevelopmentStorage=true",
+	"AzureWebJobsStorage": "UseDevelopmentStorage=true",
 }
 
 func TestEventGridTriggerRegisters(t *testing.T) {

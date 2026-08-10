@@ -18,7 +18,7 @@ const azuriteConnStr = "DefaultEndpointsProtocol=http;" +
 	"TableEndpoint=http://127.0.0.1:10002/devstoreaccount1;"
 
 var blobEnv = map[string]string{
-	"AzureWebJobsStorage":      azuriteConnStr,
+	"AzureWebJobsStorage": azuriteConnStr,
 }
 
 func TestBlobTriggerFires(t *testing.T) {

@@ -1,8 +1,10 @@
 package testrunner
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,6 +41,7 @@ func TestWaitHTTPReadyPollsUntilServiceResponds(t *testing.T) {
 func TestRunNoExistingContainer(t *testing.T) {
 	artifactDir := t.TempDir()
 	var commands []string
+	var streamedOutput bytes.Buffer
 	command := func(_ context.Context, name string, args ...string) ([]byte, error) {
 		call := strings.Join(append([]string{name}, args...), " ")
 		commands = append(commands, call)
@@ -57,12 +60,11 @@ func TestRunNoExistingContainer(t *testing.T) {
 			return []byte("azurite diagnostics"), nil
 		case strings.Contains(call, "rm -f -s azurite"):
 			return []byte("removed azurite"), nil
-		case strings.HasPrefix(call, "go test"):
-			return []byte("PASS\n"), nil
 		default:
 			return nil, errors.New("unexpected command: " + call)
 		}
 	}
+	testCommand := successfulTestCommand(&commands, "PASS\n")
 
 	runner := Runner{
 		ComposeFile:             filepath.Join("tests", "emulators", "docker-compose.yml"),
@@ -71,6 +73,8 @@ func TestRunNoExistingContainer(t *testing.T) {
 		FuncExe:                 "func",
 		MinimumCoreToolsVersion: "4.12.0",
 		command:                 command,
+		testCommand:             testCommand,
+		output:                  &streamedOutput,
 		waitReady:               func(context.Context) error { return nil },
 	}
 	if err := runner.Run(context.Background()); err != nil {
@@ -84,7 +88,7 @@ func TestRunNoExistingContainer(t *testing.T) {
 		"docker compose -f " + cf + " ps -a -q azurite",
 		"docker compose -f " + cf + " ps --status running -q azurite",
 		"docker compose -f " + cf + " up -d azurite",
-		"go test -v -count=1 -timeout 120s -run ^TestHttpTriggerGet$ .",
+		"go test -v -count=1 -run ^TestHttpTriggerGet$ .",
 		"docker compose -f " + cf + " logs --no-color azurite",
 		"docker compose -f " + cf + " rm -f -s azurite",
 	}
@@ -94,6 +98,9 @@ func TestRunNoExistingContainer(t *testing.T) {
 
 	assertFileContains(t, filepath.Join(artifactDir, "go-test.log"), "PASS")
 	assertFileContains(t, filepath.Join(artifactDir, "azurite.log"), "azurite diagnostics")
+	if !strings.Contains(streamedOutput.String(), "PASS") {
+		t.Fatalf("streamed output does not contain test output:\n%s", streamedOutput.String())
+	}
 }
 
 // TestRunExistingRunningContainer covers: two ps queries, no startup, no removal.
@@ -113,8 +120,6 @@ func TestRunExistingRunningContainer(t *testing.T) {
 			return []byte("abc123\n"), nil // container is running
 		case strings.Contains(call, "logs --no-color azurite"):
 			return nil, nil
-		case strings.HasPrefix(call, "go test"):
-			return []byte("PASS\n"), nil
 		default:
 			return nil, errors.New("unexpected command: " + call)
 		}
@@ -127,6 +132,8 @@ func TestRunExistingRunningContainer(t *testing.T) {
 		FuncExe:                 "func",
 		MinimumCoreToolsVersion: "4.12.0",
 		command:                 command,
+		testCommand:             successfulTestCommand(&commands, "PASS\n"),
+		output:                  io.Discard,
 		waitReady:               func(context.Context) error { return nil },
 	}
 	if err := runner.Run(context.Background()); err != nil {
@@ -158,8 +165,6 @@ func TestRunExistingStoppedContainer(t *testing.T) {
 			return []byte("started stopped container"), nil
 		case strings.Contains(call, "logs --no-color azurite"):
 			return nil, nil
-		case strings.HasPrefix(call, "go test"):
-			return []byte("PASS\n"), nil
 		default:
 			return nil, errors.New("unexpected command: " + call)
 		}
@@ -172,6 +177,8 @@ func TestRunExistingStoppedContainer(t *testing.T) {
 		FuncExe:                 "func",
 		MinimumCoreToolsVersion: "4.12.0",
 		command:                 command,
+		testCommand:             successfulTestCommand(&commands, "PASS\n"),
+		output:                  io.Discard,
 		waitReady:               func(context.Context) error { return nil },
 	}
 	if err := runner.Run(context.Background()); err != nil {
@@ -356,5 +363,13 @@ func assertFileContains(t *testing.T, path, pattern string) {
 	}
 	if !strings.Contains(string(content), pattern) {
 		t.Fatalf("%s does not contain %q:\n%s", path, pattern, content)
+	}
+}
+
+func successfulTestCommand(commands *[]string, testOutput string) streamingCommandFunc {
+	return func(_ context.Context, output io.Writer, name string, args ...string) error {
+		*commands = append(*commands, strings.Join(append([]string{name}, args...), " "))
+		_, err := io.WriteString(output, testOutput)
+		return err
 	}
 }

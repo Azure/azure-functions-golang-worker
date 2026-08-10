@@ -1,6 +1,6 @@
 //go:build windows
 
-package testhost
+package process
 
 import (
 	"errors"
@@ -9,9 +9,9 @@ import (
 	"strconv"
 )
 
-func configureProcess(*exec.Cmd) {}
+func Configure(*exec.Cmd) {}
 
-func terminateProcessTree(cmd *exec.Cmd) error {
+func TerminateTree(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
@@ -21,7 +21,7 @@ func terminateProcessTree(cmd *exec.Cmd) error {
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 128 {
 			return nil
 		}
-		return fmt.Errorf("terminate host process tree: %w: %s", err, output)
+		return fmt.Errorf("terminate process tree: %w: %s", err, output)
 	}
 	return nil
 }

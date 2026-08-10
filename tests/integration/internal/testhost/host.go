@@ -4,7 +4,9 @@ package testhost
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -13,7 +15,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/azure/azure-functions-golang-worker/tests/integration/internal/process"
 )
+
+const cleanupTimeout = 10 * time.Second
 
 // Config holds the parameters needed to launch a test host process.
 type Config struct {
@@ -83,21 +89,41 @@ func (h *host) LogPath() string {
 	return h.logPath
 }
 
-// WaitForLog polls the host log file every 100 ms until pattern appears,
-// the context deadline is exceeded, or the host process exits unexpectedly.
-// Polling the combined log supports both readiness checks and test diagnostics
-// without requiring a separate log-streaming mechanism.
+// WaitForLog checks existing output once, then reads only new output until the
+// expected message appears, the wait ends, or the host stops unexpectedly.
 func (h *host) WaitForLog(ctx context.Context, pattern string) error {
+	if pattern == "" {
+		return nil
+	}
+
+	logReader, err := os.Open(h.logPath)
+	if err != nil {
+		return fmt.Errorf("open host log: %w", err)
+	}
+	defer logReader.Close()
+
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
+	buffer := make([]byte, 32*1024)
+	overlap := ""
 	for {
-		content, err := os.ReadFile(h.logPath)
-		if err != nil {
-			return fmt.Errorf("read host log: %w", err)
-		}
-		if strings.Contains(string(content), pattern) {
-			return nil
+		for {
+			bytesRead, readErr := logReader.Read(buffer)
+			if bytesRead > 0 {
+				content := overlap + string(buffer[:bytesRead])
+				if strings.Contains(content, pattern) {
+					return nil
+				}
+				overlapLength := min(len(pattern)-1, len(content))
+				overlap = content[len(content)-overlapLength:]
+			}
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				return fmt.Errorf("read host log: %w", readErr)
+			}
 		}
 
 		select {
@@ -148,9 +174,9 @@ func (h *host) Stop(ctx context.Context) error {
 		select {
 		case <-h.exitDone:
 		default:
-			// terminateProcessTree kills the entire process tree so that child
-			// processes spawned by Core Tools (e.g. the Go worker) are also stopped.
-			if err := terminateProcessTree(h.cmd); err != nil {
+			// Stop Core Tools and the Go worker together so no test processes
+			// are left running.
+			if err := process.TerminateTree(h.cmd); err != nil {
 				return err
 			}
 		}
@@ -188,9 +214,8 @@ func (h *host) processExitError() error {
 //  2. config.Environment overrides
 //  3. Native Go worker variables (appended last so they cannot be overridden)
 //
-// configureProcess sets platform-specific process-group attributes so that
-// terminateProcessTree can reach all child processes. cmd.Cancel uses the same
-// terminateProcessTree so that context cancellation also tears down the full tree.
+// Process handling ensures that stopping a test also stops Core Tools and the
+// Go worker processes it started.
 func newHostCommand(ctx context.Context, config Config, port string, logFile *os.File) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, config.FuncExe, "start", "--port", port)
 	cmd.Dir = config.SampleDir
@@ -206,11 +231,10 @@ func newHostCommand(ctx context.Context, config Config, port string, logFile *os
 	// Both stdout and stderr flow into a single log file for combined readiness polling and diagnostics.
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	configureProcess(cmd)
-	// cmd.Cancel is invoked when ctx is cancelled; terminate the full process tree
-	// rather than sending a signal only to the root process.
+	process.Configure(cmd)
+	// Stop all test host processes when the test is cancelled.
 	cmd.Cancel = func() error {
-		return terminateProcessTree(cmd)
+		return process.TerminateTree(cmd)
 	}
 	return cmd
 }
@@ -287,7 +311,13 @@ func Start(ctx context.Context, config Config) (Host, error) {
 
 	// Step 4: wait for readiness; clean up on failure.
 	if err := started.waitUntilReady(ctx, config.InitTimeout); err != nil {
-		_ = started.Stop(context.Background())
+		// Give cleanup a short, independent window if startup times out.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		stopErr := started.Stop(cleanupCtx)
+		cancel()
+		if stopErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("clean up failed host startup: %w", stopErr))
+		}
 		return nil, err
 	}
 	return started, nil

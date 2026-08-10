@@ -17,8 +17,8 @@ const (
 )
 
 var cosmosEnv = map[string]string{
-	"AzureWebJobsStorage":      "UseDevelopmentStorage=true",
-	"CosmosDBConnection":       cosmosConnStr,
+	"AzureWebJobsStorage": "UseDevelopmentStorage=true",
+	"CosmosDBConnection":  cosmosConnStr,
 }
 
 func ensureCosmosContainers(t *testing.T) {
