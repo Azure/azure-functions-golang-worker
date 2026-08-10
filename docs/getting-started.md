@@ -32,62 +32,16 @@ az version
 Go support is currently in preview and uses the native Go runtime on the
 [Flex Consumption plan](https://learn.microsoft.com/azure/azure-functions/flex-consumption-plan).
 
-You can create the required Azure resources using any supported provisioning
-tool, including:
+The simplest way to create a Function App is through the
+[Azure portal](https://portal.azure.com/), which automates the supporting
+resource and role assignment setup.
 
-- The [Azure portal](https://portal.azure.com/)
+You can also provision the Function App and its dependencies using:
+
 - The Azure CLI
 - [Bicep](https://learn.microsoft.com/azure/azure-resource-manager/bicep/)
 - Azure Resource Manager (ARM) templates
 - Terraform or another infrastructure-as-code tool
-
-The following Azure CLI example creates a resource group, storage account, and
-Function App. Replace the placeholder values before running the commands.
-
-Sign in and select the Azure subscription:
-
-```bash
-az login
-az account set --subscription <SUBSCRIPTION_ID>
-```
-
-Create a resource group:
-
-```bash
-az group create \
-  --name <RESOURCE_GROUP> \
-  --location <LOCATION>
-```
-
-Create the storage account used by Azure Functions:
-
-```bash
-# The name must be globally unique, contain 3-24 characters, and use only
-# lowercase letters and numbers.
-az storage account create \
-  --name <STORAGE_ACCOUNT_NAME> \
-  --resource-group <RESOURCE_GROUP> \
-  --location <LOCATION> \
-  --sku Standard_LRS \
-  --kind StorageV2 \
-  --allow-blob-public-access false \
-  --min-tls-version TLS1_2
-```
-
-Create the Go Function App on Flex Consumption:
-
-```bash
-# The Function App name must be globally unique.
-az functionapp create \
-  --name <FUNCTION_APP_NAME> \
-  --resource-group <RESOURCE_GROUP> \
-  --storage-account <STORAGE_ACCOUNT_NAME> \
-  --flexconsumption-location <LOCATION> \
-  --runtime golang \
-  --runtime-version 1.24 \
-  --functions-version 4 \
-  --https-only true
-```
 
 After creating the Function App, continue developing and testing locally. The
 Azure resource is needed only when you are ready to
