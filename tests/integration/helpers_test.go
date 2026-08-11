@@ -36,6 +36,16 @@ func funcExe() string {
 	return "func"
 }
 
+func withNativeWorkerEnvironment(env map[string]string) map[string]string {
+	nativeEnv := make(map[string]string, len(env)+2)
+	for key, value := range env {
+		nativeEnv[key] = value
+	}
+	nativeEnv["FUNCTIONS_WORKER_RUNTIME"] = "native"
+	nativeEnv["FUNCTIONS_CLI_NATIVE_LANGUAGE"] = "go"
+	return nativeEnv
+}
+
 // requireEmulator checks that a TCP endpoint is reachable, and fails the test if not.
 func requireEmulator(t *testing.T, name, addr string) {
 	t.Helper()
@@ -122,7 +132,7 @@ func StartFuncHost(t *testing.T, sampleName string, port int, env map[string]str
 
 	// Prepare environment
 	runEnv := os.Environ()
-	for k, v := range env {
+	for k, v := range withNativeWorkerEnvironment(env) {
 		runEnv = append(runEnv, fmt.Sprintf("%s=%s", k, v))
 	}
 

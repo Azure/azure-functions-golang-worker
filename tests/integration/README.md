@@ -1,116 +1,241 @@
 # Integration Tests
 
-Black-box integration tests for the Azure Functions Go Worker. Each test builds a sample app, starts it via `func.exe`, and verifies behavior through log output and SDK clients.
+Black-box integration tests for the Azure Functions Go Worker. The suite verifies
+that Azure Functions Core Tools can start the Functions host, establish the
+worker channel, index Go functions, invoke them, and return or process the
+expected output.
+
+The tests use local Docker emulators only. They do not require Azure credentials
+or deployed Azure resources.
+
+```text
+Azure DevOps Pipeline / Local Developer
+                  |
+                  | go run ./cmd/integrationtest
+                  v
++--------------------------------------------------+
+| Integration Test Runner                          |
+|                                                  |
+|  1. Validate Core Tools and Docker Compose       |
+|  2. Start/reuse emulators and wait for readiness |
+|  3. Run selected Go integration tests            |
+|  4. Collect diagnostics and clean up              |
++----------------------+---------------------------+
+                       |
+                       | go test -run <scenario>
+                       v
++--------------------------------------------------+
+| Test Scenario                                    |
+|                                                  |
+|  - Prepare test data                             |
+|  - Start the sample through testhost             |
+|  - Send request/event                            |
+|  - Assert response, output, or logs              |
++----------------------+---------------------------+
+                       |
+                       | testhost.Start(...)
+                       v
++--------------------------------------------------+
+| Test Host                                        |
+|                                                  |
+|  - Select dynamic port                           |
+|  - Start Azure Functions Core Tools              |
+|  - Wait for worker and host readiness            |
+|  - Capture logs                                  |
+|  - Stop the complete process tree                |
++----------------------+---------------------------+
+                       |
+                       v
+          +---------------------------+
+          | Azure Functions Host      |
+          |        Core Tools         |
+          +-------------+-------------+
+                        |
+                        | gRPC worker channel
+                        v
+          +---------------------------+
+          | Go Worker                 |
+          |                           |
+          |  - Report/load functions  |
+          |  - Dispatch invocation    |
+          |  - Run registered handler |
+          |  - Return result          |
+          +---------------------------+
+
+Diagnostics from the runner, emulator, host, and worker
+are written to the artifacts directory.
+```
 
 ## Prerequisites
 
 1. **Go 1.25+**
-2. **Azure Functions Core Tools** (`func.exe`) — built or installed
-3. **Docker** — for running emulators
+2. **Azure Functions Core Tools 4.12.0 or later**
+3. **Docker with Docker Compose**
 
-### Start emulators
+Core Tools must be available as `func` on `PATH`. To use another executable,
+set `FUNC_EXE`:
 
 ```bash
-docker compose -f ../emulators/docker-compose.yml up -d
+export FUNC_EXE=/path/to/func
 ```
 
-This starts:
-- **Azurite** — Azure Storage emulator (ports 10000-10002)
-- **Service Bus emulator** — (port 5672 on 127.0.0.1)
-- **Event Hub emulator** — (port 5672 on 127.0.0.2)
-- **Cosmos DB emulator** — (port 8081)
-- **SQL Server** — backing store for SB/EH emulators, also the target for SQL trigger tests (port 1433)
+```powershell
+$env:FUNC_EXE = "C:\path\to\func.exe"
+```
 
-## Running
+The runner validates the Core Tools version and Docker Compose before starting
+the suite.
+
+## Current coverage — HTTP worker lifecycle and invocation path
+
+The current integration test verifies the worker's core HTTP path end to end:
+Core Tools starts the native Go worker, the worker establishes its host
+channel, reports and loads the registered HTTP function, dispatches
+invocations to a standard `net/http` handler, and returns the handler's status
+and body to the client. `TestHttpTriggerGet` exercises that path with both GET
+and POST requests.
+
+Run it from the integration-test module:
 
 ```bash
 cd tests/integration
-
-# Run all tests (requires func on PATH)
-go test -v -timeout 300s ./...
-
-# Run a specific test
-go test -v -timeout 120s -run TestHttpTrigger ./...
+go run ./cmd/integrationtest
 ```
 
-To use a custom `func` binary (e.g. a local build), set `FUNC_EXE`:
+The runner executes these steps in order:
+
+1. Validates Core Tools 4.12.0 or later and Docker Compose.
+2. Creates the `artifacts` directory.
+3. Starts Azurite if no container exists or if an existing container is stopped;
+   reuses it if it is already running.
+4. Waits for Azurite blob (`127.0.0.1:10000`) and queue (`127.0.0.1:10001`)
+   service readiness.
+5. Runs `TestHttpTriggerGet` via `go test`.
+6. Captures Azurite container logs and the Go test log as artifacts.
+7. Removes Azurite only if no Azurite container existed before the run. A
+   pre-existing stopped container that was started by the runner is left in place
+   afterward.
+
+## Azure DevOps integration (planned)
+
+Azure DevOps pipeline wiring for this runner is planned but not yet implemented.
+The intended design is a Linux host job that runs:
+
 ```bash
-export FUNC_EXE=/path/to/func               # Linux/macOS
-$env:FUNC_EXE = "C:\path\to\func.exe"       # PowerShell
+cd tests/integration
+go run ./cmd/integrationtest
 ```
 
-Tests will fail immediately if a required emulator is not running, with a message showing which emulator is missing and how to start it.
+The pipeline would provision Go, the pinned Core Tools release, and Docker before
+invoking the runner. Pipeline YAML would own agent and tool provisioning only;
+emulator lifecycle, readiness, test selection, diagnostics, and cleanup would
+remain implemented by the repository runner.
 
-## Adding a new integration test
+The integration-test job is intended to become a required pre-merge PR check once
+pipeline wiring is complete.
 
-1. **Create a sample app** in `../../samples/<name>/` with a `main.go` and `host.json`.
+## Success criteria
 
-2. **Create a test file** named `<name>_test.go` in this directory. Use `StartFuncHost` from `helpers_test.go`:
+A test passes only when:
 
-   ```go
-   package integration
+1. Its required emulators report ready.
+2. Core Tools starts the Functions host.
+3. The host establishes the Go worker channel.
+4. The expected function is indexed.
+5. The scenario-specific invocation or trigger completes.
+6. The test observes the expected response, metadata, or log output.
+7. The host and emulator processes remain alive until the scenario completes.
 
-   import (
-       "testing"
-       "time"
-   )
+Timing is informational. The suite does not enforce host-startup or invocation
+performance thresholds.
 
-   var myEnv = map[string]string{
-       "AzureWebJobsStorage":      "UseDevelopmentStorage=true",
-       "FUNCTIONS_WORKER_RUNTIME": "golang",
-       // Add any connection strings the trigger needs
-   }
+## Artifacts
 
-   func TestMyTriggerFires(t *testing.T) {
-       requireAzurite(t)  // fail fast if emulator is down
-       proc := StartFuncHost(t, "mySample", 7220, myEnv, 30*time.Second)
+Each run writes diagnostics beneath `tests/integration/artifacts`. Existing
+files for the same test run are replaced.
 
-       // Use an Azure SDK client to send an event / upload data / etc.
+```text
+artifacts/
+├── azurite.log
+├── go-test.log
+└── TestHttpTriggerGet/
+    └── httpTrigger-host.log
+```
 
-       proc.AssertLogContains("expected log output", 30*time.Second)
-       proc.AssertLogContains("Succeeded", 5*time.Second)
-   }
-   ```
+- `azurite.log` contains complete Azurite container output.
+- `go-test.log` contains complete Go test output.
+- `TestHttpTriggerGet/httpTrigger-host.log` contains complete Functions host and
+  worker output for the HTTP trigger test.
 
-3. **Pick a unique port** — check existing tests to avoid collisions (current range: 7201-7209).
-
-4. **If the test needs a new Azure SDK**, add it to `go.mod`:
-   ```bash
-   cd tests/integration
-   go get github.com/Azure/azure-sdk-for-go/sdk/...@latest
-   go mod tidy
-   ```
-   This only affects the test module — the worker library's `go.mod` is not touched.
-
-5. **If the test needs a new emulator**, add the service to `../emulators/docker-compose.yml`.
-
-6. **Add a `require*` call** as the first line of each test function. This ensures the test fails immediately with a clear message if the emulator isn't running, rather than timing out waiting for `func.exe` to start. Available helpers:
-   - `requireAzurite(t)` — all tests need this (backs `AzureWebJobsStorage`)
-   - `requireCosmosDB(t)` — Cosmos DB trigger tests
-   - `requireServiceBus(t)` — Service Bus queue/topic tests
-   - `requireEventHub(t)` — Event Hub trigger tests
-   - `requireSQLServer(t)` — SQL trigger tests
-
-   To add a new one, use `requireEmulator(t, "name", "host:port")` in `helpers_test.go`.
-
-### `FuncHostProcess` API
-
-- `StartFuncHost(t, sampleName, port, env, initTimeout)` — builds the sample, starts `func.exe`, waits for initialization
-- `proc.AssertLogContains(pattern, timeout)` — fails the test if the pattern doesn't appear within timeout
-- `proc.WaitForLog(pattern, timeout) bool` — returns true/false without failing
-- `proc.ReadLog() string` — returns the current log contents
-- Cleanup (kill process, remove binary) is automatic via `t.Cleanup`
+On failure, the runner captures container logs before cleanup. A cleanup error is
+reported without replacing the original test failure.
 
 ## Architecture
 
-This directory is a **separate Go module** (`tests/integration/go.mod`) so that test-only SDK dependencies (`azcosmos`, `azeventhubs`, `azservicebus`) don't pollute the worker library's dependency tree.
+This directory is a separate Go module so test-only Azure SDK dependencies do
+not affect the worker library's dependency tree.
 
-Tests are fully black-box — they don't import any code from the worker module. Instead they:
+```text
+cmd/integrationtest
+        |
+        v
+internal/testrunner
+  - validates tools
+  - manages Azurite lifecycle (start/reuse/cleanup)
+  - waits for emulator readiness
+  - runs Go tests
+  - captures artifacts
+        |
+        v
+internal/testhost
+  - allocates a dynamic port
+  - starts Core Tools
+  - configures the native Go worker
+  - waits for worker and host readiness
+  - monitors unexpected exits
+  - captures the complete host log
+  - terminates the process tree
+        |
+        v
+trigger-specific test
+  - provisions test data
+  - sends the stimulus
+  - asserts functional behavior
+```
 
-1. `go build` a sample app from `../../samples/<name>/`
-2. Start `func.exe` pointing at that sample directory
-3. Wait for `"Worker process started and initialized"` in the log
-4. Use Azure SDK clients to send events / upload blobs / insert documents
-5. Assert expected log patterns appear within a timeout
+### Ownership boundaries
 
-The shared test harness is in `helpers_test.go` (`StartFuncHost`, `FuncHostProcess`).
+- The **runner** owns shared tools, Azurite lifecycle, readiness, test
+  selection, artifacts, and cleanup.
+- `TestHost` owns one Functions host process and its Go worker children.
+- A **test scenario** owns only resource setup, stimulus, and behavioral
+  assertions.
+
+Tests do not start Docker containers, choose fixed host ports, install tools, or
+implement process cleanup.
+
+## Emulator endpoints
+
+| Emulator | Host endpoint | Readiness |
+|---|---|---|
+| Azurite Blob | `127.0.0.1:10000` | Blob service request |
+| Azurite Queue | `127.0.0.1:10001` | Queue service request |
+| Azurite Table | `127.0.0.1:10002` | Not probed by the current milestone |
+
+Emulator images are pinned in `tests/emulators/docker-compose.yml`. Update image
+versions deliberately and validate the affected tests after each update.
+
+## Future work
+
+The following are planned but not implemented in this milestone:
+
+- **Additional trigger scenarios**: Timer, Blob Storage, Queue Storage, Event
+  Grid, Event Hubs, Cosmos DB, Service Bus, and SQL trigger tests.
+- **Additional emulator profiles**: Event Hubs, Cosmos DB, Service Bus, and SQL
+  Server containers with their own readiness checks and lifecycle management.
+- **JUnit output**: `go-test.xml` for Azure DevOps test result publishing.
+- **Run metadata**: `run.json` recording tool versions, emulator image digests,
+  timestamps, and source revision.
+- **Structured profile diagnostics**: Per-profile log files under `artifacts/profiles/`.
+- **Azure DevOps pipeline wiring**: Pipeline YAML, required PR check, and
+  artifact publishing.

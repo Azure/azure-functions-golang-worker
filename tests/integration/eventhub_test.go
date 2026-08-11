@@ -15,9 +15,8 @@ const ehConnStr = "Endpoint=sb://127.0.0.2;" +
 	"UseDevelopmentEmulator=true;"
 
 var eventHubEnv = map[string]string{
-	"AzureWebJobsStorage":      "UseDevelopmentStorage=true",
-	"FUNCTIONS_WORKER_RUNTIME": "golang",
-	"EventHubConnection":       ehConnStr,
+	"AzureWebJobsStorage": "UseDevelopmentStorage=true",
+	"EventHubConnection":  ehConnStr,
 }
 
 func TestEventHubTriggerFires(t *testing.T) {

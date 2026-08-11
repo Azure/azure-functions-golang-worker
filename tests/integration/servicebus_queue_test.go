@@ -14,9 +14,8 @@ const sbConnStr = "Endpoint=sb://localhost;" +
 	"UseDevelopmentEmulator=true;"
 
 var serviceBusQueueEnv = map[string]string{
-	"AzureWebJobsStorage":      "UseDevelopmentStorage=true",
-	"FUNCTIONS_WORKER_RUNTIME": "golang",
-	"ServiceBusConnection":     sbConnStr,
+	"AzureWebJobsStorage":  "UseDevelopmentStorage=true",
+	"ServiceBusConnection": sbConnStr,
 }
 
 func TestServiceBusQueueTriggerFires(t *testing.T) {

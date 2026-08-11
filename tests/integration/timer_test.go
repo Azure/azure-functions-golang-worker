@@ -6,8 +6,7 @@ import (
 )
 
 var timerEnv = map[string]string{
-	"AzureWebJobsStorage":      "UseDevelopmentStorage=true",
-	"FUNCTIONS_WORKER_RUNTIME": "golang",
+	"AzureWebJobsStorage": "UseDevelopmentStorage=true",
 }
 
 func TestTimerTriggerFires(t *testing.T) {

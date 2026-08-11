@@ -38,8 +38,7 @@ func sqlTestConnStr() string {
 
 func sqlEnv() map[string]string {
 	return map[string]string{
-		"AzureWebJobsStorage":      "UseDevelopmentStorage=true",
-		"FUNCTIONS_WORKER_RUNTIME": "native",
+		"AzureWebJobsStorage": "UseDevelopmentStorage=true",
 		"AzureWebJobsSqlConnectionString": fmt.Sprintf(
 			"Server=127.0.0.1,1433;Database=test;User Id=sa;Password=%s;TrustServerCertificate=True;",
 			sqlTestPassword(),
