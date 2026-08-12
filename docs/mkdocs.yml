@@ -4,6 +4,8 @@ site_url: https://azure.github.io/azure-functions-golang-worker/
 repo_url: https://github.com/Azure/azure-functions-golang-worker
 repo_name: Azure/azure-functions-golang-worker
 edit_uri: edit/main/docs/
+docs_dir: .
+site_dir: ../site
 
 theme:
   name: material
