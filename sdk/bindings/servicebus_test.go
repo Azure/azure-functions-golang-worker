@@ -27,6 +27,9 @@ func TestServiceBusQueueTrigger_ToBinding(t *testing.T) {
 	if binding.ServiceBusBinding.QueueName != "myqueue" {
 		t.Errorf("expected queueName %q, got %q", "myqueue", binding.ServiceBusBinding.QueueName)
 	}
+	if binding.ServiceBusBinding.DataType != "binary" {
+		t.Errorf("expected dataType %q, got %q", "binary", binding.ServiceBusBinding.DataType)
+	}
 }
 
 func TestServiceBusTopicTrigger_ToBinding(t *testing.T) {
@@ -48,6 +51,9 @@ func TestServiceBusTopicTrigger_ToBinding(t *testing.T) {
 	}
 	if binding.ServiceBusBinding.SubscriptionName != "mysub" {
 		t.Errorf("expected subscriptionName %q, got %q", "mysub", binding.ServiceBusBinding.SubscriptionName)
+	}
+	if binding.ServiceBusBinding.DataType != "binary" {
+		t.Errorf("expected dataType %q, got %q", "binary", binding.ServiceBusBinding.DataType)
 	}
 }
 

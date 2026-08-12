@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/azure/azure-functions-golang-worker/tests/integration/internal/testhost"
 )
 
 // repoRoot returns the absolute path to the repository root.
@@ -89,6 +90,45 @@ func cleanAzuriteCheckpoints(t *testing.T) {
 	for _, name := range []string{"azure-webjobs-hosts", "azure-webjobs-eventhub"} {
 		_, _ = client.DeleteContainer(ctx, name, nil)
 	}
+}
+
+func startSampleHost(t *testing.T, sampleName string, env map[string]string, initTimeout time.Duration) testhost.Host {
+	t.Helper()
+	cleanAzuriteCheckpoints(t)
+
+	host, err := testhost.Start(context.Background(), testhost.Config{
+		SampleDir:   filepath.Join(samplesDir(), sampleName),
+		FuncExe:     funcExe(),
+		Environment: env,
+		ArtifactDir: filepath.Join("artifacts", t.Name()),
+		InitTimeout: initTimeout,
+	})
+	if err != nil {
+		t.Fatalf("start %s function host: %v", sampleName, err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := host.Stop(stopCtx); err != nil {
+			t.Errorf("stop %s function host: %v", sampleName, err)
+		}
+	})
+	return host
+}
+
+func assertHostLogContains(t *testing.T, host testhost.Host, pattern string, timeout time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := host.WaitForLog(ctx, pattern); err != nil {
+		t.Fatalf("wait for host log pattern %q: %v", pattern, err)
+	}
+}
+
+func hostLogContains(host testhost.Host, pattern string, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return host.WaitForLog(ctx, pattern) == nil
 }
 
 // FuncHostProcess manages a func.exe process for a sample directory.

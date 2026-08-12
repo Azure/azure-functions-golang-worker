@@ -4,7 +4,8 @@
       {
         "Name": "emulatorns1",
         "Queues": [
-          { "Name": "input-queue", "Properties": {} }
+          { "Name": "input-queue", "Properties": {} },
+          { "Name": "input-queue-batch", "Properties": {} }
         ],
         "Topics": [
           {

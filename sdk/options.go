@@ -1,6 +1,8 @@
 package sdk
 
 import (
+	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -327,18 +329,33 @@ func WithConnection(connection string) Option {
 }
 
 // WithCardinality sets the trigger cardinality ("one" or "many").
-// Works with EventHub and ServiceBus triggers.
+// The value must match the registered EventHub or ServiceBus handler shape.
 func WithCardinality(cardinality string) Option {
 	return func(rf *RegisteredFunction) {
 		b := rf.triggerBinding()
 		if b == nil {
 			return
 		}
+		if b.EventHubBinding == nil && b.ServiceBusBinding == nil {
+			return
+		}
+		if cardinality != "one" && cardinality != "many" {
+			panic(fmt.Sprintf("cardinality must be %q or %q, got %q", "one", "many", cardinality))
+		}
+		expected := ""
 		if b.EventHubBinding != nil {
+			expected = validateMessageHandler("EventHub", rf.Func, reflect.TypeOf(bindings.EventHubMessage{}))
 			b.EventHubBinding.Cardinality = cardinality
 		}
 		if b.ServiceBusBinding != nil {
+			expected = validateMessageHandler("ServiceBus", rf.Func, reflect.TypeOf(bindings.ServiceBusMessage{}))
 			b.ServiceBusBinding.Cardinality = cardinality
+		}
+		if expected != "" && cardinality != expected {
+			handlerTypes := map[string]string{"one": "single-message", "many": "batch"}
+			panic(fmt.Sprintf(
+				"cardinality %q does not match the registered %s handler; use cardinality %q or register a %s handler",
+				cardinality, handlerTypes[expected], expected, handlerTypes[cardinality]))
 		}
 	}
 }

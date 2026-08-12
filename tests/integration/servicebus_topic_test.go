@@ -1,11 +1,9 @@
 package integration
 
 import (
-	"context"
+	"fmt"
 	"testing"
 	"time"
-
-	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 )
 
 var serviceBusTopicEnv = map[string]string{
@@ -16,28 +14,13 @@ var serviceBusTopicEnv = map[string]string{
 func TestServiceBusTopicTriggerFires(t *testing.T) {
 	requireAzurite(t)
 	requireServiceBus(t)
-	proc := StartFuncHost(t, "serviceBusTopicTrigger", 7206, serviceBusTopicEnv, 30*time.Second)
+	host := startSampleHost(t, "serviceBusTopicTrigger", serviceBusTopicEnv, 30*time.Second)
 
-	// Send a message to the topic
-	client, err := azservicebus.NewClientFromConnectionString(sbConnStr, nil)
-	if err != nil {
-		t.Fatalf("failed to create service bus client: %v", err)
-	}
-	defer client.Close(context.Background())
+	body := fmt.Sprintf("single-servicebus-topic-%d", time.Now().UnixNano())
+	sendServiceBusMessages(t, "orders", body)
 
-	sender, err := client.NewSender("orders", nil)
-	if err != nil {
-		t.Fatalf("failed to create sender: %v", err)
-	}
-	defer sender.Close(context.Background())
-
-	err = sender.SendMessage(context.Background(), &azservicebus.Message{
-		Body: []byte("Order #99 from topic integration test"),
-	}, nil)
-	if err != nil {
-		t.Fatalf("failed to send message: %v", err)
-	}
-
-	proc.AssertLogContains("servicebus topic trigger executed", 15*time.Second)
-	proc.AssertLogContains("Succeeded", 5*time.Second)
+	assertHostLogContains(t, host, "servicebus topic trigger executed", 15*time.Second)
+	assertHostLogContains(t, host, body, 5*time.Second)
+	assertHostLogContains(t, host, "test_id="+body, 5*time.Second)
+	assertHostLogContains(t, host, "Executed 'Functions.topicFunc' (Succeeded", 5*time.Second)
 }

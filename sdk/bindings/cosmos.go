@@ -36,7 +36,7 @@ type CosmosDocument struct {
 	Self        string          `json:"_self"`
 	Etag        string          `json:"_etag"`
 	Attachments string          `json:"_attachments"`
-	Timestamp   string          `json:"_ts"`
+	Timestamp   int64           `json:"_ts"`
 	Lsn         int             `json:"_lsn"`
 }
 

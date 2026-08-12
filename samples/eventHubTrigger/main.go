@@ -17,7 +17,21 @@ func EventHubHandler(ctx context.Context, event bindings.EventHubMessage) error 
 		"offset", event.Offset,
 		"enqueued_time", event.EnqueuedTimeUtc,
 		"partition_key", event.PartitionKey,
+		"test_id", event.Properties["testID"],
 	)
+	return nil
+}
+
+func EventHubBatchHandler(ctx context.Context, events []bindings.EventHubMessage) error {
+	slog.InfoContext(ctx, "eventhub batch trigger executed", "batch_size", len(events))
+	for _, event := range events {
+		slog.InfoContext(ctx, "eventhub batch event",
+			"body", string(event.Body),
+			"sequence_number", event.SequenceNumber,
+			"offset", event.Offset,
+			"test_id", event.Properties["testID"],
+		)
+	}
 	return nil
 }
 
@@ -28,6 +42,11 @@ func main() {
 		sdk.WithEventHubName("input-hub"),
 		sdk.WithConnection("EventHubConnection"),
 		sdk.WithConsumerGroup("watchtower-test"),
+	)
+	app.EventHub("eventHubBatchTrigger", sdk.EventHubBatchHandler(EventHubBatchHandler),
+		sdk.WithEventHubName("input-hub-batch"),
+		sdk.WithConnection("EventHubConnection"),
+		sdk.WithConsumerGroup("watchtower-batch-test"),
 	)
 
 	worker.Start(app)

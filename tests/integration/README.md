@@ -95,6 +95,11 @@ invocations to a standard `net/http` handler, and returns the handler's status
 and body to the client. `TestHttpTriggerGet` exercises that path with both GET
 and POST requests.
 
+Event Hubs, Service Bus, and Cosmos DB scenarios are also available as explicit
+tests when the full emulator stack is started manually. Event Hubs and Service
+Bus queue coverage includes separate single-message and batch-delivery tests;
+the batch tests verify payloads and per-message metadata alignment.
+
 Run it from the integration-test module:
 
 ```bash
@@ -229,8 +234,8 @@ versions deliberately and validate the affected tests after each update.
 
 The following are planned but not implemented in this milestone:
 
-- **Additional trigger scenarios**: Timer, Blob Storage, Queue Storage, Event
-  Grid, Event Hubs, Cosmos DB, Service Bus, and SQL trigger tests.
+- **Runner coverage for additional trigger scenarios**: Timer, Blob Storage,
+  Queue Storage, Event Grid, Event Hubs, Cosmos DB, Service Bus, and SQL.
 - **Additional emulator profiles**: Event Hubs, Cosmos DB, Service Bus, and SQL
   Server containers with their own readiness checks and lifecycle management.
 - **JUnit output**: `go-test.xml` for Azure DevOps test result publishing.

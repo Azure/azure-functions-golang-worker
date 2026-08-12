@@ -41,15 +41,16 @@ func FromProto(req *pb.InvocationRequest, fields map[string]*funcField, args []r
 	return nil
 }
 
-// azFuncDataTag is the special json struct-field tag used by SDK binding
-// types (e.g. QueueMessage, ServiceBusMessage) to mark the single field
-// that should receive the raw trigger input body. All other fields on
-// such a struct are populated from trigger metadata, looked up by name.
+// azFuncDataTag is the legacy json struct-field tag used by SDK binding
+// types to mark the field that receives the raw trigger input body. New
+// bindings can preserve their public JSON name with the azfunc:"data" tag.
 const azFuncDataTag = "azfuncdata"
 
-// isAzFuncDataField reports whether field f opts into azFuncDataTag.
-// Matching is case-insensitive and tolerates options like ",omitempty".
+// isAzFuncDataField reports whether field f opts into raw trigger input data.
 func isAzFuncDataField(f reflect.StructField) bool {
+	if strings.EqualFold(f.Tag.Get("azfunc"), "data") {
+		return true
+	}
 	tag := f.Tag.Get("json")
 	if idx := strings.Index(tag, ","); idx != -1 {
 		tag = tag[:idx]
@@ -82,6 +83,24 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 
 	pv := reflect.New(t)
 	v := pv.Elem()
+
+	if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Struct {
+		if values, ok := typedDataCollectionValues(data); ok {
+			result := reflect.MakeSlice(t, len(values), len(values))
+			for i, value := range values {
+				metadata, err := collectionMetadataAt(tm, i)
+				if err != nil {
+					return reflect.Value{}, err
+				}
+				element, err := convertToTypeValue(t.Elem(), value, metadata)
+				if err != nil {
+					return reflect.Value{}, fmt.Errorf("failed to decode collection element %d: %w", i, err)
+				}
+				result.Index(i).Set(element)
+			}
+			return result, nil
+		}
+	}
 
 	// If struct, try JSON decoding first, then fall back to TriggerMetadata field matching.
 	//
@@ -178,6 +197,81 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 		return ptr, nil
 	}
 	return d, nil
+}
+
+func typedDataCollectionValues(data *pb.TypedData) ([]*pb.TypedData, bool) {
+	if data == nil {
+		return nil, false
+	}
+	if collection := data.GetCollectionBytes(); collection != nil {
+		values := make([]*pb.TypedData, len(collection.GetBytes()))
+		for i, value := range collection.GetBytes() {
+			values[i] = &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: value}}
+		}
+		return values, true
+	}
+	if collection := data.GetCollectionString(); collection != nil {
+		values := make([]*pb.TypedData, len(collection.GetString_()))
+		for i, value := range collection.GetString_() {
+			values[i] = &pb.TypedData{Data: &pb.TypedData_String_{String_: value}}
+		}
+		return values, true
+	}
+	if collection := data.GetCollectionDouble(); collection != nil {
+		values := make([]*pb.TypedData, len(collection.GetDouble()))
+		for i, value := range collection.GetDouble() {
+			values[i] = &pb.TypedData{Data: &pb.TypedData_Double{Double: value}}
+		}
+		return values, true
+	}
+	if collection := data.GetCollectionSint64(); collection != nil {
+		values := make([]*pb.TypedData, len(collection.GetSint64()))
+		for i, value := range collection.GetSint64() {
+			values[i] = &pb.TypedData{Data: &pb.TypedData_Int{Int: value}}
+		}
+		return values, true
+	}
+	return nil, false
+}
+
+func collectionMetadataAt(metadata map[string]*pb.TypedData, index int) (map[string]*pb.TypedData, error) {
+	result := make(map[string]*pb.TypedData, len(metadata))
+	for name, value := range metadata {
+		if !strings.HasSuffix(strings.ToLower(name), "array") {
+			result[name] = value
+			continue
+		}
+
+		element, ok, err := typedDataElementAt(value, index)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode trigger metadata %q: %w", name, err)
+		}
+		if ok {
+			result[name[:len(name)-len("Array")]] = element
+		}
+	}
+	return result, nil
+}
+
+func typedDataElementAt(data *pb.TypedData, index int) (*pb.TypedData, bool, error) {
+	if values, ok := typedDataCollectionValues(data); ok {
+		if index >= len(values) {
+			return nil, false, nil
+		}
+		return values[index], true, nil
+	}
+
+	if data == nil || data.GetJson() == "" {
+		return nil, false, nil
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal([]byte(data.GetJson()), &values); err != nil {
+		return nil, false, err
+	}
+	if index >= len(values) {
+		return nil, false, nil
+	}
+	return &pb.TypedData{Data: &pb.TypedData_Json{Json: string(values[index])}}, true, nil
 }
 
 // decodeProto converts a single TypedData value from the host into a Go

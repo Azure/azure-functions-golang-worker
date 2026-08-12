@@ -104,6 +104,10 @@ func TestProcessRequestMessage_WorkerInit_PropagatesCapabilities(t *testing.T) {
 	if caps["AnotherFlag"] != "yes" {
 		t.Errorf("AnotherFlag = %q, want %q", caps["AnotherFlag"], "yes")
 	}
+	if caps["IncludeEmptyEntriesInMessagePayload"] != "true" {
+		t.Errorf("IncludeEmptyEntriesInMessagePayload = %q, want %q",
+			caps["IncludeEmptyEntriesInMessagePayload"], "true")
+	}
 }
 
 func TestProcessRequestMessage_FunctionsMetadata(t *testing.T) {

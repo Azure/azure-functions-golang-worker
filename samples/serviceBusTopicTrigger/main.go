@@ -18,6 +18,7 @@ func ServiceBusTopicHandler(ctx context.Context, msg bindings.ServiceBusMessage)
 		"sequence_number", msg.SequenceNumber,
 		"subject", msg.Subject,
 		"content_type", msg.ContentType,
+		"test_id", msg.ApplicationProperties["testID"],
 	)
 	return nil
 }

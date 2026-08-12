@@ -36,8 +36,15 @@ type TimerHandler = func(context.Context, bindings.TimerInfo) error
 // (both queue and topic triggers).
 type ServiceBusHandler = func(context.Context, bindings.ServiceBusMessage) error
 
+// ServiceBusBatchHandler is the handler type for batched Service Bus triggered
+// functions (both queue and topic triggers).
+type ServiceBusBatchHandler = func(context.Context, []bindings.ServiceBusMessage) error
+
 // EventHubHandler is the handler type for Event Hub triggered functions.
 type EventHubHandler = func(context.Context, bindings.EventHubMessage) error
+
+// EventHubBatchHandler is the handler type for batched Event Hub triggered functions.
+type EventHubBatchHandler = func(context.Context, []bindings.EventHubMessage) error
 
 // CosmosDBHandler is the handler type for CosmosDB triggered functions.
 type CosmosDBHandler = func(context.Context, []bindings.CosmosDocument) error

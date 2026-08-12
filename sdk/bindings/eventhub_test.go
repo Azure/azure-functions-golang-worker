@@ -28,6 +28,9 @@ func TestEventHubTrigger_ToBinding(t *testing.T) {
 	if binding.EventHubBinding.EventHubName != "myeventhub" {
 		t.Errorf("expected eventHubName %q, got %q", "myeventhub", binding.EventHubBinding.EventHubName)
 	}
+	if binding.EventHubBinding.DataType != "binary" {
+		t.Errorf("expected dataType %q, got %q", "binary", binding.EventHubBinding.DataType)
+	}
 }
 
 func TestEventHubMessage_JSON(t *testing.T) {

@@ -13,6 +13,7 @@ type ServiceBusBinding struct {
 	Connection        string `json:"connection"`
 	IsSessionsEnabled bool   `json:"isSessionsEnabled,omitempty"`
 	Cardinality       string `json:"cardinality,omitempty"`
+	DataType          string `json:"dataType"`
 }
 
 // ServiceBusMessage represents a message received from Azure Service Bus.
@@ -67,6 +68,7 @@ func (s *ServiceBusQueueTrigger) ToBinding() Binding {
 			Connection:        s.Connection,
 			IsSessionsEnabled: s.IsSessionsEnabled,
 			Cardinality:       s.Cardinality,
+			DataType:          "binary", // Preserve message bodies as bytes for both single messages and batches.
 		},
 	}
 }
@@ -96,6 +98,7 @@ func (s *ServiceBusTopicTrigger) ToBinding() Binding {
 			Connection:        s.Connection,
 			IsSessionsEnabled: s.IsSessionsEnabled,
 			Cardinality:       s.Cardinality,
+			DataType:          "binary", // Preserve message bodies as bytes for both single messages and batches.
 		},
 	}
 }

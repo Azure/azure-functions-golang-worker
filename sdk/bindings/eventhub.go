@@ -11,6 +11,7 @@ type EventHubBinding struct {
 	Connection    string `json:"connection"`
 	ConsumerGroup string `json:"consumerGroup,omitempty"`
 	Cardinality   string `json:"cardinality,omitempty"`
+	DataType      string `json:"dataType"`
 }
 
 // EventHubMessage represents a message received from an Azure Event Hub.
@@ -18,7 +19,7 @@ type EventHubBinding struct {
 // Other fields (SequenceNumber, Offset, etc.) are also populated from
 // trigger metadata using case-insensitive matching on their json tags.
 type EventHubMessage struct {
-	Body             json.RawMessage `json:"body"`
+	Body             json.RawMessage `json:"body" azfunc:"data"`
 	EnqueuedTimeUtc  string          `json:"enqueuedTimeUtc"`
 	SequenceNumber   int64           `json:"sequenceNumber"`
 	Offset           string          `json:"offset"`
@@ -50,6 +51,7 @@ func (e *EventHubTrigger) ToBinding() Binding {
 			Connection:    e.Connection,
 			ConsumerGroup: e.ConsumerGroup,
 			Cardinality:   e.Cardinality,
+			DataType:      "binary", // Preserve event bodies as bytes for both single events and batches.
 		},
 	}
 }

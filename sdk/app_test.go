@@ -836,7 +836,7 @@ func TestServiceBusQueue_WithIsSessionsEnabled(t *testing.T) {
 
 func TestServiceBusQueue_WithCardinality(t *testing.T) {
 	app := FunctionApp()
-	handler := ServiceBusHandler(func(ctx context.Context, msg bindings.ServiceBusMessage) error { return nil })
+	handler := ServiceBusBatchHandler(func(ctx context.Context, msg []bindings.ServiceBusMessage) error { return nil })
 
 	app.ServiceBusQueue("sbCard", handler,
 		WithQueueName("card-queue"),
@@ -854,6 +854,34 @@ func TestServiceBusQueue_WithCardinality(t *testing.T) {
 		}
 		return true
 	})
+}
+
+func TestEventHub_BatchHandlerDefaultsToMany(t *testing.T) {
+	app := FunctionApp()
+	handler := EventHubBatchHandler(func(ctx context.Context, events []bindings.EventHubMessage) error { return nil })
+
+	app.EventHub("eventHubBatch", handler)
+
+	app.GetRegisteredFunctions().Range(func(key, value any) bool {
+		binding := value.(*RegisteredFunction).RawBindings[0]
+		if binding.EventHubBinding.Cardinality != "many" {
+			t.Errorf("expected cardinality %q, got %q", "many", binding.EventHubBinding.Cardinality)
+		}
+		return true
+	})
+}
+
+func TestWithCardinality_PanicsOnHandlerMismatch(t *testing.T) {
+	app := FunctionApp()
+	handler := ServiceBusHandler(func(ctx context.Context, msg bindings.ServiceBusMessage) error { return nil })
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected cardinality and handler mismatch to panic")
+		}
+	}()
+
+	app.ServiceBusQueue("sbMismatch", handler, WithCardinality("many"))
 }
 
 // --- Blob panic tests ---
