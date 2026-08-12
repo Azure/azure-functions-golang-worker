@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 	"time"
 
@@ -344,18 +343,22 @@ func WithCardinality(cardinality string) Option {
 		}
 		expected := ""
 		if b.EventHubBinding != nil {
-			expected = validateMessageHandler("EventHub", rf.Func, reflect.TypeOf(bindings.EventHubMessage{}))
-			b.EventHubBinding.Cardinality = cardinality
+			expected = b.EventHubBinding.Cardinality
 		}
 		if b.ServiceBusBinding != nil {
-			expected = validateMessageHandler("ServiceBus", rf.Func, reflect.TypeOf(bindings.ServiceBusMessage{}))
-			b.ServiceBusBinding.Cardinality = cardinality
+			expected = b.ServiceBusBinding.Cardinality
 		}
 		if expected != "" && cardinality != expected {
 			handlerTypes := map[string]string{"one": "single-message", "many": "batch"}
 			panic(fmt.Sprintf(
 				"cardinality %q does not match the registered %s handler; use cardinality %q or register a %s handler",
 				cardinality, handlerTypes[expected], expected, handlerTypes[cardinality]))
+		}
+		if b.EventHubBinding != nil {
+			b.EventHubBinding.Cardinality = cardinality
+		}
+		if b.ServiceBusBinding != nil {
+			b.ServiceBusBinding.Cardinality = cardinality
 		}
 	}
 }

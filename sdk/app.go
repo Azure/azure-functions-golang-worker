@@ -106,69 +106,66 @@ func (app *App) Queue(name string, f QueueHandler, opts ...Option) *RegisteredFu
 	return app.registerFunction(name, f, trigger, opts...)
 }
 
-// EventHub creates a new EventHub triggered function. Use EventHubHandler for
-// single-event delivery or EventHubBatchHandler for batch delivery.
-func (app *App) EventHub(name string, f any, opts ...Option) *RegisteredFunction {
+// EventHub creates a new EventHub triggered function that receives one event
+// per invocation.
+func (app *App) EventHub(name string, f EventHubHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.EventHubTrigger{
 		Name:          "message",
 		ConsumerGroup: "$Default",
-		Cardinality:   validateMessageHandler("EventHub", f, reflect.TypeOf(bindings.EventHubMessage{})),
+		Cardinality:   "one",
 	}
 	return app.registerFunction(name, f, trigger, opts...)
 }
 
-// ServiceBusQueue creates a new Service Bus queue triggered function. Use
-// ServiceBusHandler for single-message delivery or ServiceBusBatchHandler for
-// batch delivery.
-func (app *App) ServiceBusQueue(name string, f any, opts ...Option) *RegisteredFunction {
+// EventHubBatch creates a new EventHub triggered function that receives a
+// batch of events per invocation.
+func (app *App) EventHubBatch(name string, f EventHubBatchHandler, opts ...Option) *RegisteredFunction {
+	trigger := &bindings.EventHubTrigger{
+		Name:          "message",
+		ConsumerGroup: "$Default",
+		Cardinality:   "many",
+	}
+	return app.registerFunction(name, f, trigger, opts...)
+}
+
+// ServiceBusQueue creates a new Service Bus queue triggered function that
+// receives one message per invocation.
+func (app *App) ServiceBusQueue(name string, f ServiceBusHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.ServiceBusQueueTrigger{
 		Name:        "message",
-		Cardinality: validateMessageHandler("ServiceBus", f, reflect.TypeOf(bindings.ServiceBusMessage{})),
+		Cardinality: "one",
 	}
 	return app.registerFunction(name, f, trigger, opts...)
 }
 
-// ServiceBusTopic creates a new Service Bus topic triggered function. Use
-// ServiceBusHandler for single-message delivery or ServiceBusBatchHandler for
-// batch delivery.
-func (app *App) ServiceBusTopic(name string, f any, opts ...Option) *RegisteredFunction {
+// ServiceBusQueueBatch creates a new Service Bus queue triggered function that
+// receives a batch of messages per invocation.
+func (app *App) ServiceBusQueueBatch(name string, f ServiceBusBatchHandler, opts ...Option) *RegisteredFunction {
+	trigger := &bindings.ServiceBusQueueTrigger{
+		Name:        "message",
+		Cardinality: "many",
+	}
+	return app.registerFunction(name, f, trigger, opts...)
+}
+
+// ServiceBusTopic creates a new Service Bus topic triggered function that
+// receives one message per invocation.
+func (app *App) ServiceBusTopic(name string, f ServiceBusHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.ServiceBusTopicTrigger{
 		Name:        "message",
-		Cardinality: validateMessageHandler("ServiceBus", f, reflect.TypeOf(bindings.ServiceBusMessage{})),
+		Cardinality: "one",
 	}
 	return app.registerFunction(name, f, trigger, opts...)
 }
 
-func validateMessageHandler(triggerName string, f any, messageType reflect.Type) string {
-	// Event Hub and Service Bus support two delivery experiences through the
-	// same registration API: one message per invocation or a batch of messages.
-	// Because callers can choose either shape, validate it when the function is
-	// registered so configuration mistakes fail immediately instead of at runtime.
-	ft := reflect.TypeOf(f)
-	if ft == nil || ft.Kind() != reflect.Func {
-		panic(fmt.Sprintf("%s handler must be a function", triggerName))
+// ServiceBusTopicBatch creates a new Service Bus topic triggered function that
+// receives a batch of messages per invocation.
+func (app *App) ServiceBusTopicBatch(name string, f ServiceBusBatchHandler, opts ...Option) *RegisteredFunction {
+	trigger := &bindings.ServiceBusTopicTrigger{
+		Name:        "message",
+		Cardinality: "many",
 	}
-
-	// Every trigger handler follows the same basic contract: Azure Functions
-	// provides the invocation context and payload, and the handler reports an error.
-	if ft.NumIn() != 2 || ft.In(0) != reflect.TypeOf((*context.Context)(nil)).Elem() {
-		panic(fmt.Sprintf("%s handler must accept (context.Context, message) or (context.Context, []message)", triggerName))
-	}
-	if ft.NumOut() != 1 || ft.Out(0) != reflect.TypeOf((*error)(nil)).Elem() {
-		panic(fmt.Sprintf("%s handler must return exactly one error", triggerName))
-	}
-
-	// The payload shape determines the cardinality sent to the Functions host.
-	// Keeping these in sync ensures the host sends exactly what the handler expects.
-	switch argumentType := ft.In(1); {
-	case argumentType == messageType:
-		return "one"
-	case argumentType.Kind() == reflect.Slice && argumentType.Elem() == messageType:
-		return "many"
-	default:
-		panic(fmt.Sprintf("%s handler second argument must be %s or []%s, got %s",
-			triggerName, messageType, messageType, argumentType))
-	}
+	return app.registerFunction(name, f, trigger, opts...)
 }
 
 // =============================================================================

@@ -14,7 +14,7 @@ func TestHandleInvocationRequest_EventHubBatch(t *testing.T) {
 	app := newTestApp()
 	dispatcher := newTestDispatcher("req-eventhub-batch")
 	dispatcher.App = app
-	registered := app.EventHub("events", sdk.EventHubBatchHandler(
+	registered := app.EventHubBatch("events", sdk.EventHubBatchHandler(
 		func(ctx context.Context, events []bindings.EventHubMessage) error {
 			got = events
 			return nil
@@ -53,7 +53,7 @@ func TestHandleInvocationRequest_ServiceBusBatch(t *testing.T) {
 	app := newTestApp()
 	dispatcher := newTestDispatcher("req-servicebus-batch")
 	dispatcher.App = app
-	registered := app.ServiceBusQueue("messages", sdk.ServiceBusBatchHandler(
+	registered := app.ServiceBusQueueBatch("messages", sdk.ServiceBusBatchHandler(
 		func(ctx context.Context, messages []bindings.ServiceBusMessage) error {
 			got = messages
 			return nil

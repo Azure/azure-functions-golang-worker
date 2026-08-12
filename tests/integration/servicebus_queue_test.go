@@ -48,9 +48,7 @@ func TestServiceBusQueueTriggerMany(t *testing.T) {
 	assertHostLogContains(t, host, "servicebus queue batch trigger executed", 20*time.Second)
 	assertHostLogContains(t, host, "batch_size=2", 5*time.Second)
 	for _, body := range bodies {
-		assertHostLogContains(t, host, body, 5*time.Second)
-		assertHostLogContains(t, host, "message_id="+body, 5*time.Second)
-		assertHostLogContains(t, host, "test_id="+body, 5*time.Second)
+		assertHostLogContains(t, host, "alignment_key="+body+"|"+body+"|"+body, 5*time.Second)
 	}
 	assertHostLogContains(t, host, "Executed 'Functions.queueBatchFunc' (Succeeded", 5*time.Second)
 }

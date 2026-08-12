@@ -14,6 +14,13 @@
             "Subscriptions": [
               { "Name": "processor", "Properties": {} }
             ]
+          },
+          {
+            "Name": "orders-batch",
+            "Properties": {},
+            "Subscriptions": [
+              { "Name": "processor-batch", "Properties": {} }
+            ]
           }
         ]
       }

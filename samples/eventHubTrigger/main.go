@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
@@ -30,6 +31,7 @@ func EventHubBatchHandler(ctx context.Context, events []bindings.EventHubMessage
 			"sequence_number", event.SequenceNumber,
 			"offset", event.Offset,
 			"test_id", event.Properties["testID"],
+			"alignment_key", fmt.Sprintf("%s|%v", event.Body, event.Properties["testID"]),
 		)
 	}
 	return nil
@@ -43,7 +45,7 @@ func main() {
 		sdk.WithConnection("EventHubConnection"),
 		sdk.WithConsumerGroup("watchtower-test"),
 	)
-	app.EventHub("eventHubBatchTrigger", sdk.EventHubBatchHandler(EventHubBatchHandler),
+	app.EventHubBatch("eventHubBatchTrigger", EventHubBatchHandler,
 		sdk.WithEventHubName("input-hub-batch"),
 		sdk.WithConnection("EventHubConnection"),
 		sdk.WithConsumerGroup("watchtower-batch-test"),

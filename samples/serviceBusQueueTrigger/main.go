@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
@@ -31,6 +32,7 @@ func ServiceBusQueueBatchHandler(ctx context.Context, messages []bindings.Servic
 			"body", string(msg.Body),
 			"sequence_number", msg.SequenceNumber,
 			"test_id", msg.ApplicationProperties["testID"],
+			"alignment_key", fmt.Sprintf("%s|%s|%v", msg.Body, msg.MessageId, msg.ApplicationProperties["testID"]),
 		)
 	}
 	return nil
@@ -43,7 +45,7 @@ func main() {
 		sdk.WithQueueName("input-queue"),
 		sdk.WithConnection("ServiceBusConnection"),
 	)
-	app.ServiceBusQueue("queueBatchFunc", sdk.ServiceBusBatchHandler(ServiceBusQueueBatchHandler),
+	app.ServiceBusQueueBatch("queueBatchFunc", ServiceBusQueueBatchHandler,
 		sdk.WithQueueName("input-queue-batch"),
 		sdk.WithConnection("ServiceBusConnection"),
 	)
