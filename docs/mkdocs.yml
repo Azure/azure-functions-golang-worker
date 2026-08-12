@@ -1,0 +1,57 @@
+site_name: Azure Functions Go Worker
+site_description: Documentation for building Go applications on Azure Functions.
+site_url: https://azure.github.io/azure-functions-golang-worker/
+repo_url: https://github.com/Azure/azure-functions-golang-worker
+repo_name: Azure/azure-functions-golang-worker
+edit_uri: edit/main/docs/
+docs_dir: .
+site_dir: ../site
+
+theme:
+  name: material
+  logo: assets/function-apps.svg
+  favicon: assets/function-apps.svg
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Concepts:
+      - Architecture: concepts/architecture.md
+      - Triggers and bindings: concepts/triggers-and-bindings.md
+  - Guides:
+      - Container images: guides/container-images.md
+      - Deployment: guides/deployment.md
+      - Error and panic handling: guides/error-handling.md
+      - Logging and observability: guides/observability.md
+  - Samples: samples/index.md

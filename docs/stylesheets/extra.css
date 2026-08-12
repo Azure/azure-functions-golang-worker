@@ -1,0 +1,38 @@
+:root {
+  --go-blue: #00add8;
+  --go-blue-light: #5dc9e2;
+  --go-blue-dark: #007d9c;
+  --go-ink: #102a32;
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--go-blue);
+  --md-primary-fg-color--light: var(--go-blue-light);
+  --md-primary-fg-color--dark: var(--go-blue-dark);
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: rgb(255 255 255 / 70%);
+  --md-accent-fg-color: var(--go-blue-dark);
+  --md-typeset-a-color: var(--go-blue-dark);
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: var(--go-blue-dark);
+  --md-primary-fg-color--light: var(--go-blue);
+  --md-primary-fg-color--dark: var(--go-ink);
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: rgb(255 255 255 / 70%);
+  --md-accent-fg-color: var(--go-blue-light);
+  --md-typeset-a-color: var(--go-blue-light);
+}
+
+.md-header,
+.md-tabs {
+  background-color: var(--go-blue);
+  color: #ffffff;
+}
+
+.md-header__button,
+.md-header__title,
+.md-tabs__link {
+  color: #ffffff;
+}
