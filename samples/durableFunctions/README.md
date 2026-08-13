@@ -75,6 +75,27 @@ or wrap them in your own functions, as this sample does:
 Requires the Azure Functions Core Tools, the Go worker installed, and an
 Azure Storage emulator (Azurite) for the DurableTask state store.
 
+This sample is its own Go module because it pulls in the durable middleware,
+so create the module first. Point the module at the local checkout so it builds
+against this repository rather than a published release:
+
+```bash
+cd samples/durableFunctions
+go mod init durable-functions-sample
+go mod edit \
+  -replace github.com/azure/azure-functions-golang-worker=../.. \
+  -replace github.com/azure/azure-functions-golang-worker/middleware/durabletask=../../middleware/durabletask \
+  -replace github.com/azure/azure-functions-golang-worker/middleware/otelfunc=../../middleware/otelfunc \
+  -replace github.com/azure/azure-functions-golang-worker/otelcollector=../../otelcollector
+go mod tidy
+```
+
+> If you keep a `go.work` file at the repository root, either add this sample to
+> it or run Core Tools with `GOWORK=off`. A workspace that does not list the
+> sample makes the build resolve the root module instead and fail.
+
+Then start the host:
+
 ```bash
 # from the repo root, start Azurite (or use the emulators compose file)
 docker compose -f tests/emulators/docker-compose.yml up -d azurite
@@ -82,6 +103,11 @@ docker compose -f tests/emulators/docker-compose.yml up -d azurite
 cd samples/durableFunctions
 func start
 ```
+
+> Durable Functions needs a DurableTask extension that recognizes the `native`
+> worker runtime and selects the gRPC durable protocol
+> ([#3457](https://github.com/Azure/azure-functions-durable-extension/pull/3457)).
+> Without it the starter endpoints return HTTP 500.
 
 ### Simple orchestration
 

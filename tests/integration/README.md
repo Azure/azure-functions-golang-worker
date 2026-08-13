@@ -128,6 +128,49 @@ The runner executes these steps in order:
 8. Removes only containers that did not exist before the run. Pre-existing
    stopped containers that the runner starts are left in place afterward.
 
+## Durable Functions coverage
+
+`TestDurableOrchestrations` runs the `durableFunctions` sample against a real
+host and covers the whole Durable Functions path: the `durableClient` binding
+delivering the management endpoint to the worker, the gRPC management client,
+orchestration replay through the trigger pipeline, activity dispatch and input
+decoding, custom status, and external events.
+
+The subtests share one host and cover a sequential orchestration, fan-out/fan-in
+with automatic approval, human approval and rejection through an external event,
+rejection on failed validation, and an unknown instance lookup.
+
+```bash
+cd tests/integration
+go test -run TestDurableOrchestrations -v .
+```
+
+Azurite is the only emulator required. Every assertion goes through the sample's
+own anonymous HTTP endpoints rather than the host's management API, so the same
+subtests run unchanged against a deployed app:
+
+```bash
+DURABLE_E2E_BASE_URL=https://myapp.azurewebsites.net \
+  go test -run TestDurableOrchestrations -v .
+```
+
+When `DURABLE_E2E_BASE_URL` is set the suite skips the local host and the Azurite
+check and drives the given app instead.
+
+### Host extension requirement
+
+Durable Functions on the Go worker needs a DurableTask extension that recognizes
+`FUNCTIONS_WORKER_RUNTIME=native` and selects the gRPC durable protocol. Without
+it the starter endpoints return HTTP 500, either because no durable client
+reaches the worker or because the extension fell back to its legacy local HTTP
+RPC endpoint and the client's gRPC handshake fails against it. The test detects
+both symptoms and fails with an explanation rather than a bare status code.
+
+The fix is
+[azure-functions-durable-extension#3457](https://github.com/Azure/azure-functions-durable-extension/pull/3457).
+Until it ships in a released extension bundle, this suite only passes against a
+host whose bundle carries a DurableTask extension that includes it.
+
 ## Azure DevOps integration
 
 The public Azure DevOps pipeline runs the complete integration suite for pull
