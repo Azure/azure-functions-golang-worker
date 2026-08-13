@@ -15,7 +15,7 @@ type EventHubBinding struct {
 }
 
 // EventHubMessage represents a message received from an Azure Event Hub.
-// The Body field is populated from the "body" key in trigger metadata.
+// The Body field is populated from the raw trigger input.
 // Other fields (SequenceNumber, Offset, etc.) are also populated from
 // trigger metadata using case-insensitive matching on their json tags.
 type EventHubMessage struct {

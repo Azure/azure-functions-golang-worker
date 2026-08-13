@@ -84,6 +84,10 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 	pv := reflect.New(t)
 	v := pv.Elem()
 
+	// Batch triggers arrive as a TypedData collection plus parallel metadata
+	// arrays. Decode each entry as its target struct instead of using the
+	// default slice decoder so empty payloads retain their position and each
+	// struct receives metadata from the same batch index.
 	if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Struct {
 		if values, ok := typedDataCollectionValues(data); ok {
 			result := reflect.MakeSlice(t, len(values), len(values))

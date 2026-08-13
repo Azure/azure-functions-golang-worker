@@ -63,6 +63,48 @@ func TestConvertToTypeValue_EventHubBatch(t *testing.T) {
 	}
 }
 
+func TestConvertToTypeValue_EventHubBatchPreservesEmptyEntryAlignment(t *testing.T) {
+	data := &pb.TypedData{Data: &pb.TypedData_CollectionBytes{
+		CollectionBytes: &pb.CollectionBytes{Bytes: [][]byte{[]byte("first"), {}, []byte("third")}},
+	}}
+	metadata := map[string]*pb.TypedData{
+		"SequenceNumberArray": {
+			Data: &pb.TypedData_CollectionSint64{
+				CollectionSint64: &pb.CollectionSInt64{Sint64: []int64{10, 11, 12}},
+			},
+		},
+		"OffsetArray": {
+			Data: &pb.TypedData_CollectionString{
+				CollectionString: &pb.CollectionString{String_: []string{"100", "", "300"}},
+			},
+		},
+	}
+
+	value, err := convertToTypeValue(reflect.TypeOf([]bindings.EventHubMessage{}), data, metadata)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	events := value.Interface().([]bindings.EventHubMessage)
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+
+	expectedBodies := []string{"first", "", "third"}
+	expectedSequenceNumbers := []int64{10, 11, 12}
+	expectedOffsets := []string{"100", "", "300"}
+	for i, event := range events {
+		if string(event.Body) != expectedBodies[i] {
+			t.Errorf("event %d: expected body %q, got %q", i, expectedBodies[i], event.Body)
+		}
+		if event.SequenceNumber != expectedSequenceNumbers[i] {
+			t.Errorf("event %d: expected sequence number %d, got %d", i, expectedSequenceNumbers[i], event.SequenceNumber)
+		}
+		if event.Offset != expectedOffsets[i] {
+			t.Errorf("event %d: expected offset %q, got %q", i, expectedOffsets[i], event.Offset)
+		}
+	}
+}
+
 func TestConvertToTypeValue_ServiceBusBatch(t *testing.T) {
 	data := &pb.TypedData{Data: &pb.TypedData_CollectionString{
 		CollectionString: &pb.CollectionString{String_: []string{`"first"`, `"second"`}},
