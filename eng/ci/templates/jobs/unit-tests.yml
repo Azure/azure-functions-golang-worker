@@ -47,7 +47,7 @@ jobs:
     # Same workspace setup as the Build job. See eng/ci/templates/jobs/build.yml
     # for why this workspace + genproto replace is needed.
     - script: |
-        go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
+        go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob ./middleware/durabletask
         # Force Go to use the local checkout as the root module instead
         # of downloading an older published copy. See build.yml for the
         # full explanation. The version is read from a submodule's
@@ -55,7 +55,7 @@ jobs:
         ROOT_VER=$(awk '$1=="require" && $2=="github.com/azure/azure-functions-golang-worker" {print $3}' middleware/otelfunc/go.mod)
         echo "Detected root module version: ${ROOT_VER}"
         go work edit -replace github.com/azure/azure-functions-golang-worker@${ROOT_VER}=.
-        go work edit -replace google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
+        go work edit -replace google.golang.org/genproto=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
         cat go.work
       displayName: 'Initialize go workspace'
 
@@ -89,6 +89,10 @@ jobs:
     - script: |
         cd triggers/blob && go test ./...
       displayName: 'Test triggers/blob'
+
+    - script: |
+        cd middleware/durabletask && go test ./...
+      displayName: 'Test middleware/durabletask'
 
     - script: |
         export PATH=$PATH:$(go env GOPATH)/bin
