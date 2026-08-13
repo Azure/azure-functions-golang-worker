@@ -46,6 +46,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Roadmap: roadmap.md
   - Concepts:
       - Architecture: concepts/architecture.md
       - Triggers and bindings: concepts/triggers-and-bindings.md

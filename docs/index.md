@@ -9,6 +9,7 @@ running Go applications natively on Azure Functions.
 ## Documentation
 
 - [Getting started](getting-started.md)
+- [Roadmap](roadmap.md)
 - Concepts
   - [Architecture](concepts/architecture.md)
   - [Triggers and bindings](concepts/triggers-and-bindings.md)
