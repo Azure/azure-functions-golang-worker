@@ -81,4 +81,14 @@ func TestServiceBusMessage_JSON(t *testing.T) {
 	if decoded.LockToken != "token-abc" {
 		t.Errorf("expected lockToken %q, got %q", "token-abc", decoded.LockToken)
 	}
+	var encoded map[string]json.RawMessage
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := encoded["body"]; !ok {
+		t.Error("expected body JSON property")
+	}
+	if _, ok := encoded["azfuncdata"]; ok {
+		t.Error("did not expect legacy azfuncdata JSON property")
+	}
 }

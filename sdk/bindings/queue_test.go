@@ -102,4 +102,14 @@ func TestQueueMessage_JSON(t *testing.T) {
 	if decoded.InsertionTime != "2026-06-22T18:57:34Z" {
 		t.Errorf("expected insertionTime %q, got %q", "2026-06-22T18:57:34Z", decoded.InsertionTime)
 	}
+	var encoded map[string]json.RawMessage
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := encoded["body"]; !ok {
+		t.Error("expected body JSON property")
+	}
+	if _, ok := encoded["azfuncdata"]; ok {
+		t.Error("did not expect legacy azfuncdata JSON property")
+	}
 }

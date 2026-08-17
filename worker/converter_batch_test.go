@@ -143,3 +143,53 @@ func TestConvertToTypeValue_ServiceBusBatch(t *testing.T) {
 		t.Fatalf("unexpected second body %q: %v", messages[1].Body, err)
 	}
 }
+
+func TestConvertToTypeValue_BatchMetadataArrayOverridesScalar(t *testing.T) {
+	data := &pb.TypedData{Data: &pb.TypedData_CollectionBytes{
+		CollectionBytes: &pb.CollectionBytes{Bytes: [][]byte{[]byte("first"), []byte("second")}},
+	}}
+	metadata := map[string]*pb.TypedData{
+		"MessageId": {
+			Data: &pb.TypedData_String_{String_: "scalar-id"},
+		},
+		"MessageIdArray": {
+			Data: &pb.TypedData_CollectionString{
+				CollectionString: &pb.CollectionString{String_: []string{"id-1", "id-2"}},
+			},
+		},
+	}
+
+	value, err := convertToTypeValue(reflect.TypeOf([]bindings.ServiceBusMessage{}), data, metadata)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	messages := value.Interface().([]bindings.ServiceBusMessage)
+	if messages[0].MessageId != "id-1" || messages[1].MessageId != "id-2" {
+		t.Fatalf("expected per-message IDs to override scalar metadata, got %+v", messages)
+	}
+}
+
+func TestConvertToTypeValue_BatchSkipsMalformedArrayMetadata(t *testing.T) {
+	data := &pb.TypedData{Data: &pb.TypedData_CollectionBytes{
+		CollectionBytes: &pb.CollectionBytes{Bytes: [][]byte{[]byte("first"), []byte("second")}},
+	}}
+	metadata := map[string]*pb.TypedData{
+		"MessageIdArray": {
+			Data: &pb.TypedData_CollectionString{
+				CollectionString: &pb.CollectionString{String_: []string{"id-1", "id-2"}},
+			},
+		},
+		"SomeWeirdArray": {
+			Data: &pb.TypedData_Json{Json: `{"not":"an array"}`},
+		},
+	}
+
+	value, err := convertToTypeValue(reflect.TypeOf([]bindings.ServiceBusMessage{}), data, metadata)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	messages := value.Interface().([]bindings.ServiceBusMessage)
+	if len(messages) != 2 || messages[0].MessageId != "id-1" || messages[1].MessageId != "id-2" {
+		t.Fatalf("unexpected messages: %+v", messages)
+	}
+}

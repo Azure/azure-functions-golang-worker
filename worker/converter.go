@@ -58,11 +58,9 @@ func isAzFuncDataField(f reflect.StructField) bool {
 	return strings.EqualFold(tag, azFuncDataTag)
 }
 
-// hasAzFuncDataField reports whether the struct type t declares any field
-// tagged with azFuncDataTag. Structs that opt into this tag use a single
-// field to hold the raw input body while other fields are populated from
-// trigger metadata, and must NOT be decoded via whole-struct json.Unmarshal
-// of the body.
+// hasAzFuncDataField reports whether the struct type t declares a field that
+// receives raw trigger input. These structs must not be decoded via
+// whole-struct json.Unmarshal of the body.
 func hasAzFuncDataField(t reflect.Type) bool {
 	for i := 0; i < t.NumField(); i++ {
 		if isAzFuncDataField(t.Field(i)) {
@@ -92,10 +90,7 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 		if values, ok := typedDataCollectionValues(data); ok {
 			result := reflect.MakeSlice(t, len(values), len(values))
 			for i, value := range values {
-				metadata, err := collectionMetadataAt(tm, i)
-				if err != nil {
-					return reflect.Value{}, err
-				}
+				metadata := collectionMetadataAt(tm, i)
 				element, err := convertToTypeValue(t.Elem(), value, metadata)
 				if err != nil {
 					return reflect.Value{}, fmt.Errorf("failed to decode collection element %d: %w", i, err)
@@ -114,7 +109,7 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 	// not unmarshalled across the whole struct. Without this guard, a queue
 	// message with a JSON object body would silently produce a zero-valued
 	// QueueMessage — the unmarshal succeeds but matches no field tags, the
-	// fast path returns, and the per-field "azfuncdata" + metadata fallback
+	// fast path returns, and the per-field raw-data + metadata fallback
 	// below is never reached.
 	if t.Kind() == reflect.Struct && !hasAzFuncDataField(t) {
 		// Try direct JSON unmarshal from input data (TypedData_Json or TypedData_String_)
@@ -238,23 +233,27 @@ func typedDataCollectionValues(data *pb.TypedData) ([]*pb.TypedData, bool) {
 	return nil, false
 }
 
-func collectionMetadataAt(metadata map[string]*pb.TypedData, index int) (map[string]*pb.TypedData, error) {
+func collectionMetadataAt(metadata map[string]*pb.TypedData, index int) map[string]*pb.TypedData {
 	result := make(map[string]*pb.TypedData, len(metadata))
 	for name, value := range metadata {
 		if !strings.HasSuffix(strings.ToLower(name), "array") {
 			result[name] = value
-			continue
-		}
-
-		element, ok, err := typedDataElementAt(value, index)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode trigger metadata %q: %w", name, err)
-		}
-		if ok {
-			result[name[:len(name)-len("Array")]] = element
 		}
 	}
-	return result, nil
+
+	// Apply per-message metadata after scalar metadata so an XArray entry
+	// deterministically overrides an X entry for the corresponding message.
+	for name, value := range metadata {
+		if !strings.HasSuffix(strings.ToLower(name), "array") {
+			continue
+		}
+		element, ok, err := typedDataElementAt(value, index)
+		if err != nil || !ok {
+			continue
+		}
+		result[name[:len(name)-len("Array")]] = element
+	}
+	return result
 }
 
 func typedDataElementAt(data *pb.TypedData, index int) (*pb.TypedData, bool, error) {
