@@ -12,7 +12,22 @@ import (
 
 // suiteTimeout bounds the complete integration suite, including prerequisite
 // checks, emulator startup, test execution, diagnostics, and cleanup.
-const suiteTimeout = 3 * time.Minute
+const suiteTimeout = 20 * time.Minute
+
+const integrationTestPattern = "^(TestHttpTriggerGet|" +
+	"TestTimerTriggerFires|" +
+	"TestBlobTriggerFires|" +
+	"TestQueueStorageTriggerFires|" +
+	"TestQueueStorageTriggerMetadata|" +
+	"TestEventGridTriggerRegisters|" +
+	"TestEventHubTriggerFires|" +
+	"TestEventHubTriggerMany|" +
+	"TestServiceBusQueueTriggerFires|" +
+	"TestServiceBusQueueTriggerMany|" +
+	"TestServiceBusTopicTriggerFires|" +
+	"TestServiceBusTopicTriggerMany|" +
+	"TestCosmosDBTriggerFires|" +
+	"TestSQLTriggerFiresOnChanges)$"
 
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), suiteTimeout)
@@ -32,8 +47,9 @@ func defaultRunner() testrunner.Runner {
 	return testrunner.Runner{
 		ComposeFile:             filepath.Join("..", "emulators", "docker-compose.yml"),
 		ArtifactDir:             "artifacts",
-		TestPattern:             "^TestHttpTriggerGet$",
+		TestPattern:             integrationTestPattern,
 		FuncExe:                 funcExe,
 		MinimumCoreToolsVersion: "4.12.0",
+		Emulators:               testrunner.DefaultEmulators(),
 	}
 }

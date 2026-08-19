@@ -1,0 +1,58 @@
+# ============================================================
+# Integration Tests job for the Go worker.
+#
+# The repository runner owns emulator startup, readiness,
+# diagnostics, test selection, and cleanup. This job only
+# provisions the tools required by that runner.
+# ============================================================
+
+parameters:
+  - name: PoolName
+    type: string
+    default: 1es-pool-azfunc-public
+
+jobs:
+  - job: IntegrationTests
+    displayName: 'Run Integration Tests'
+    timeoutInMinutes: 30
+
+    pool:
+      name: ${{ parameters.PoolName }}
+      image: 1es-ubuntu-22.04
+      os: linux
+
+    templateContext:
+      sdl:
+        codeql:
+          compiled:
+            enabled: false
+      outputs:
+        - output: pipelineArtifact
+          targetPath: '$(Build.SourcesDirectory)/tests/integration/artifacts'
+          artifactName: integration-test-artifacts
+
+    steps:
+    - script: mkdir -p tests/integration/artifacts
+      displayName: 'Initialize artifact directory'
+
+    - task: GoTool@0
+      displayName: 'Install Go 1.25.7'
+      inputs:
+        version: '1.25.7'
+
+    - script: |
+        CORE_TOOLS_DIR="$(Agent.TempDirectory)/azure-functions-core-tools"
+        npm install --prefix "${CORE_TOOLS_DIR}" azure-functions-core-tools@4 --unsafe-perm true
+        echo "##vso[task.prependpath]${CORE_TOOLS_DIR}/node_modules/.bin"
+        "${CORE_TOOLS_DIR}/node_modules/.bin/func" --version
+      displayName: 'Install Azure Functions Core Tools'
+
+    - script: |
+        docker version
+        docker compose version
+      displayName: 'Verify Docker'
+
+    - script: |
+        cd tests/integration
+        go run ./cmd/integrationtest
+      displayName: 'Run integration test harness'

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -42,28 +43,9 @@ func TestRunNoExistingContainer(t *testing.T) {
 	artifactDir := t.TempDir()
 	var commands []string
 	var streamedOutput bytes.Buffer
-	command := func(_ context.Context, name string, args ...string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		commands = append(commands, call)
-		switch {
-		case call == "func --version":
-			return []byte("4.12.0\n"), nil
-		case call == "docker compose version":
-			return []byte("Docker Compose version v2.39.4"), nil
-		case strings.Contains(call, "ps -a -q azurite"):
-			return []byte(""), nil // no container
-		case strings.Contains(call, "ps --status running -q azurite"):
-			return []byte(""), nil // not running
-		case strings.Contains(call, "up -d azurite"):
-			return []byte("started azurite"), nil
-		case strings.Contains(call, "logs --no-color azurite"):
-			return []byte("azurite diagnostics"), nil
-		case strings.Contains(call, "rm -f -s azurite"):
-			return []byte("removed azurite"), nil
-		default:
-			return nil, errors.New("unexpected command: " + call)
-		}
-	}
+	command := emulatorLifecycleCommand(&commands, map[string]emulatorFixture{
+		"azurite": {log: "azurite diagnostics"},
+	})
 	testCommand := successfulTestCommand(&commands, "PASS\n")
 
 	runner := Runner{
@@ -103,27 +85,57 @@ func TestRunNoExistingContainer(t *testing.T) {
 	}
 }
 
+func TestRunMultipleEmulatorsPreservesExistingContainers(t *testing.T) {
+	artifactDir := t.TempDir()
+	var commands []string
+	var readiness []string
+	command := emulatorLifecycleCommand(&commands, map[string]emulatorFixture{
+		"azurite":             {log: "azurite log"},
+		"sqlserver":           {containerID: "sql-id", log: "sql log"},
+		"servicebus-emulator": {containerID: "sb-id", running: true, log: "service bus log"},
+	})
+	ready := func(name string) func(context.Context) error {
+		return func(context.Context) error {
+			readiness = append(readiness, name)
+			return nil
+		}
+	}
+
+	runner := Runner{
+		ComposeFile:             "compose.yml",
+		ArtifactDir:             artifactDir,
+		TestPattern:             "^TestIntegration$",
+		FuncExe:                 "func",
+		MinimumCoreToolsVersion: "4.12.0",
+		Emulators: []Emulator{
+			{Name: "azurite", ArtifactFile: "azurite.log", waitReady: ready("azurite")},
+			{Name: "sqlserver", ArtifactFile: "sqlserver.log", waitReady: ready("sqlserver")},
+			{Name: "servicebus-emulator", ArtifactFile: "servicebus.log", waitReady: ready("servicebus-emulator")},
+		},
+		command:     command,
+		testCommand: successfulTestCommand(&commands, "PASS\n"),
+		output:      io.Discard,
+	}
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got := strings.Join(readiness, ","); got != "azurite,sqlserver,servicebus-emulator" {
+		t.Fatalf("readiness order = %q", got)
+	}
+	assertCommandExecuted(t, commands, "docker compose -f compose.yml up -d azurite sqlserver")
+	assertCommandExecuted(t, commands, "docker compose -f compose.yml rm -f -s azurite")
+	assertFileContains(t, filepath.Join(artifactDir, "azurite.log"), "azurite log")
+	assertFileContains(t, filepath.Join(artifactDir, "sqlserver.log"), "sql log")
+	assertFileContains(t, filepath.Join(artifactDir, "servicebus.log"), "service bus log")
+}
+
 // TestRunExistingRunningContainer covers: two ps queries, no startup, no removal.
 func TestRunExistingRunningContainer(t *testing.T) {
 	var commands []string
-	command := func(_ context.Context, name string, args ...string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		commands = append(commands, call)
-		switch {
-		case call == "func --version":
-			return []byte("4.12.0\n"), nil
-		case call == "docker compose version":
-			return []byte("Docker Compose version v2.39.4"), nil
-		case strings.Contains(call, "ps -a -q azurite"):
-			return []byte("abc123\n"), nil // container exists
-		case strings.Contains(call, "ps --status running -q azurite"):
-			return []byte("abc123\n"), nil // container is running
-		case strings.Contains(call, "logs --no-color azurite"):
-			return nil, nil
-		default:
-			return nil, errors.New("unexpected command: " + call)
-		}
-	}
+	command := emulatorLifecycleCommand(&commands, map[string]emulatorFixture{
+		"azurite": {containerID: "abc123", running: true},
+	})
 
 	runner := Runner{
 		ComposeFile:             "compose.yml",
@@ -149,26 +161,9 @@ func TestRunExistingRunningContainer(t *testing.T) {
 // TestRunExistingStoppedContainer covers: two ps queries, starts container, does NOT remove it.
 func TestRunExistingStoppedContainer(t *testing.T) {
 	var commands []string
-	command := func(_ context.Context, name string, args ...string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		commands = append(commands, call)
-		switch {
-		case call == "func --version":
-			return []byte("4.12.0\n"), nil
-		case call == "docker compose version":
-			return []byte("Docker Compose version v2.39.4"), nil
-		case strings.Contains(call, "ps -a -q azurite"):
-			return []byte("abc123\n"), nil // container exists (stopped)
-		case strings.Contains(call, "ps --status running -q azurite"):
-			return []byte(""), nil // not running
-		case strings.Contains(call, "up -d azurite"):
-			return []byte("started stopped container"), nil
-		case strings.Contains(call, "logs --no-color azurite"):
-			return nil, nil
-		default:
-			return nil, errors.New("unexpected command: " + call)
-		}
-	}
+	command := emulatorLifecycleCommand(&commands, map[string]emulatorFixture{
+		"azurite": {containerID: "abc123"},
+	})
 
 	runner := Runner{
 		ComposeFile:             "compose.yml",
@@ -311,28 +306,13 @@ func TestRunAllowsNewerCoreToolsVersionBeforeDockerValidation(t *testing.T) {
 func TestRunCleansAzuriteAfterPartialStartupFailure(t *testing.T) {
 	artifactDir := t.TempDir()
 	var commands []string
-	command := func(_ context.Context, name string, args ...string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		commands = append(commands, call)
-		switch {
-		case call == "func --version":
-			return []byte("4.12.0\n"), nil
-		case call == "docker compose version":
-			return []byte("Docker Compose version v2.39.4"), nil
-		case strings.Contains(call, "ps -a -q azurite"):
-			return []byte(""), nil // no container before runner
-		case strings.Contains(call, "ps --status running -q azurite"):
-			return []byte(""), nil // not running
-		case strings.Contains(call, "up -d azurite"):
-			return []byte("container created before startup failure"), errors.New("compose startup failed")
-		case strings.Contains(call, "logs --no-color azurite"):
-			return []byte("partial startup diagnostics"), nil
-		case strings.Contains(call, "rm -f -s azurite"):
-			return []byte("removed partial container"), nil
-		default:
-			return nil, errors.New("unexpected command: " + call)
-		}
-	}
+	command := emulatorLifecycleCommand(&commands, map[string]emulatorFixture{
+		"azurite": {
+			log:         "partial startup diagnostics",
+			startOutput: "container created before startup failure",
+			startErr:    errors.New("compose startup failed"),
+		},
+	})
 
 	err := (Runner{
 		ComposeFile:             "compose.yml",
@@ -371,5 +351,67 @@ func successfulTestCommand(commands *[]string, testOutput string) streamingComma
 		*commands = append(*commands, strings.Join(append([]string{name}, args...), " "))
 		_, err := io.WriteString(output, testOutput)
 		return err
+	}
+}
+
+type emulatorFixture struct {
+	containerID string
+	running     bool
+	log         string
+	startOutput string
+	startErr    error
+}
+
+func emulatorLifecycleCommand(commands *[]string, emulators map[string]emulatorFixture) commandFunc {
+	return func(_ context.Context, name string, args ...string) ([]byte, error) {
+		call := strings.Join(append([]string{name}, args...), " ")
+		*commands = append(*commands, call)
+
+		switch call {
+		case "func --version":
+			return []byte("4.12.0\n"), nil
+		case "docker compose version":
+			return []byte("Docker Compose version v2.39.4"), nil
+		}
+
+		if name != "docker" || len(args) < 5 {
+			return nil, errors.New("unexpected command: " + call)
+		}
+		action := args[3]
+		service := args[len(args)-1]
+		fixture, known := emulators[service]
+		if !known {
+			return nil, errors.New("unexpected command: " + call)
+		}
+
+		switch action {
+		case "ps":
+			if fixture.containerID == "" {
+				return nil, nil
+			}
+			if slices.Contains(args, "--status") && !fixture.running {
+				return nil, nil
+			}
+			return []byte(fixture.containerID + "\n"), nil
+		case "up":
+			output := fixture.startOutput
+			if output == "" {
+				output = "started"
+			}
+			return []byte(output), fixture.startErr
+		case "logs":
+			return []byte(fixture.log), nil
+		case "rm":
+			return []byte("removed"), nil
+		default:
+			return nil, errors.New("unexpected command: " + call)
+		}
+	}
+}
+
+func assertCommandExecuted(t *testing.T, commands []string, want string) {
+	t.Helper()
+	if !slices.Contains(commands, want) {
+		t.Fatalf("command %q was not executed:\n%s", want, strings.Join(commands, "\n"))
 	}
 }
