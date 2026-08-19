@@ -92,12 +92,14 @@ func TestCosmosDBBinding_JSON_EmitsCreateLeaseContainerWhenTrue(t *testing.T) {
 	}
 }
 
+// TestCosmosDocument_JSON verifies that the document ID, body, timestamp, and LSN survive a JSON round trip.
 func TestCosmosDocument_JSON(t *testing.T) {
 	doc := CosmosDocument{
 		ID:        "doc-123",
 		Data:      json.RawMessage(`{"key":"value"}`),
 		Etag:      "etag-1",
-		Timestamp: "1234567890",
+		Timestamp: 1234567890,
+		Lsn:       5,
 	}
 
 	data, err := json.Marshal(doc)
@@ -115,6 +117,12 @@ func TestCosmosDocument_JSON(t *testing.T) {
 	}
 	if string(decoded.Data) != `{"key":"value"}` {
 		t.Errorf("expected data %q, got %q", `{"key":"value"}`, string(decoded.Data))
+	}
+	if decoded.Timestamp != 1234567890 {
+		t.Errorf("expected timestamp %d, got %d", int64(1234567890), decoded.Timestamp)
+	}
+	if decoded.Lsn != 5 {
+		t.Errorf("expected lsn 5, got %d", decoded.Lsn)
 	}
 }
 

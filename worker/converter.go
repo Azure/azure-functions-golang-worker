@@ -41,15 +41,16 @@ func FromProto(req *pb.InvocationRequest, fields map[string]*funcField, args []r
 	return nil
 }
 
-// azFuncDataTag is the special json struct-field tag used by SDK binding
-// types (e.g. QueueMessage, ServiceBusMessage) to mark the single field
-// that should receive the raw trigger input body. All other fields on
-// such a struct are populated from trigger metadata, looked up by name.
+// azFuncDataTag is the legacy json struct-field tag used by SDK binding
+// types to mark the field that receives the raw trigger input body. New
+// bindings can preserve their public JSON name with the azfunc:"data" tag.
 const azFuncDataTag = "azfuncdata"
 
-// isAzFuncDataField reports whether field f opts into azFuncDataTag.
-// Matching is case-insensitive and tolerates options like ",omitempty".
+// isAzFuncDataField reports whether field f opts into raw trigger input data.
 func isAzFuncDataField(f reflect.StructField) bool {
+	if strings.EqualFold(f.Tag.Get("azfunc"), "data") {
+		return true
+	}
 	tag := f.Tag.Get("json")
 	if idx := strings.Index(tag, ","); idx != -1 {
 		tag = tag[:idx]
@@ -57,11 +58,9 @@ func isAzFuncDataField(f reflect.StructField) bool {
 	return strings.EqualFold(tag, azFuncDataTag)
 }
 
-// hasAzFuncDataField reports whether the struct type t declares any field
-// tagged with azFuncDataTag. Structs that opt into this tag use a single
-// field to hold the raw input body while other fields are populated from
-// trigger metadata, and must NOT be decoded via whole-struct json.Unmarshal
-// of the body.
+// hasAzFuncDataField reports whether the struct type t declares a field that
+// receives raw trigger input. These structs must not be decoded via
+// whole-struct json.Unmarshal of the body.
 func hasAzFuncDataField(t reflect.Type) bool {
 	for i := 0; i < t.NumField(); i++ {
 		if isAzFuncDataField(t.Field(i)) {
@@ -83,6 +82,25 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 	pv := reflect.New(t)
 	v := pv.Elem()
 
+	// Batch triggers arrive as a TypedData collection plus parallel metadata
+	// arrays. Decode each entry as its target struct instead of using the
+	// default slice decoder so empty payloads retain their position and each
+	// struct receives metadata from the same batch index.
+	if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Struct {
+		if values, ok := typedDataCollectionValues(data); ok {
+			result := reflect.MakeSlice(t, len(values), len(values))
+			for i, value := range values {
+				metadata := collectionMetadataAt(tm, i)
+				element, err := convertToTypeValue(t.Elem(), value, metadata)
+				if err != nil {
+					return reflect.Value{}, fmt.Errorf("failed to decode collection element %d: %w", i, err)
+				}
+				result.Index(i).Set(element)
+			}
+			return result, nil
+		}
+	}
+
 	// If struct, try JSON decoding first, then fall back to TriggerMetadata field matching.
 	//
 	// Skip the whole-struct JSON fast-path when the struct declares an
@@ -91,7 +109,7 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 	// not unmarshalled across the whole struct. Without this guard, a queue
 	// message with a JSON object body would silently produce a zero-valued
 	// QueueMessage — the unmarshal succeeds but matches no field tags, the
-	// fast path returns, and the per-field "azfuncdata" + metadata fallback
+	// fast path returns, and the per-field raw-data + metadata fallback
 	// below is never reached.
 	if t.Kind() == reflect.Struct && !hasAzFuncDataField(t) {
 		// Try direct JSON unmarshal from input data (TypedData_Json or TypedData_String_)
@@ -178,6 +196,85 @@ func convertToTypeValue(pt reflect.Type, data *pb.TypedData, tm map[string]*pb.T
 		return ptr, nil
 	}
 	return d, nil
+}
+
+func typedDataCollectionValues(data *pb.TypedData) ([]*pb.TypedData, bool) {
+	if data == nil {
+		return nil, false
+	}
+	if collection := data.GetCollectionBytes(); collection != nil {
+		values := make([]*pb.TypedData, len(collection.GetBytes()))
+		for i, value := range collection.GetBytes() {
+			values[i] = &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: value}}
+		}
+		return values, true
+	}
+	if collection := data.GetCollectionString(); collection != nil {
+		values := make([]*pb.TypedData, len(collection.GetString_()))
+		for i, value := range collection.GetString_() {
+			values[i] = &pb.TypedData{Data: &pb.TypedData_String_{String_: value}}
+		}
+		return values, true
+	}
+	if collection := data.GetCollectionDouble(); collection != nil {
+		values := make([]*pb.TypedData, len(collection.GetDouble()))
+		for i, value := range collection.GetDouble() {
+			values[i] = &pb.TypedData{Data: &pb.TypedData_Double{Double: value}}
+		}
+		return values, true
+	}
+	if collection := data.GetCollectionSint64(); collection != nil {
+		values := make([]*pb.TypedData, len(collection.GetSint64()))
+		for i, value := range collection.GetSint64() {
+			values[i] = &pb.TypedData{Data: &pb.TypedData_Int{Int: value}}
+		}
+		return values, true
+	}
+	return nil, false
+}
+
+func collectionMetadataAt(metadata map[string]*pb.TypedData, index int) map[string]*pb.TypedData {
+	result := make(map[string]*pb.TypedData, len(metadata))
+	for name, value := range metadata {
+		if !strings.HasSuffix(strings.ToLower(name), "array") {
+			result[name] = value
+		}
+	}
+
+	// Apply per-message metadata after scalar metadata so an XArray entry
+	// deterministically overrides an X entry for the corresponding message.
+	for name, value := range metadata {
+		if !strings.HasSuffix(strings.ToLower(name), "array") {
+			continue
+		}
+		element, ok, err := typedDataElementAt(value, index)
+		if err != nil || !ok {
+			continue
+		}
+		result[name[:len(name)-len("Array")]] = element
+	}
+	return result
+}
+
+func typedDataElementAt(data *pb.TypedData, index int) (*pb.TypedData, bool, error) {
+	if values, ok := typedDataCollectionValues(data); ok {
+		if index >= len(values) {
+			return nil, false, nil
+		}
+		return values[index], true, nil
+	}
+
+	if data == nil || data.GetJson() == "" {
+		return nil, false, nil
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal([]byte(data.GetJson()), &values); err != nil {
+		return nil, false, err
+	}
+	if index >= len(values) {
+		return nil, false, nil
+	}
+	return &pb.TypedData{Data: &pb.TypedData_Json{Json: string(values[index])}}, true, nil
 }
 
 // decodeProto converts a single TypedData value from the host into a Go

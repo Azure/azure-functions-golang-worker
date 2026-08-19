@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
@@ -18,7 +19,22 @@ func ServiceBusTopicHandler(ctx context.Context, msg bindings.ServiceBusMessage)
 		"sequence_number", msg.SequenceNumber,
 		"subject", msg.Subject,
 		"content_type", msg.ContentType,
+		"test_id", msg.ApplicationProperties["testID"],
 	)
+	return nil
+}
+
+func ServiceBusTopicBatchHandler(ctx context.Context, messages []bindings.ServiceBusMessage) error {
+	slog.InfoContext(ctx, "servicebus topic batch trigger executed", "batch_size", len(messages))
+	for _, msg := range messages {
+		slog.InfoContext(ctx, "servicebus topic batch message",
+			"message_id", msg.MessageId,
+			"body", string(msg.Body),
+			"sequence_number", msg.SequenceNumber,
+			"test_id", msg.ApplicationProperties["testID"],
+			"alignment_key", fmt.Sprintf("%s|%s|%v", msg.Body, msg.MessageId, msg.ApplicationProperties["testID"]),
+		)
+	}
 	return nil
 }
 
@@ -28,6 +44,11 @@ func main() {
 	app.ServiceBusTopic("topicFunc", ServiceBusTopicHandler,
 		sdk.WithTopicName("orders"),
 		sdk.WithSubscriptionName("processor"),
+		sdk.WithConnection("ServiceBusConnection"),
+	)
+	app.ServiceBusTopicBatch("topicBatchFunc", ServiceBusTopicBatchHandler,
+		sdk.WithTopicName("orders-batch"),
+		sdk.WithSubscriptionName("processor-batch"),
 		sdk.WithConnection("ServiceBusConnection"),
 	)
 

@@ -4,7 +4,8 @@
       {
         "Name": "emulatorns1",
         "Queues": [
-          { "Name": "input-queue", "Properties": {} }
+          { "Name": "input-queue", "Properties": {} },
+          { "Name": "input-queue-batch", "Properties": {} }
         ],
         "Topics": [
           {
@@ -12,6 +13,13 @@
             "Properties": {},
             "Subscriptions": [
               { "Name": "processor", "Properties": {} }
+            ]
+          },
+          {
+            "Name": "orders-batch",
+            "Properties": {},
+            "Subscriptions": [
+              { "Name": "processor-batch", "Properties": {} }
             ]
           }
         ]

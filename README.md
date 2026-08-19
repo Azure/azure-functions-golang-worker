@@ -118,6 +118,17 @@ app.SQL("productsChanged", productsChanged,
     sdk.WithTable("dbo.Products"),
     sdk.WithConnection("AzureWebJobsSqlConnectionString"),
 )
+
+// Event Hub and Service Bus expose separate, strongly typed batch methods.
+app.EventHubBatch("processEvents", eventBatchHandler,
+    sdk.WithEventHubName("events"),
+    sdk.WithConnection("EventHubConnection"),
+)
+
+app.ServiceBusQueueBatch("processMessages", messageBatchHandler,
+    sdk.WithQueueName("messages"),
+    sdk.WithConnection("ServiceBusConnection"),
+)
 ```
 
 ### Extension Triggers (`triggers/`)
@@ -169,7 +180,7 @@ For work that matters (processing events, calling APIs), use [`sdk.RecoverTo`](s
 ```go
 import "golang.org/x/sync/errgroup"
 
-func EventHubHandler(ctx context.Context, events []bindings.EventHubEvent) error {
+func EventHubHandler(ctx context.Context, events []bindings.EventHubMessage) error {
     g, ctx := errgroup.WithContext(ctx)
     for _, e := range events {
         g.Go(func() (err error) {

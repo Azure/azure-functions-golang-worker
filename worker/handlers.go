@@ -30,13 +30,14 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *
 	// host will then forward HTTP requests to that URL via YARP and skip the
 	// gRPC body for HTTP triggers, enabling true streaming.
 	capabilities := map[string]string{
-		"TypedDataCollection":               "true",
-		"WorkerStatus":                      "true",
-		"RpcHttpBodyOnly":                   "true",
-		"RawHttpBodyBytes":                  "true",
-		"RpcHttpTriggerMetadataRemoved":     "true",
-		"UseNullableValueDictionaryForHttp": "true",
-		"HandlesWorkerTerminateMessage":     "true",
+		"TypedDataCollection":                 "true",
+		"IncludeEmptyEntriesInMessagePayload": "true",
+		"WorkerStatus":                        "true",
+		"RpcHttpBodyOnly":                     "true",
+		"RawHttpBodyBytes":                    "true",
+		"RpcHttpTriggerMetadataRemoved":       "true",
+		"UseNullableValueDictionaryForHttp":   "true",
+		"HandlesWorkerTerminateMessage":       "true",
 	}
 
 	// Merge in capabilities advertised by the user app (e.g. middleware that

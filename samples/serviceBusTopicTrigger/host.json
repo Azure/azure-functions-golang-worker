@@ -1,5 +1,12 @@
 {
   "version": "2.0",
+  "extensions": {
+    "serviceBus": {
+      "maxMessageBatchSize": 2,
+      "minMessageBatchSize": 2,
+      "maxBatchWaitTime": "00:00:05"
+    }
+  },
   "extensionBundle": {
     "id": "Microsoft.Azure.Functions.ExtensionBundle",
     "version": "[4.*, 5.0.0)"

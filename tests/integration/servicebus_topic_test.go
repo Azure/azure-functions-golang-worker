@@ -1,11 +1,9 @@
 package integration
 
 import (
-	"context"
+	"fmt"
 	"testing"
 	"time"
-
-	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 )
 
 var serviceBusTopicEnv = map[string]string{
@@ -16,28 +14,33 @@ var serviceBusTopicEnv = map[string]string{
 func TestServiceBusTopicTriggerFires(t *testing.T) {
 	requireAzurite(t)
 	requireServiceBus(t)
-	proc := StartFuncHost(t, "serviceBusTopicTrigger", 7206, serviceBusTopicEnv, 30*time.Second)
+	host := startSampleHost(t, "serviceBusTopicTrigger", serviceBusTopicEnv, 30*time.Second)
 
-	// Send a message to the topic
-	client, err := azservicebus.NewClientFromConnectionString(sbConnStr, nil)
-	if err != nil {
-		t.Fatalf("failed to create service bus client: %v", err)
+	body := fmt.Sprintf("single-servicebus-topic-%d", time.Now().UnixNano())
+	sendServiceBusMessages(t, "orders", body)
+
+	assertHostLogContains(t, host, "servicebus topic trigger executed", 15*time.Second)
+	assertHostLogContains(t, host, body, 5*time.Second)
+	assertHostLogContains(t, host, "test_id="+body, 5*time.Second)
+	assertHostLogContains(t, host, "Executed 'Functions.topicFunc' (Succeeded", 5*time.Second)
+}
+
+func TestServiceBusTopicTriggerMany(t *testing.T) {
+	requireAzurite(t)
+	requireServiceBus(t)
+	host := startSampleHost(t, "serviceBusTopicTrigger", serviceBusTopicEnv, 30*time.Second)
+
+	runID := time.Now().UnixNano()
+	bodies := []string{
+		fmt.Sprintf("batch-servicebus-topic-%d-1", runID),
+		fmt.Sprintf("batch-servicebus-topic-%d-2", runID),
 	}
-	defer client.Close(context.Background())
+	sendServiceBusMessages(t, "orders-batch", bodies...)
 
-	sender, err := client.NewSender("orders", nil)
-	if err != nil {
-		t.Fatalf("failed to create sender: %v", err)
+	assertHostLogContains(t, host, "servicebus topic batch trigger executed", 20*time.Second)
+	assertHostLogContains(t, host, "batch_size=2", 5*time.Second)
+	for _, body := range bodies {
+		assertHostLogContains(t, host, "alignment_key="+body+"|"+body+"|"+body, 5*time.Second)
 	}
-	defer sender.Close(context.Background())
-
-	err = sender.SendMessage(context.Background(), &azservicebus.Message{
-		Body: []byte("Order #99 from topic integration test"),
-	}, nil)
-	if err != nil {
-		t.Fatalf("failed to send message: %v", err)
-	}
-
-	proc.AssertLogContains("servicebus topic trigger executed", 15*time.Second)
-	proc.AssertLogContains("Succeeded", 5*time.Second)
+	assertHostLogContains(t, host, "Executed 'Functions.topicBatchFunc' (Succeeded", 5*time.Second)
 }

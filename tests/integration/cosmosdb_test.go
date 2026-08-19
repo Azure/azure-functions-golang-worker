@@ -85,10 +85,10 @@ func TestCosmosDBTriggerFires(t *testing.T) {
 	requireCosmosDB(t)
 	ensureCosmosContainers(t)
 
-	proc := StartFuncHost(t, "cosmosDBTrigger", 7208, cosmosEnv, 40*time.Second)
+	host := startSampleHost(t, "cosmosDBTrigger", cosmosEnv, 40*time.Second)
 
 	// Wait for the change feed listener to acquire leases
-	proc.AssertLogContains("Started the listener", 60*time.Second)
+	assertHostLogContains(t, host, "Started the listener", 60*time.Second)
 
 	// Insert a document
 	cred, err := azcosmos.NewKeyCredential(cosmosKey)
@@ -119,6 +119,7 @@ func TestCosmosDBTriggerFires(t *testing.T) {
 	}
 
 	// Cosmos change feed can take 10-30s to detect changes
-	proc.AssertLogContains("Executing 'Functions.docs'", 45*time.Second)
-	proc.AssertLogContains("Succeeded", 10*time.Second)
+	assertHostLogContains(t, host, "Executing 'Functions.docs'", 45*time.Second)
+	assertHostLogContains(t, host, docID, 10*time.Second)
+	assertHostLogContains(t, host, "Executed 'Functions.docs' (Succeeded", 10*time.Second)
 }

@@ -106,7 +106,8 @@ func (app *App) Queue(name string, f QueueHandler, opts ...Option) *RegisteredFu
 	return app.registerFunction(name, f, trigger, opts...)
 }
 
-// EventHub creates a new EventHub triggered function.
+// EventHub creates a new EventHub triggered function that receives one event
+// per invocation.
 func (app *App) EventHub(name string, f EventHubHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.EventHubTrigger{
 		Name:          "message",
@@ -116,7 +117,19 @@ func (app *App) EventHub(name string, f EventHubHandler, opts ...Option) *Regist
 	return app.registerFunction(name, f, trigger, opts...)
 }
 
-// ServiceBusQueue creates a new Service Bus queue triggered function.
+// EventHubBatch creates a new EventHub triggered function that receives a
+// batch of events per invocation.
+func (app *App) EventHubBatch(name string, f EventHubBatchHandler, opts ...Option) *RegisteredFunction {
+	trigger := &bindings.EventHubTrigger{
+		Name:          "message",
+		ConsumerGroup: "$Default",
+		Cardinality:   "many",
+	}
+	return app.registerFunction(name, f, trigger, opts...)
+}
+
+// ServiceBusQueue creates a new Service Bus queue triggered function that
+// receives one message per invocation.
 func (app *App) ServiceBusQueue(name string, f ServiceBusHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.ServiceBusQueueTrigger{
 		Name:        "message",
@@ -125,11 +138,32 @@ func (app *App) ServiceBusQueue(name string, f ServiceBusHandler, opts ...Option
 	return app.registerFunction(name, f, trigger, opts...)
 }
 
-// ServiceBusTopic creates a new Service Bus topic triggered function.
+// ServiceBusQueueBatch creates a new Service Bus queue triggered function that
+// receives a batch of messages per invocation.
+func (app *App) ServiceBusQueueBatch(name string, f ServiceBusBatchHandler, opts ...Option) *RegisteredFunction {
+	trigger := &bindings.ServiceBusQueueTrigger{
+		Name:        "message",
+		Cardinality: "many",
+	}
+	return app.registerFunction(name, f, trigger, opts...)
+}
+
+// ServiceBusTopic creates a new Service Bus topic triggered function that
+// receives one message per invocation.
 func (app *App) ServiceBusTopic(name string, f ServiceBusHandler, opts ...Option) *RegisteredFunction {
 	trigger := &bindings.ServiceBusTopicTrigger{
 		Name:        "message",
 		Cardinality: "one",
+	}
+	return app.registerFunction(name, f, trigger, opts...)
+}
+
+// ServiceBusTopicBatch creates a new Service Bus topic triggered function that
+// receives a batch of messages per invocation.
+func (app *App) ServiceBusTopicBatch(name string, f ServiceBusBatchHandler, opts ...Option) *RegisteredFunction {
+	trigger := &bindings.ServiceBusTopicTrigger{
+		Name:        "message",
+		Cardinality: "many",
 	}
 	return app.registerFunction(name, f, trigger, opts...)
 }

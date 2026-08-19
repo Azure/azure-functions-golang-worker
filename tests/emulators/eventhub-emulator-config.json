@@ -18,6 +18,13 @@
             "ConsumerGroups": [
               { "Name": "watchtower-test" }
             ]
+          },
+          {
+            "Name": "input-hub-batch",
+            "PartitionCount": "2",
+            "ConsumerGroups": [
+              { "Name": "watchtower-batch-test" }
+            ]
           }
         ]
       }
