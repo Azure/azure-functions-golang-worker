@@ -42,7 +42,11 @@ jobs:
 
     - script: |
         CORE_TOOLS_DIR="$(Agent.TempDirectory)/azure-functions-core-tools"
-        npm install --prefix "${CORE_TOOLS_DIR}" azure-functions-core-tools@4 --unsafe-perm true
+        npm install \
+          --registry https://packagefeedproxy.microsoft.io/npm/ \
+          --prefix "${CORE_TOOLS_DIR}" \
+          azure-functions-core-tools@4 \
+          --unsafe-perm true
         echo "##vso[task.prependpath]${CORE_TOOLS_DIR}/node_modules/.bin"
         "${CORE_TOOLS_DIR}/node_modules/.bin/func" --version
       displayName: 'Install Azure Functions Core Tools'
