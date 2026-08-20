@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestBlobTriggerFires(t *testing.T) {
 		t.Fatalf("failed to create container: %v", err)
 	}
 
-	proc := StartFuncHost(t, "blobTrigger", 7204, blobEnv, 30*time.Second)
+	host := startTestDataHost(t, "blobTrigger", blobEnv, 30*time.Second)
 
 	// Upload a unique blob after the host is initialized
 	blobName := fmt.Sprintf("test-%d.txt", time.Now().UnixNano())
@@ -46,12 +47,15 @@ func TestBlobTriggerFires(t *testing.T) {
 	}
 
 	// Blob trigger uses polling — can take up to 60 seconds
-	proc.AssertLogContains("blob trigger executed", 90*time.Second)
-	proc.AssertLogContains("Executing 'Functions.blobTrigger'", 5*time.Second)
+	assertHostLogContains(t, host, "blob trigger executed", 90*time.Second)
+	assertHostLogContains(t, host, "Executing 'Functions.blobTrigger'", 5*time.Second)
 
 	// Verify the ClientFactory created a real *blob.Client with a valid endpoint
-	log := proc.ReadLog()
-	if !strings.Contains(log, "Blob Trigger Executed for: http") {
+	logBytes, err := os.ReadFile(host.LogPath())
+	if err != nil {
+		t.Fatalf("read host log: %v", err)
+	}
+	if !strings.Contains(string(logBytes), "url=http") {
 		t.Fatal("Expected blob client URL to start with 'http', indicating ClientFactory created a real client")
 	}
 }

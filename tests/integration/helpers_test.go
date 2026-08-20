@@ -29,6 +29,10 @@ func samplesDir() string {
 	return filepath.Join(repoRoot(), "samples")
 }
 
+func integrationTestDataDir() string {
+	return filepath.Join(repoRoot(), "tests", "integration", "testdata")
+}
+
 // funcExe returns the path to the func CLI executable.
 func funcExe() string {
 	if v := os.Getenv("FUNC_EXE"); v != "" {
@@ -94,23 +98,39 @@ func cleanAzuriteCheckpoints(t *testing.T) {
 
 func startSampleHost(t *testing.T, sampleName string, env map[string]string, initTimeout time.Duration) testhost.Host {
 	t.Helper()
+	return startFunctionHost(t, sampleName, filepath.Join(samplesDir(), sampleName), env, initTimeout)
+}
+
+func startTestDataHost(t *testing.T, appName string, env map[string]string, initTimeout time.Duration) testhost.Host {
+	t.Helper()
+	return startFunctionHost(t, appName, filepath.Join(integrationTestDataDir(), appName), env, initTimeout)
+}
+
+func startFunctionHost(
+	t *testing.T,
+	appName string,
+	appDir string,
+	env map[string]string,
+	initTimeout time.Duration,
+) testhost.Host {
+	t.Helper()
 	cleanAzuriteCheckpoints(t)
 
 	host, err := testhost.Start(context.Background(), testhost.Config{
-		SampleDir:   filepath.Join(samplesDir(), sampleName),
+		SampleDir:   appDir,
 		FuncExe:     funcExe(),
 		Environment: env,
 		ArtifactDir: filepath.Join("artifacts", t.Name()),
 		InitTimeout: initTimeout,
 	})
 	if err != nil {
-		t.Fatalf("start %s function host: %v", sampleName, err)
+		t.Fatalf("start %s function host: %v", appName, err)
 	}
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := host.Stop(stopCtx); err != nil {
-			t.Errorf("stop %s function host: %v", sampleName, err)
+			t.Errorf("stop %s function host: %v", appName, err)
 		}
 	})
 	return host
