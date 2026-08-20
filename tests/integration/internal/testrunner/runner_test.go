@@ -37,6 +37,13 @@ func TestWaitHTTPReadyPollsUntilServiceResponds(t *testing.T) {
 	}
 }
 
+func TestRunRequiresEmulatorConfiguration(t *testing.T) {
+	err := (Runner{}).Run(context.Background())
+	if err == nil || err.Error() != "no emulators configured" {
+		t.Fatalf("Run() error = %v, want no emulators configured", err)
+	}
+}
+
 // TestRunNoExistingContainer covers: two ps queries, starts Azurite, runs tests,
 // captures logs, and removes the container it created.
 func TestRunNoExistingContainer(t *testing.T) {
@@ -54,10 +61,10 @@ func TestRunNoExistingContainer(t *testing.T) {
 		TestPattern:             "^TestHttpTriggerGet$",
 		FuncExe:                 "func",
 		MinimumCoreToolsVersion: "4.12.0",
+		Emulators:               testAzuriteEmulators(),
 		command:                 command,
 		testCommand:             testCommand,
 		output:                  &streamedOutput,
-		waitReady:               func(context.Context) error { return nil },
 	}
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -143,10 +150,10 @@ func TestRunExistingRunningContainer(t *testing.T) {
 		TestPattern:             "^TestHttpTriggerGet$",
 		FuncExe:                 "func",
 		MinimumCoreToolsVersion: "4.12.0",
+		Emulators:               testAzuriteEmulators(),
 		command:                 command,
 		testCommand:             successfulTestCommand(&commands, "PASS\n"),
 		output:                  io.Discard,
-		waitReady:               func(context.Context) error { return nil },
 	}
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -171,10 +178,10 @@ func TestRunExistingStoppedContainer(t *testing.T) {
 		TestPattern:             "^TestHttpTriggerGet$",
 		FuncExe:                 "func",
 		MinimumCoreToolsVersion: "4.12.0",
+		Emulators:               testAzuriteEmulators(),
 		command:                 command,
 		testCommand:             successfulTestCommand(&commands, "PASS\n"),
 		output:                  io.Discard,
-		waitReady:               func(context.Context) error { return nil },
 	}
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -266,6 +273,7 @@ func TestRunRejectsUnexpectedCoreToolsVersion(t *testing.T) {
 		ArtifactDir:             t.TempDir(),
 		FuncExe:                 "func",
 		MinimumCoreToolsVersion: "4.12.0",
+		Emulators:               testAzuriteEmulators(),
 		command:                 command,
 	}).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "4.11.0") || !strings.Contains(err.Error(), "require 4.12.0 or later") {
@@ -292,6 +300,7 @@ func TestRunAllowsNewerCoreToolsVersionBeforeDockerValidation(t *testing.T) {
 		ArtifactDir:             t.TempDir(),
 		FuncExe:                 "func",
 		MinimumCoreToolsVersion: "4.12.0",
+		Emulators:               testAzuriteEmulators(),
 		command:                 command,
 	}).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "docker validation failed") {
@@ -320,8 +329,8 @@ func TestRunCleansAzuriteAfterPartialStartupFailure(t *testing.T) {
 		TestPattern:             "^TestHttpTriggerGet$",
 		FuncExe:                 "func",
 		MinimumCoreToolsVersion: "4.12.0",
+		Emulators:               testAzuriteEmulators(),
 		command:                 command,
-		waitReady:               func(context.Context) error { return nil },
 	}).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "compose startup failed") {
 		t.Fatalf("Run() error = %v, want original startup failure", err)
@@ -351,6 +360,12 @@ func successfulTestCommand(commands *[]string, testOutput string) streamingComma
 		*commands = append(*commands, strings.Join(append([]string{name}, args...), " "))
 		_, err := io.WriteString(output, testOutput)
 		return err
+	}
+}
+
+func testAzuriteEmulators() []Emulator {
+	return []Emulator{
+		{Name: "azurite", ArtifactFile: "azurite.log", waitReady: func(context.Context) error { return nil }},
 	}
 }
 

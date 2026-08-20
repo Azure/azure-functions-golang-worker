@@ -57,10 +57,13 @@ type Runner struct {
 	command     commandFunc
 	testCommand streamingCommandFunc
 	output      io.Writer
-	waitReady   func(context.Context) error
 }
 
 func (r Runner) Run(ctx context.Context) (runErr error) {
+	if len(r.Emulators) == 0 {
+		return errors.New("no emulators configured")
+	}
+
 	// Unit tests inject fake command and readiness functions so they can verify
 	// orchestration behavior without starting external processes.
 	command := r.command
@@ -76,15 +79,6 @@ func (r Runner) Run(ctx context.Context) (runErr error) {
 		outputWriter = os.Stdout
 	}
 	emulators := r.Emulators
-	if len(emulators) == 0 {
-		waitReady := r.waitReady
-		if waitReady == nil {
-			waitReady = waitForAzurite
-		}
-		emulators = []Emulator{
-			{Name: "azurite", ArtifactFile: "azurite.log", waitReady: waitReady},
-		}
-	}
 	if err := os.MkdirAll(r.ArtifactDir, 0o755); err != nil {
 		return fmt.Errorf("create artifact directory: %w", err)
 	}
