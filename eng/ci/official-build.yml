@@ -14,6 +14,11 @@ trigger:
 # CI only, does not trigger on PRs.
 pr: none
 
+# The 1ES pre-job starts Microsoft's Go credential provider at this address.
+# Using it keeps module downloads inside the approved Microsoft proxy.
+variables:
+  GOPROXY: http://localhost:5000
+
 schedules:
   - cron: '0 0 * * MON'
     displayName: At 12:00 AM, only on Monday

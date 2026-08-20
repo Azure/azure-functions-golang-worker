@@ -15,6 +15,11 @@ pr:
     include:
       - main
 
+# The 1ES pre-job starts Microsoft's Go credential provider at this address.
+# Using it keeps module downloads inside the approved Microsoft proxy.
+variables:
+  GOPROXY: http://localhost:5000
+
 resources:
   repositories:
     - repository: 1es

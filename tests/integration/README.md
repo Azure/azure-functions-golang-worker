@@ -88,18 +88,24 @@ the suite.
 
 ## Current coverage
 
-The harness runs the complete black-box integration suite:
+| Sample | Integration pipeline coverage | Notes |
+|---|---|---|
+| `blobTrigger` | Partial | A test-only polling fixture validates Blob invocation and client creation. Event Grid delivery requires deployed Azure test resources. |
+| `cosmosDBTrigger` | Full | Runs against the local Cosmos DB emulator. |
+| `eventGridTrigger` | Partial | Verifies build, registration, and host loading; there is no local Event Grid emulator. |
+| `eventHubTrigger` | Full | Tests single-event and batch delivery. |
+| `httpTrigger` | Full | Tests GET and POST invocation. |
+| `queueTrigger` | Full | Tests message delivery and metadata. |
+| `serviceBusQueueTrigger` | Full | Tests single-message and batch delivery. |
+| `serviceBusTopicTrigger` | Full | Tests single-message and batch delivery. |
+| `sqlTrigger` | Full | Tests insert, update, and delete changes. |
+| `timerTrigger` | Full | Tests scheduled invocation. |
+| `httpStreaming` | Not covered | Requires a streaming-specific integration scenario. |
+| `middleware` | Not covered | Requires an end-to-end middleware scenario. |
+| `otelTracing` | Not covered | Requires telemetry capture and assertion infrastructure. |
+| `collectorToAzureMonitor` | Not covered | Requires Azure Monitor or a test telemetry destination. |
 
-- HTTP GET and POST invocation
-- Timer, Blob Storage, Queue Storage, and Event Grid registration
-- Event Hubs single-event and batch delivery
-- Service Bus queue and topic single-message and batch delivery
-- Cosmos DB change feed processing
-- SQL insert, update, and delete change tracking
-
-The batch tests verify payload and per-message metadata alignment. Event Grid
-has no local emulator, so its scenario verifies that the function builds,
-registers, and loads without unexpected host errors.
+The batch tests verify payload and per-message metadata alignment.
 
 Run it from the integration-test module:
 
