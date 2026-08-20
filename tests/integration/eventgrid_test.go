@@ -1,8 +1,6 @@
 package integration
 
 import (
-	"os"
-	"strings"
 	"testing"
 	"time"
 )
@@ -19,14 +17,5 @@ func TestEventGridTriggerRegisters(t *testing.T) {
 
 	assertHostLogContains(t, host, "eventGridTrigger", 10*time.Second)
 
-	logBytes, err := os.ReadFile(host.LogPath())
-	if err != nil {
-		t.Fatalf("read host log: %v", err)
-	}
-	log := string(logBytes)
-	lower := strings.ToLower(log)
-	// Allow the known benign error from Functions host
-	if strings.Contains(lower, "error") && !strings.Contains(log, "Unable to resolve ScriptJobHostOptions") {
-		t.Errorf("unexpected error in log:\n%s", log)
-	}
+	assertHostLogNotContainsError(t, host, "Unable to resolve ScriptJobHostOptions")
 }

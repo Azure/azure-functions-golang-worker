@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/azure/azure-functions-golang-worker/tests/integration/internal/process"
 )
 
 func TestWaitHTTPReadyPollsUntilServiceResponds(t *testing.T) {
@@ -342,6 +346,134 @@ func TestRunCleansAzuriteAfterPartialStartupFailure(t *testing.T) {
 		t.Fatalf("partial startup did not collect logs and clean up:\n%s", gotCommands)
 	}
 	assertFileContains(t, filepath.Join(artifactDir, "azurite.log"), "partial startup diagnostics")
+}
+
+func TestRunReapsRegisteredHostAfterTestProcessFailure(t *testing.T) {
+	artifactDir := t.TempDir()
+	var commands []string
+	command := emulatorLifecycleCommand(&commands, map[string]emulatorFixture{
+		"azurite": {log: "azurite diagnostics"},
+	})
+	testCommand := func(_ context.Context, _ io.Writer, _ string, _ ...string) error {
+		scenarioDir := filepath.Join(artifactDir, "TestScenario")
+		if err := os.MkdirAll(scenarioDir, 0o755); err != nil {
+			return err
+		}
+		return errors.Join(
+			os.WriteFile(filepath.Join(scenarioDir, process.PIDFileName), []byte("123"), 0o600),
+			errors.New("test process terminated"),
+		)
+	}
+	var terminatedPIDs []int
+
+	err := (Runner{
+		ComposeFile:             "compose.yml",
+		ArtifactDir:             artifactDir,
+		TestPattern:             "^TestScenario$",
+		FuncExe:                 "func",
+		MinimumCoreToolsVersion: "4.12.0",
+		Emulators:               testAzuriteEmulators(),
+		command:                 command,
+		testCommand:             testCommand,
+		terminate: func(pid int) error {
+			terminatedPIDs = append(terminatedPIDs, pid)
+			return nil
+		},
+	}).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "test process terminated") {
+		t.Fatalf("Run() error = %v, want test process failure", err)
+	}
+	if !slices.Equal(terminatedPIDs, []int{123}) {
+		t.Fatalf("terminated pids = %v, want [123]", terminatedPIDs)
+	}
+}
+
+func TestClearHostPIDFilesRemovesOnlyProcessRecords(t *testing.T) {
+	artifactDir := t.TempDir()
+	nestedDir := filepath.Join(artifactDir, "TestScenario")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pidPath := filepath.Join(nestedDir, process.PIDFileName)
+	logPath := filepath.Join(nestedDir, "host.log")
+	if err := os.WriteFile(pidPath, []byte("123"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("diagnostics"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := clearHostPIDFiles(artifactDir); err != nil {
+		t.Fatalf("clearHostPIDFiles() error = %v", err)
+	}
+	if _, err := os.Stat(pidPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("process record still exists: %v", err)
+	}
+	assertFileContains(t, logPath, "diagnostics")
+}
+
+func TestTerminateRegisteredHostsTerminatesEachRecordedProcess(t *testing.T) {
+	artifactDir := t.TempDir()
+	var wantPIDs []int
+	for index, pid := range []int{123, 456} {
+		scenarioDir := filepath.Join(artifactDir, fmt.Sprintf("scenario-%d", index))
+		if err := os.MkdirAll(scenarioDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(
+			filepath.Join(scenarioDir, process.PIDFileName),
+			[]byte(strconv.Itoa(pid)),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		wantPIDs = append(wantPIDs, pid)
+	}
+
+	var gotPIDs []int
+	err := terminateRegisteredHosts(artifactDir, func(pid int) error {
+		gotPIDs = append(gotPIDs, pid)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("terminateRegisteredHosts() error = %v", err)
+	}
+	slices.Sort(gotPIDs)
+	if !slices.Equal(gotPIDs, wantPIDs) {
+		t.Fatalf("terminated pids = %v, want %v", gotPIDs, wantPIDs)
+	}
+
+	if err := filepath.WalkDir(artifactDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Name() == process.PIDFileName {
+			t.Errorf("process record was not removed: %s", path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTerminateRegisteredHostsRejectsInvalidPID(t *testing.T) {
+	artifactDir := t.TempDir()
+	pidPath := filepath.Join(artifactDir, process.PIDFileName)
+	if err := os.WriteFile(pidPath, []byte("not-a-pid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	err := terminateRegisteredHosts(artifactDir, func(int) error {
+		called = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid pid") {
+		t.Fatalf("terminateRegisteredHosts() error = %v, want invalid pid", err)
+	}
+	if called {
+		t.Fatal("terminate function called for invalid pid")
+	}
 }
 
 func assertFileContains(t *testing.T, path, pattern string) {

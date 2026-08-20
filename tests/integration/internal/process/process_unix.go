@@ -16,7 +16,12 @@ func TerminateTree(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+	return TerminateTreePID(cmd.Process.Pid)
+}
+
+// TerminateTreePID kills the process group rooted at pid.
+func TerminateTreePID(pid int) error {
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
 		return fmt.Errorf("kill process group: %w", err)
 	}
 	return nil

@@ -179,7 +179,7 @@ func TestSQLTriggerFiresOnChanges(t *testing.T) {
 	requireSQLServer(t)
 	ensureSQLChangeTracking(t)
 
-	proc := StartFuncHost(t, "sqlTrigger", 7209, sqlEnv(), 40*time.Second)
+	host := startSampleHost(t, "sqlTrigger", sqlEnv(), 40*time.Second)
 
 	testDB, err := sql.Open("sqlserver", sqlTestConnStr())
 	if err != nil {
@@ -202,10 +202,10 @@ func TestSQLTriggerFiresOnChanges(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert failed: %v", err)
 	}
-	proc.AssertLogContains("Executing 'Functions.productsChanged'", 45*time.Second)
-	proc.AssertLogContains("operation=Insert", 5*time.Second)
-	proc.AssertLogContains("product_id=1", 5*time.Second)
-	proc.AssertLogContains("Executed 'Functions.productsChanged' (Succeeded", 15*time.Second)
+	assertHostLogContains(t, host, "Executing 'Functions.productsChanged'", 45*time.Second)
+	assertHostLogContains(t, host, "operation=Insert", 5*time.Second)
+	assertHostLogContains(t, host, "product_id=1", 5*time.Second)
+	assertHostLogContains(t, host, "Executed 'Functions.productsChanged' (Succeeded", 15*time.Second)
 
 	// Update
 	if _, err := testDB.ExecContext(ctx,
@@ -214,7 +214,7 @@ func TestSQLTriggerFiresOnChanges(t *testing.T) {
 	); err != nil {
 		t.Fatalf("update failed: %v", err)
 	}
-	proc.AssertLogContains("operation=Update", 45*time.Second)
+	assertHostLogContains(t, host, "operation=Update", 45*time.Second)
 
 	// Delete
 	if _, err := testDB.ExecContext(ctx,
@@ -223,7 +223,7 @@ func TestSQLTriggerFiresOnChanges(t *testing.T) {
 	); err != nil {
 		t.Fatalf("delete failed: %v", err)
 	}
-	proc.AssertLogContains("operation=Delete", 45*time.Second)
+	assertHostLogContains(t, host, "operation=Delete", 45*time.Second)
 
 	// Sanity: nothing exploded mid-run.
 	//
@@ -235,7 +235,7 @@ func TestSQLTriggerFiresOnChanges(t *testing.T) {
 	//     (e.g. "Encountered exception ... transient SQL error ... retrying").
 	//   - "ConsecutiveErrors=": host metric dump key.
 	//   - `"UseStdErrorStreamForErrorsOnly"`: host-config dump key.
-	proc.AssertLogNotContainsError(
+	assertHostLogNotContainsError(t, host,
 		"SqlTriggerListener",
 		"SqlTableChangeMonitor",
 		"ConsecutiveErrors=",

@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 )
@@ -30,5 +31,33 @@ func TestDefaultRunnerTargetsFullIntegrationSuite(t *testing.T) {
 	}
 	if suiteTimeout != 20*time.Minute {
 		t.Fatalf("suiteTimeout = %s", suiteTimeout)
+	}
+}
+
+func TestIntegrationTestPatternSelectsEveryScenario(t *testing.T) {
+	pattern := regexp.MustCompile(integrationTestPattern)
+	expectedTests := []string{
+		"TestHttpTriggerGet",
+		"TestTimerTriggerFires",
+		"TestBlobTriggerFires",
+		"TestQueueStorageTriggerFires",
+		"TestQueueStorageTriggerMetadata",
+		"TestEventGridTriggerRegisters",
+		"TestEventHubTriggerFires",
+		"TestEventHubTriggerMany",
+		"TestServiceBusQueueTriggerFires",
+		"TestServiceBusQueueTriggerMany",
+		"TestServiceBusTopicTriggerFires",
+		"TestServiceBusTopicTriggerMany",
+		"TestCosmosDBTriggerFires",
+		"TestSQLTriggerFiresOnChanges",
+	}
+	for _, testName := range expectedTests {
+		if !pattern.MatchString(testName) {
+			t.Errorf("integrationTestPattern does not select %s", testName)
+		}
+	}
+	if pattern.MatchString("TestDefaultRunnerTargetsFullIntegrationSuite") {
+		t.Fatal("integrationTestPattern unexpectedly selects runner unit tests")
 	}
 }

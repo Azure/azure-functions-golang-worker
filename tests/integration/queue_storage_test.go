@@ -19,13 +19,13 @@ func TestQueueStorageTriggerFires(t *testing.T) {
 	// Create the queue in Azurite before starting the host
 	ensureQueue(t, "myqueue")
 
-	proc := StartFuncHost(t, "queueTrigger", 7210, queueStorageEnv, 30*time.Second)
+	host := startSampleHost(t, "queueTrigger", queueStorageEnv, 30*time.Second)
 
 	// Enqueue a message
 	enqueueMessage(t, "myqueue", "Hello from queue storage integration test!")
 
-	proc.AssertLogContains("queue trigger executed", 15*time.Second)
-	proc.AssertLogContains("Succeeded", 5*time.Second)
+	assertHostLogContains(t, host, "queue trigger executed", 15*time.Second)
+	assertHostLogContains(t, host, "Succeeded", 5*time.Second)
 }
 
 func TestQueueStorageTriggerMetadata(t *testing.T) {
@@ -33,13 +33,13 @@ func TestQueueStorageTriggerMetadata(t *testing.T) {
 
 	ensureQueue(t, "myqueue")
 
-	proc := StartFuncHost(t, "queueTrigger", 7211, queueStorageEnv, 30*time.Second)
+	host := startSampleHost(t, "queueTrigger", queueStorageEnv, 30*time.Second)
 
 	enqueueMessage(t, "myqueue", "metadata-test-message")
 
 	// Verify metadata fields are populated (logged by the sample handler)
-	proc.AssertLogContains("queue trigger executed", 15*time.Second)
-	proc.AssertLogContains("metadata-test-message", 5*time.Second)
+	assertHostLogContains(t, host, "queue trigger executed", 15*time.Second)
+	assertHostLogContains(t, host, "metadata-test-message", 5*time.Second)
 }
 
 // ensureQueue deletes any existing queue (clearing stale messages) and

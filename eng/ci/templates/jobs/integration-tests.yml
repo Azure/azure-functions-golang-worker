@@ -68,15 +68,6 @@ jobs:
         df -h /
       displayName: 'Reclaim disk space for emulators'
 
-    # The Blob trigger is a separate Go module. A workspace lets Core Tools
-    # build the sample from this PR instead of looking for unpublished packages.
-    - script: |
-        go work init . ./triggers/blob ./tests/integration
-        ROOT_VER=$(awk '$1=="github.com/azure/azure-functions-golang-worker" {print $2}' triggers/blob/go.mod)
-        go work edit -replace github.com/azure/azure-functions-golang-worker@${ROOT_VER}=.
-        cat go.work
-      displayName: 'Initialize Go workspace'
-
     - script: |
         cd tests/integration
         go run ./cmd/integrationtest

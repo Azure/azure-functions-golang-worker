@@ -56,6 +56,7 @@ type Runner struct {
 
 	command     commandFunc
 	testCommand streamingCommandFunc
+	terminate   func(int) error
 	output      io.Writer
 }
 
@@ -81,6 +82,9 @@ func (r Runner) Run(ctx context.Context) (runErr error) {
 	emulators := r.Emulators
 	if err := os.MkdirAll(r.ArtifactDir, 0o755); err != nil {
 		return fmt.Errorf("create artifact directory: %w", err)
+	}
+	if err := clearHostPIDFiles(r.ArtifactDir); err != nil {
+		return fmt.Errorf("clear stale host process records: %w", err)
 	}
 
 	// Tool installation belongs to the caller (local setup or the pipeline).
@@ -129,6 +133,14 @@ func (r Runner) Run(ctx context.Context) (runErr error) {
 	defer func() {
 		var cleanupErrs []error
 
+		terminate := r.terminate
+		if terminate == nil {
+			terminate = process.TerminateTreePID
+		}
+		if err := terminateRegisteredHosts(r.ArtifactDir, terminate); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
+
 		for _, emulator := range emulators {
 			logCtx, cancelLogs := context.WithTimeout(context.Background(), cleanupTimeout)
 			logOutput, logErr := command(logCtx, "docker",
@@ -138,6 +150,7 @@ func (r Runner) Run(ctx context.Context) (runErr error) {
 			if artifactFile == "" {
 				artifactFile = emulator.Name + ".log"
 			}
+
 			if writeErr := os.WriteFile(filepath.Join(r.ArtifactDir, artifactFile), logOutput, 0o600); writeErr != nil {
 				cleanupErrs = append(cleanupErrs, fmt.Errorf("write %s log: %w", emulator.Name, writeErr))
 			}
@@ -205,6 +218,53 @@ func (r Runner) Run(ctx context.Context) (runErr error) {
 		return fmt.Errorf("close Go test log: %w", closeErr)
 	}
 	return nil
+}
+
+func clearHostPIDFiles(artifactDir string) error {
+	return filepath.WalkDir(artifactDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && entry.Name() == process.PIDFileName {
+			return os.Remove(path)
+		}
+		return nil
+	})
+}
+
+func terminateRegisteredHosts(artifactDir string, terminate func(int) error) error {
+	var cleanupErrs []error
+	walkErr := filepath.WalkDir(artifactDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || entry.Name() != process.PIDFileName {
+			return nil
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("read host process record %s: %w", path, err))
+			return nil
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(content)))
+		if err != nil || pid <= 0 {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("parse host process record %s: invalid pid %q", path, content))
+			return nil
+		}
+		if err := terminate(pid); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("terminate orphaned host process %d: %w", pid, err))
+			return nil
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove host process record %s: %w", path, err))
+		}
+		return nil
+	})
+	if walkErr != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("scan host process records: %w", walkErr))
+	}
+	return errors.Join(cleanupErrs...)
 }
 
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {

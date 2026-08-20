@@ -12,8 +12,8 @@ var timerEnv = map[string]string{
 func TestTimerTriggerFires(t *testing.T) {
 	requireAzurite(t)
 	// Timer schedule is */10 * * * * * (every 10 seconds)
-	proc := StartFuncHost(t, "timerTrigger", 7203, timerEnv, 30*time.Second)
+	host := startSampleHost(t, "timerTrigger", timerEnv, 30*time.Second)
 
-	proc.AssertLogContains("timer trigger executed", 20*time.Second)
-	proc.AssertLogContains("Succeeded", 5*time.Second)
+	assertHostLogContains(t, host, "timer trigger executed", 20*time.Second)
+	assertHostLogContains(t, host, "Succeeded", 5*time.Second)
 }

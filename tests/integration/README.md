@@ -124,7 +124,8 @@ The runner executes these steps in order:
    endpoint to become ready.
 5. Runs every black-box scenario via one explicit `go test` pattern.
 6. Captures every emulator log and the Go test log as artifacts.
-7. Removes only containers that did not exist before the run. Pre-existing
+7. Reaps any Functions hosts left behind if the Go test process is terminated.
+8. Removes only containers that did not exist before the run. Pre-existing
    stopped containers that the runner starts are left in place afterward.
 
 ## Azure DevOps integration
@@ -178,8 +179,8 @@ artifacts/
 ├── go-test.log
 ├── servicebus-emulator.log
 ├── sqlserver.log
-└── TestHttpTriggerGet/
-    └── httpTrigger-host.log
+└── TestScenario/
+    └── sample-host.log
 ```
 
 - Each emulator log contains the complete output from that Docker Compose
@@ -245,8 +246,9 @@ Tests do not start Docker containers, install tools, or own emulator cleanup.
 | Event Hubs | `127.0.0.2:5672` | TCP connection |
 | Cosmos DB | `127.0.0.1:8081` | HTTP service request |
 
-Emulator images are pinned in `tests/emulators/docker-compose.yml`. Update image
-versions deliberately and validate the affected tests after each update.
+Emulator images are pinned to immutable manifest digests in
+`tests/emulators/docker-compose.yml`. Update image versions deliberately and
+validate the affected tests after each update.
 
 ## Future work
 
