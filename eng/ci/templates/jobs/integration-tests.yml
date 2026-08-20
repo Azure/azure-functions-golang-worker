@@ -30,6 +30,7 @@ jobs:
         - output: pipelineArtifact
           targetPath: '$(Build.SourcesDirectory)/tests/integration/artifacts'
           artifactName: integration-test-artifacts
+          condition: always()
 
     steps:
     - script: mkdir -p tests/integration/artifacts
@@ -55,6 +56,26 @@ jobs:
         docker version
         docker compose version
       displayName: 'Verify Docker'
+
+    # Integration tests download several large local Azure service emulators.
+    # CI agents are temporary, so remove unused Docker data first to ensure the
+    # test suite has predictable disk space and does not fail midway through.
+    - script: |
+        echo "Docker storage: $(docker info --format '{{.DockerRootDir}}')"
+        df -h /
+        docker system df
+        docker system prune --all --force --volumes
+        df -h /
+      displayName: 'Reclaim disk space for emulators'
+
+    # The Blob trigger is a separate Go module. A workspace lets Core Tools
+    # build the sample from this PR instead of looking for unpublished packages.
+    - script: |
+        go work init . ./triggers/blob ./tests/integration
+        ROOT_VER=$(awk '$1=="github.com/azure/azure-functions-golang-worker" {print $2}' triggers/blob/go.mod)
+        go work edit -replace github.com/azure/azure-functions-golang-worker@${ROOT_VER}=.
+        cat go.work
+      displayName: 'Initialize Go workspace'
 
     - script: |
         cd tests/integration

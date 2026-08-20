@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,11 +15,15 @@ func TestEventGridTriggerRegisters(t *testing.T) {
 	requireAzurite(t)
 	// Event Grid has no local emulator. This test only verifies
 	// that the function builds, registers, and loads correctly.
-	proc := StartFuncHost(t, "eventGridTrigger", 7209, eventGridEnv, 30*time.Second)
+	host := startSampleHost(t, "eventGridTrigger", eventGridEnv, 30*time.Second)
 
-	proc.AssertLogContains("eventGridTrigger", 10*time.Second)
+	assertHostLogContains(t, host, "eventGridTrigger", 10*time.Second)
 
-	log := proc.ReadLog()
+	logBytes, err := os.ReadFile(host.LogPath())
+	if err != nil {
+		t.Fatalf("read host log: %v", err)
+	}
+	log := string(logBytes)
 	lower := strings.ToLower(log)
 	// Allow the known benign error from Functions host
 	if strings.Contains(lower, "error") && !strings.Contains(log, "Unable to resolve ScriptJobHostOptions") {
