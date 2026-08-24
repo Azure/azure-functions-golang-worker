@@ -119,9 +119,9 @@ func TestRunMultipleEmulatorsPreservesExistingContainers(t *testing.T) {
 		FuncExe:                 "func",
 		MinimumCoreToolsVersion: "4.12.0",
 		Emulators: []Emulator{
-			{Name: "azurite", ArtifactFile: "azurite.log", waitReady: ready("azurite")},
-			{Name: "sqlserver", ArtifactFile: "sqlserver.log", waitReady: ready("sqlserver")},
-			{Name: "servicebus-emulator", ArtifactFile: "servicebus.log", waitReady: ready("servicebus-emulator")},
+			{Name: "azurite", ArtifactFile: "azurite.log", WaitReady: ready("azurite")},
+			{Name: "sqlserver", ArtifactFile: "sqlserver.log", WaitReady: ready("sqlserver")},
+			{Name: "servicebus-emulator", ArtifactFile: "servicebus.log", WaitReady: ready("servicebus-emulator")},
 		},
 		command:     command,
 		testCommand: successfulTestCommand(&commands, "PASS\n"),
@@ -497,7 +497,7 @@ func successfulTestCommand(commands *[]string, testOutput string) streamingComma
 
 func testAzuriteEmulators() []Emulator {
 	return []Emulator{
-		{Name: "azurite", ArtifactFile: "azurite.log", waitReady: func(context.Context) error { return nil }},
+		{Name: "azurite", ArtifactFile: "azurite.log", WaitReady: func(context.Context) error { return nil }},
 	}
 }
 

@@ -29,18 +29,18 @@ const cleanupTimeout = 30 * time.Second
 type Emulator struct {
 	Name         string
 	ArtifactFile string
-	waitReady    func(context.Context) error
+	WaitReady    func(context.Context) error
 }
 
 // DefaultEmulators returns the complete local emulator stack used by the
 // black-box integration scenarios.
 func DefaultEmulators() []Emulator {
 	return []Emulator{
-		{Name: "azurite", ArtifactFile: "azurite.log", waitReady: waitForAzurite},
-		{Name: "sqlserver", ArtifactFile: "sqlserver.log", waitReady: waitForSQLServer},
-		{Name: "servicebus-emulator", ArtifactFile: "servicebus-emulator.log", waitReady: waitForServiceBus},
-		{Name: "eventhub-emulator", ArtifactFile: "eventhub-emulator.log", waitReady: waitForEventHub},
-		{Name: "cosmosdb-emulator", ArtifactFile: "cosmosdb-emulator.log", waitReady: waitForCosmosDB},
+		{Name: "azurite", ArtifactFile: "azurite.log", WaitReady: waitForAzurite},
+		{Name: "sqlserver", ArtifactFile: "sqlserver.log", WaitReady: waitForSQLServer},
+		{Name: "servicebus-emulator", ArtifactFile: "servicebus-emulator.log", WaitReady: waitForServiceBus},
+		{Name: "eventhub-emulator", ArtifactFile: "eventhub-emulator.log", WaitReady: waitForEventHub},
+		{Name: "cosmosdb-emulator", ArtifactFile: "cosmosdb-emulator.log", WaitReady: waitForCosmosDB},
 	}
 }
 
@@ -189,10 +189,10 @@ func (r Runner) Run(ctx context.Context) (runErr error) {
 	// Do not start Core Tools until the emulator responds at the service layer.
 	// A running container or open TCP port alone does not prove readiness.
 	for _, emulator := range emulators {
-		if emulator.waitReady == nil {
+		if emulator.WaitReady == nil {
 			continue
 		}
-		if err := emulator.waitReady(ctx); err != nil {
+		if err := emulator.WaitReady(ctx); err != nil {
 			return fmt.Errorf("wait for %s readiness: %w", emulator.Name, err)
 		}
 	}

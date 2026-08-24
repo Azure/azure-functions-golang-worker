@@ -9,7 +9,7 @@
 
 services:
   azurite:
-    image: mcr.microsoft.com/azure-storage/azurite:latest@sha256:ba4c8329f48fb8f02e1416be6a930ebfd71268caee78aa985f3af4315e457c89
+    image: mcr.microsoft.com/azure-storage/azurite:latest@sha256:76b8127d608fab8287a14a4bfeb9a5502cdcffb4bf1e86f09f324ebb0e70edba
     ports:
       - "10000:10000"   # Blob
       - "10001:10001"   # Queue
@@ -17,7 +17,7 @@ services:
     command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --skipApiVersionCheck --silent"
 
   sqlserver:
-    image: mcr.microsoft.com/mssql/server:2022-latest@sha256:5a96d893b245031740f7d46e0fe5ff282d24b78c4b7d761dd57590f3f010a9b3
+    image: mcr.microsoft.com/mssql/server:2022-latest@sha256:ba4c8329f48fb8f02e1416be6a930ebfd71268caee78aa985f3af4315e457c89
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: "${SQL_TEST_PASSWORD:-StrongP@ssw0rd!}"
@@ -32,7 +32,7 @@ services:
       retries: 5
 
   servicebus-emulator:
-    image: mcr.microsoft.com/azure-messaging/servicebus-emulator:latest@sha256:76b8127d608fab8287a14a4bfeb9a5502cdcffb4bf1e86f09f324ebb0e70edba
+    image: mcr.microsoft.com/azure-messaging/servicebus-emulator:latest@sha256:5a96d893b245031740f7d46e0fe5ff282d24b78c4b7d761dd57590f3f010a9b3
     depends_on:
       sqlserver:
         condition: service_healthy
