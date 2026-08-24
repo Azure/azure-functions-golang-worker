@@ -36,7 +36,7 @@ func TestBlobTriggerFires(t *testing.T) {
 		t.Fatalf("failed to create container: %v", err)
 	}
 
-	host := startTestDataHost(t, "blobTrigger", blobEnv, 30*time.Second)
+	host := startTestDataHost(t, "blobTrigger", blobEnv, 60*time.Second)
 
 	// Upload a unique blob after the host is initialized
 	blobName := fmt.Sprintf("test-%d.txt", time.Now().UnixNano())

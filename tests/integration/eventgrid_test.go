@@ -17,5 +17,9 @@ func TestEventGridTriggerRegisters(t *testing.T) {
 
 	assertHostLogContains(t, host, "eventGridTrigger", 10*time.Second)
 
-	assertHostLogNotContainsError(t, host, "Unable to resolve ScriptJobHostOptions")
+	assertHostLogNotContainsError(t, host,
+		"Unable to resolve ScriptJobHostOptions",
+		"ConsecutiveErrors=",
+		`"UseStdErrorStreamForErrorsOnly"`,
+	)
 }
