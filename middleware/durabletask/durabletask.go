@@ -25,6 +25,11 @@ type Durable struct {
 	runner   *orchestrationRunner
 	provided []sdk.FunctionRegistration
 
+	// closed records that the app has already collected ProvidedFunctions,
+	// which happens inside [sdk.App.Use]. Registrations made after that point
+	// would never reach the app, so they panic instead of disappearing.
+	closed bool
+
 	// client is attached to the context of non-orchestration invocations so
 	// HTTP starter functions can reach it via [ClientFromContext].
 	client *Client
@@ -92,8 +97,10 @@ func Middleware(opts ...Option) *Durable {
 // programming model (task.OrchestrationContext: CallActivity, CreateTimer,
 // WaitForExternalEvent, …).
 //
-// Panics if name is already registered.
+// Panics if name is already registered, or if called after the middleware has
+// been passed to [sdk.App.Use] (see [Durable.Activity] for why).
 func (d *Durable) Orchestrator(name string, o task.Orchestrator) *Durable {
+	d.mustBeOpen("Orchestrator", name)
 	if err := d.registry.AddOrchestratorN(name, o); err != nil {
 		panic(fmt.Sprintf("durabletask: register orchestrator %q: %v", name, err))
 	}
@@ -120,7 +127,18 @@ func (d *Durable) Orchestrator(name string, o task.Orchestrator) *Durable {
 // replayed, so ordinary (non-deterministic) code is fine inside them.
 //
 // Panics if fn is not a valid activity signature.
+//
+// Panics too if called after the middleware has been passed to [sdk.App.Use].
+// Use collects the middleware's functions at the moment it is called, so a
+// later registration would never be indexed by the host and the function would
+// simply never run. Register everything first, then call Use:
+//
+//	d := durabletask.Middleware()
+//	d.Orchestrator("HelloCities", HelloCities)
+//	d.Activity("SayHello", SayHello)
+//	app.Use(d)
 func (d *Durable) Activity(name string, fn any) *Durable {
+	d.mustBeOpen("Activity", name)
 	validateActivity(name, fn)
 	d.provided = append(d.provided, sdk.FunctionRegistration{
 		Name:    name,
@@ -249,7 +267,26 @@ func (d *Durable) cachedClient(rpcBaseURL string) *Client {
 // orchestrator and activity functions registered on this middleware so
 // App.Use registers them with the App.
 func (d *Durable) ProvidedFunctions() []sdk.FunctionRegistration {
+	// Use collects the registrations once, here. Anything registered after this
+	// point would be invisible to the app, so close registration.
+	d.closed = true
 	return d.provided
+}
+
+// mustBeOpen panics when a function is registered after the app has already
+// collected this middleware's functions.
+//
+// [sdk.App.Use] reads ProvidedFunctions once, at the moment it is called, so a
+// registration made afterwards lands in the durable registry but is never
+// indexed by the host. The orchestration or activity would then simply never
+// run. Failing here turns that silent no-op into an immediate, obvious error.
+func (d *Durable) mustBeOpen(method, name string) {
+	if !d.closed {
+		return
+	}
+	panic(fmt.Sprintf("durabletask: %s(%q) was called after app.Use; register orchestrations "+
+		"and activities before passing the middleware to app.Use, or supply them as options "+
+		"(durabletask.Middleware(durabletask.With%s(...)))", method, name, method))
 }
 
 // Shutdown implements [sdk.ShutdownProvider]. It closes the durable client's
