@@ -42,6 +42,15 @@ var ErrInstanceNotFound = errors.New("durabletask: orchestration instance not fo
 type Client struct {
 	inner *dtclient.TaskHubGrpcClient
 	conn  *grpc.ClientConn // owned (non-nil) only when created via Dial
+
+	// httpBaseURL is the durable webhook root the host advertised through the
+	// durable client binding (…/runtime/webhooks/durabletask). Empty when the
+	// client was not created from a binding, in which case the management URLs
+	// are derived from the incoming request instead.
+	httpBaseURL string
+	// queryParams carries the query string the host requires on management
+	// calls, typically the auth code and task hub.
+	queryParams string
 }
 
 // NewClient wraps an existing gRPC connection. Use this when you manage the

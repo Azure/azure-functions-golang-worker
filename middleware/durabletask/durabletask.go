@@ -235,17 +235,23 @@ func (d *Durable) clientFromBinding(mc *sdk.MiddlewareContext) *Client {
 	}
 	var data struct {
 		RpcBaseURL string `json:"rpcBaseUrl"`
+		// httpBaseUrl already points at the durable webhook root
+		// (…/runtime/webhooks/durabletask) and requiredQueryStringParameters
+		// carries the auth code and task hub. Both are needed to build the
+		// management URLs returned by [Client.WriteCheckStatusResponse].
+		HTTPBaseURL string `json:"httpBaseUrl"`
+		QueryParams string `json:"requiredQueryStringParameters"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil || data.RpcBaseURL == "" {
 		return nil
 	}
-	return d.cachedClient(data.RpcBaseURL)
+	return d.cachedClient(data.RpcBaseURL, data.HTTPBaseURL, data.QueryParams)
 }
 
 // cachedClient dials the gRPC endpoint behind rpcBaseURL once and reuses the
 // resulting [Client] for subsequent invocations carrying the same endpoint.
 // Returns nil if the connection cannot be established.
-func (d *Durable) cachedClient(rpcBaseURL string) *Client {
+func (d *Durable) cachedClient(rpcBaseURL, httpBaseURL, queryParams string) *Client {
 	target := grpcTarget(rpcBaseURL)
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -256,6 +262,8 @@ func (d *Durable) cachedClient(rpcBaseURL string) *Client {
 	if err != nil {
 		return nil
 	}
+	c.httpBaseURL = httpBaseURL
+	c.queryParams = queryParams
 	if d.bindingClients == nil {
 		d.bindingClients = make(map[string]*Client, 1)
 	}

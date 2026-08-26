@@ -211,9 +211,9 @@ func StartHelloCities(w http.ResponseWriter, r *http.Request) {
 }
 
 // SubmitExpense (POST /api/expenses) starts the expense orchestration and
-// returns the standard "check status" payload: a 202 with the management URLs
-// (status query, raise event, terminate) so the caller can poll progress and
-// later approve.
+// returns the standard "check status" payload: a 202 with the host's
+// management URLs (status query, raise event, terminate, …) so the caller can
+// poll progress and later approve.
 func SubmitExpense(w http.ResponseWriter, r *http.Request) {
 	client, ok := durabletask.ClientFromContext(r.Context())
 	if !ok {
@@ -230,15 +230,9 @@ func SubmitExpense(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// 202 Accepted + a pointer to this app's own status route, mirroring the
-	// classic Durable Functions "check status" response.
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Location", "/api/expenses/"+id)
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"id":                id,
-		"statusQueryGetUri": "/api/expenses/" + id,
-	})
+	// The canonical Durable Functions starter reply, same as the .NET, Java,
+	// Python, and JavaScript workers return.
+	_ = client.WriteCheckStatusResponse(w, r, id)
 }
 
 // GetExpenseStatus (GET /api/expenses/{id}) returns the orchestration's

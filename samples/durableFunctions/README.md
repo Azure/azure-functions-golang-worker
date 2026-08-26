@@ -61,8 +61,10 @@ purge). You can either return those URLs to clients (the check-status payload)
 or wrap them in your own functions, as this sample does:
 
 - **Start** — a normal HTTP function calls `client.ScheduleNewOrchestration`.
-  `SubmitExpense` returns `client.WriteCheckStatusResponse` (HTTP 202 + the
+  `SubmitExpense` then calls `client.WriteCheckStatusResponse` (HTTP 202 + the
   management URLs), the canonical Durable Functions starter response.
+  `StartHelloCities` shows the minimal alternative, returning just the new
+  instance ID.
 - **Status / progress** — `GetExpenseStatus` calls `client.GetStatus(id)`.
   The orchestrator reports progress with `ctx.SetCustomStatus(...)`, which
   surfaces as `customStatus` in the response.
