@@ -105,9 +105,9 @@ func start
 ```
 
 > Durable Functions needs a DurableTask extension that recognizes the `native`
-> worker runtime and selects the gRPC durable protocol
-> ([#3457](https://github.com/Azure/azure-functions-durable-extension/pull/3457)).
-> Without it the starter endpoints return HTTP 500.
+> worker runtime and selects the gRPC durable protocol. That landed in
+> DurableTask 3.15.0, which the experimental bundle above carries. Without it
+> the starter endpoints return HTTP 500.
 
 ### Simple orchestration
 

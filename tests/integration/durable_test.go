@@ -170,8 +170,8 @@ func (a *durableApp) scheduleOrchestration(path string, payload any) string {
 			a.t.Fatalf("POST %s failed because the durable client could not reach the host: %s\n\n"+
 				"This is what a DurableTask extension without native worker runtime support looks like. "+
 				"The extension has to recognize FUNCTIONS_WORKER_RUNTIME=native and select the gRPC durable "+
-				"protocol (Azure/azure-functions-durable-extension#3457, merged but not yet released). "+
-				"Check that the extension bundle the host loaded carries a DurableTask extension with that fix.",
+				"protocol, which landed in DurableTask 3.15.0. Check that the extension bundle the host loaded "+
+				"carries 3.15.0 or later.",
 				path, body)
 		}
 	}

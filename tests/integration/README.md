@@ -166,10 +166,21 @@ reaches the worker or because the extension fell back to its legacy local HTTP
 RPC endpoint and the client's gRPC handshake fails against it. The test detects
 both symptoms and fails with an explanation rather than a bare status code.
 
-The fix is
-[azure-functions-durable-extension#3457](https://github.com/Azure/azure-functions-durable-extension/pull/3457).
-Until it ships in a released extension bundle, this suite only passes against a
-host whose bundle carries a DurableTask extension that includes it.
+The fix shipped in DurableTask extension 3.15.0. The `durableFunctions` sample
+pins the experimental bundle, which is the first bundle that resolves to 3.15.0
+or later:
+
+```json
+"extensionBundle": {
+  "id": "Microsoft.Azure.Functions.ExtensionBundle.Experimental",
+  "version": "[4.7.0, 5.0.0)"
+}
+```
+
+The experimental bundle is published to the same default CDN as the standard
+bundle, so no `FUNCTIONS_EXTENSIONBUNDLE_SOURCE_URI` override is needed. Once a
+standard bundle that resolves to 3.15.0 or later is listed in its CDN index, the
+sample can move back to `Microsoft.Azure.Functions.ExtensionBundle`.
 
 ## Azure DevOps integration
 
