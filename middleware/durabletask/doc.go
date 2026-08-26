@@ -13,13 +13,26 @@
 //
 //	func main() {
 //	    app := sdk.FunctionApp()
-//	    app.Use(durabletask.Middleware(
-//	        durabletask.WithOrchestrator("HelloCities", HelloCities),
-//	        durabletask.WithActivity("SayHello", SayHello),
-//	    ))
-//	    app.HTTP("start", StartHelloCities, sdk.WithMethods("post"))
+//
+//	    durable := durabletask.Middleware()
+//	    durable.Orchestrator("HelloCities", HelloCities)
+//	    durable.Activity("SayHello", SayHello)
+//	    app.Use(durable)
+//
+//	    app.HTTP("start", StartHelloCities,
+//	        sdk.WithMethods("post"), durabletask.ClientInput())
 //	    worker.Start(app)
 //	}
+//
+// Register orchestrators and activities before app.Use, which is when the app
+// collects them. Registering afterwards panics rather than leaving a function
+// that is never indexed. They can also be supplied as construction options,
+// which suits an app small enough to fit in one expression:
+//
+//	app.Use(durabletask.Middleware(
+//	    durabletask.WithOrchestrator("HelloCities", HelloCities),
+//	    durabletask.WithActivity("SayHello", SayHello),
+//	))
 //
 // # Execution model
 //

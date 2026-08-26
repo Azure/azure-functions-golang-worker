@@ -311,17 +311,24 @@ func main() {
 	// orchestrator and activity (so the host dispatches them) and intercepts
 	// orchestration invocations to replay them. Register as many
 	// orchestrations as you like here.
-	app.Use(durabletask.Middleware(
-		// Orchestrators.
-		durabletask.WithOrchestrator("HelloCities", HelloCities),
-		durabletask.WithOrchestrator("ProcessExpense", ProcessExpense),
-		// Activities.
-		durabletask.WithActivity("SayHello", SayHello),
-		durabletask.WithActivity("ValidateReceipt", ValidateReceipt),
-		durabletask.WithActivity("CheckPolicy", CheckPolicy),
-		durabletask.WithActivity("CheckBudget", CheckBudget),
-		durabletask.WithActivity("RecordDecision", RecordDecision),
-	))
+	//
+	// The registrations have to happen before app.Use, which is when the app
+	// collects them. Registering afterwards panics rather than leaving a
+	// function that never runs.
+	durable := durabletask.Middleware()
+
+	// Orchestrators.
+	durable.Orchestrator("HelloCities", HelloCities)
+	durable.Orchestrator("ProcessExpense", ProcessExpense)
+
+	// Activities.
+	durable.Activity("SayHello", SayHello)
+	durable.Activity("ValidateReceipt", ValidateReceipt)
+	durable.Activity("CheckPolicy", CheckPolicy)
+	durable.Activity("CheckBudget", CheckBudget)
+	durable.Activity("RecordDecision", RecordDecision)
+
+	app.Use(durable)
 
 	// Management endpoints are ordinary HTTP functions that use the durable
 	// client from the request context. durabletask.ClientInput() adds the

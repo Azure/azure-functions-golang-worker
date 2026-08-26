@@ -44,12 +44,28 @@ Register each orchestrator (and its activities) on the same middleware — the
 host dispatches each by name:
 
 ```go
+durable := durabletask.Middleware()
+
+durable.Orchestrator("HelloCities", HelloCities)
+durable.Orchestrator("ProcessExpense", ProcessExpense)
+durable.Activity("SayHello", SayHello)
+durable.Activity("ValidateReceipt", ValidateReceipt)
+// ...
+
+app.Use(durable)
+```
+
+Register everything before `app.Use`, which is when the app collects the
+functions. Registering afterwards panics rather than leaving an orchestration
+that is never indexed and so never runs.
+
+The same registrations can be supplied as construction options instead, which
+suits a small app that fits in one expression:
+
+```go
 app.Use(durabletask.Middleware(
     durabletask.WithOrchestrator("HelloCities", HelloCities),
-    durabletask.WithOrchestrator("ProcessExpense", ProcessExpense),
     durabletask.WithActivity("SayHello", SayHello),
-    durabletask.WithActivity("ValidateReceipt", ValidateReceipt),
-    // ...
 ))
 ```
 
