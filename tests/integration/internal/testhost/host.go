@@ -69,6 +69,7 @@ type Host interface {
 type host struct {
 	address  string
 	logPath  string
+	pidPath  string
 	logFile  *os.File
 	cmd      *exec.Cmd
 	exitDone chan struct{}
@@ -196,7 +197,11 @@ func (h *host) Stop(ctx context.Context) error {
 			closeErr = h.logFile.Close()
 		}
 	})
-	return closeErr
+	removeErr := os.Remove(h.pidPath)
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil
+	}
+	return errors.Join(closeErr, removeErr)
 }
 
 // processExitError returns the error from cmd.Wait, guarded by exitMu.
@@ -291,6 +296,7 @@ func Start(ctx context.Context, config Config) (Host, error) {
 	started := &host{
 		address:  address,
 		logPath:  logPath,
+		pidPath:  filepath.Join(config.ArtifactDir, process.PIDFileName),
 		logFile:  logFile,
 		cmd:      cmd,
 		exitDone: make(chan struct{}),
@@ -298,6 +304,12 @@ func Start(ctx context.Context, config Config) (Host, error) {
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
 		return nil, fmt.Errorf("start host on port %s: %w", strconv.Quote(port), err)
+	}
+	if err := os.WriteFile(started.pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); err != nil {
+		_ = process.TerminateTree(cmd)
+		_ = cmd.Wait()
+		logFile.Close()
+		return nil, fmt.Errorf("record host process: %w", err)
 	}
 	// Background goroutine: records cmd.Wait result and closes exitDone so
 	// WaitForLog, waitForPort, and Stop can detect process termination via a select.

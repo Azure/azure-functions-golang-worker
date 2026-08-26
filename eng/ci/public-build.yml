@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------
-# Azure DevOps Pipeline: Public Build & Unit Tests
+# Azure DevOps Pipeline: Public Build & Tests
 # Runs on PRs and pushes to main. Builds the Go worker and
-# executes unit tests with coverage reporting.
+# executes unit and integration tests.
 # ---------------------------------------------------------------
 
 trigger:
@@ -65,6 +65,14 @@ extends:
         dependsOn: []
         jobs:
           - template: /eng/ci/templates/jobs/unit-tests.yml@self
+            parameters:
+              PoolName: 1es-pool-azfunc-public
+
+      - stage: IntegrationTests
+        displayName: 'Integration Tests'
+        dependsOn: []
+        jobs:
+          - template: /eng/ci/templates/jobs/integration-tests.yml@self
             parameters:
               PoolName: 1es-pool-azfunc-public
 

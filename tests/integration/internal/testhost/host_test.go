@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/azure/azure-functions-golang-worker/tests/integration/internal/process"
 )
 
 func TestReserveLoopbackPortReturnsAvailableAddress(t *testing.T) {
@@ -126,6 +128,17 @@ func main() {
 	if !strings.Contains(string(logContent), "runtime=native") ||
 		!strings.Contains(string(logContent), "language=go") {
 		t.Fatalf("host log does not contain native Go worker environment:\n%s", logContent)
+	}
+
+	pidPath := filepath.Join(artifactDir, process.PIDFileName)
+	if _, err := os.Stat(pidPath); err != nil {
+		t.Fatalf("host process record is missing: %v", err)
+	}
+	if err := started.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Fatalf("host process record still exists after Stop(): %v", err)
 	}
 }
 

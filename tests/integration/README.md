@@ -86,19 +86,26 @@ $env:FUNC_EXE = "C:\path\to\func.exe"
 The runner validates the Core Tools version and Docker Compose before starting
 the suite.
 
-## Current coverage — HTTP worker lifecycle and invocation path
+## Current coverage
 
-The current integration test verifies the worker's core HTTP path end to end:
-Core Tools starts the native Go worker, the worker establishes its host
-channel, reports and loads the registered HTTP function, dispatches
-invocations to a standard `net/http` handler, and returns the handler's status
-and body to the client. `TestHttpTriggerGet` exercises that path with both GET
-and POST requests.
+| Sample | Integration pipeline coverage | Notes |
+|---|---|---|
+| `blobTrigger` | Partial | A test-only polling fixture validates Blob invocation and client creation. Event Grid delivery requires deployed Azure test resources. |
+| `cosmosDBTrigger` | Full | Runs against the local Cosmos DB emulator. |
+| `eventGridTrigger` | Partial | Verifies build, registration, and host loading; there is no local Event Grid emulator. |
+| `eventHubTrigger` | Full | Tests single-event and batch delivery. |
+| `httpTrigger` | Full | Tests GET and POST invocation. |
+| `queueTrigger` | Full | Tests message delivery and metadata. |
+| `serviceBusQueueTrigger` | Full | Tests single-message and batch delivery. |
+| `serviceBusTopicTrigger` | Full | Tests single-message and batch delivery. |
+| `sqlTrigger` | Full | Tests insert, update, and delete changes. |
+| `timerTrigger` | Full | Tests scheduled invocation. |
+| `httpStreaming` | Not covered | Requires a streaming-specific integration scenario. |
+| `middleware` | Not covered | Requires an end-to-end middleware scenario. |
+| `otelTracing` | Not covered | Requires telemetry capture and assertion infrastructure. |
+| `collectorToAzureMonitor` | Not covered | Requires Azure Monitor or a test telemetry destination. |
 
-Event Hubs, Service Bus, and Cosmos DB scenarios are also available as explicit
-tests when the full emulator stack is started manually. Event Hubs and Service
-Bus queue coverage includes separate single-message and batch-delivery tests;
-the batch tests verify payloads and per-message metadata alignment.
+The batch tests verify payload and per-message metadata alignment.
 
 Run it from the integration-test module:
 
@@ -111,33 +118,38 @@ The runner executes these steps in order:
 
 1. Validates Core Tools 4.12.0 or later and Docker Compose.
 2. Creates the `artifacts` directory.
-3. Starts Azurite if no container exists or if an existing container is stopped;
-   reuses it if it is already running.
-4. Waits for Azurite blob (`127.0.0.1:10000`) and queue (`127.0.0.1:10001`)
-   service readiness.
-5. Runs `TestHttpTriggerGet` via `go test`.
-6. Captures Azurite container logs and the Go test log as artifacts.
-7. Removes Azurite only if no Azurite container existed before the run. A
-   pre-existing stopped container that was started by the runner is left in place
-   afterward.
+3. Inspects the Azurite, SQL Server, Service Bus, Event Hubs, and Cosmos DB
+   emulator containers to determine ownership and running state.
+4. Starts missing or stopped emulator services and waits for each required
+   endpoint to become ready.
+5. Runs every black-box scenario via one explicit `go test` pattern.
+6. Captures every emulator log and the Go test log as artifacts.
+7. Reaps any Functions hosts left behind if the Go test process is terminated.
+8. Removes only containers that did not exist before the run. Pre-existing
+   stopped containers that the runner starts are left in place afterward.
 
-## Azure DevOps integration (planned)
+## Azure DevOps integration
 
-Azure DevOps pipeline wiring for this runner is planned but not yet implemented.
-The intended design is a Linux host job that runs:
+The public Azure DevOps pipeline runs the complete integration suite for pull
+requests targeting `main` and for pushes to `main`. The Linux job provisions Go
+and Core Tools, verifies Docker, and invokes:
 
 ```bash
 cd tests/integration
 go run ./cmd/integrationtest
 ```
 
-The pipeline would provision Go, the pinned Core Tools release, and Docker before
-invoking the runner. Pipeline YAML would own agent and tool provisioning only;
-emulator lifecycle, readiness, test selection, diagnostics, and cleanup would
-remain implemented by the repository runner.
+The pipeline job is defined in
+`eng/ci/templates/jobs/integration-tests.yml` and included by
+`eng/ci/public-build.yml`. Pipeline YAML owns agent and tool provisioning only;
+emulator lifecycle, readiness, test selection, diagnostics, and cleanup remain
+implemented by the repository runner.
 
-The integration-test job is intended to become a required pre-merge PR check once
-pipeline wiring is complete.
+Integration-test failures fail the public pipeline. Repository administrators
+must configure the `golang-worker.public-build` status as a required `main`
+branch protection check to prevent merging a pull request whose suite has not
+passed. The job publishes `integration-test-artifacts` on every run for
+diagnostics.
 
 ## Success criteria
 
@@ -162,15 +174,20 @@ files for the same test run are replaced.
 ```text
 artifacts/
 ├── azurite.log
+├── cosmosdb-emulator.log
+├── eventhub-emulator.log
 ├── go-test.log
-└── TestHttpTriggerGet/
-    └── httpTrigger-host.log
+├── servicebus-emulator.log
+├── sqlserver.log
+└── TestScenario/
+    └── sample-host.log
 ```
 
-- `azurite.log` contains complete Azurite container output.
+- Each emulator log contains the complete output from that Docker Compose
+  service.
 - `go-test.log` contains complete Go test output.
-- `TestHttpTriggerGet/httpTrigger-host.log` contains complete Functions host and
-  worker output for the HTTP trigger test.
+- Each scenario directory contains complete Functions host and worker output
+  for its sample.
 
 On failure, the runner captures container logs before cleanup. A cleanup error is
 reported without replacing the original test failure.
@@ -186,8 +203,8 @@ cmd/integrationtest
         v
 internal/testrunner
   - validates tools
-  - manages Azurite lifecycle (start/reuse/cleanup)
-  - waits for emulator readiness
+  - manages emulator lifecycle (start/reuse/cleanup)
+  - waits for each emulator's readiness
   - runs Go tests
   - captures artifacts
         |
@@ -210,14 +227,13 @@ trigger-specific test
 
 ### Ownership boundaries
 
-- The **runner** owns shared tools, Azurite lifecycle, readiness, test
+- The **runner** owns shared tools, emulator lifecycle, readiness, test
   selection, artifacts, and cleanup.
 - `TestHost` owns one Functions host process and its Go worker children.
 - A **test scenario** owns only resource setup, stimulus, and behavioral
   assertions.
 
-Tests do not start Docker containers, choose fixed host ports, install tools, or
-implement process cleanup.
+Tests do not start Docker containers, install tools, or own emulator cleanup.
 
 ## Emulator endpoints
 
@@ -225,22 +241,19 @@ implement process cleanup.
 |---|---|---|
 | Azurite Blob | `127.0.0.1:10000` | Blob service request |
 | Azurite Queue | `127.0.0.1:10001` | Queue service request |
-| Azurite Table | `127.0.0.1:10002` | Not probed by the current milestone |
+| SQL Server | `127.0.0.1:1433` | Authenticated database ping |
+| Service Bus | `127.0.0.1:5672` | TCP connection |
+| Event Hubs | `127.0.0.2:5672` | TCP connection |
+| Cosmos DB | `127.0.0.1:8081` | HTTP service request |
 
-Emulator images are pinned in `tests/emulators/docker-compose.yml`. Update image
-versions deliberately and validate the affected tests after each update.
+Emulator images are pinned to immutable manifest digests in
+`tests/emulators/docker-compose.yml`. Update image versions deliberately and
+validate the affected tests after each update.
 
 ## Future work
 
-The following are planned but not implemented in this milestone:
+The following are planned but not implemented:
 
-- **Runner coverage for additional trigger scenarios**: Timer, Blob Storage,
-  Queue Storage, Event Grid, Event Hubs, Cosmos DB, Service Bus, and SQL.
-- **Additional emulator profiles**: Event Hubs, Cosmos DB, Service Bus, and SQL
-  Server containers with their own readiness checks and lifecycle management.
 - **JUnit output**: `go-test.xml` for Azure DevOps test result publishing.
 - **Run metadata**: `run.json` recording tool versions, emulator image digests,
   timestamps, and source revision.
-- **Structured profile diagnostics**: Per-profile log files under `artifacts/profiles/`.
-- **Azure DevOps pipeline wiring**: Pipeline YAML, required PR check, and
-  artifact publishing.
