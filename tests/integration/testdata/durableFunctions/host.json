@@ -1,0 +1,16 @@
+{
+  "version": "2.0",
+  "extensionBundle": {
+    "id": "Microsoft.Azure.Functions.ExtensionBundle.Experimental",
+    "version": "[4.7.0, 5.0.0)"
+  },
+  "extensions": {
+    "durableTask": {
+      "hubName": "GoDurableTestHub",
+      "tracing": {
+        "distributedTracingEnabled": false,
+        "version": "None"
+      }
+    }
+  }
+}

@@ -2,17 +2,13 @@ package integration
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/azure/azure-functions-golang-worker/tests/integration/internal/testhost"
 )
 
 // durableBaseURLEnv points the suite at an app that is already running instead
@@ -86,9 +82,9 @@ type durableApp struct {
 	baseURL string
 }
 
-// startDurableApp returns a driver for the durable sample. It reuses an
+// startDurableApp returns a driver for the durable app. It reuses an
 // already-running app when durableBaseURLEnv is set, and otherwise starts the
-// sample under a local Core Tools host with Azurite as the state store.
+// durable fixture under a local Core Tools host with Azurite as the state store.
 func startDurableApp(t *testing.T) *durableApp {
 	t.Helper()
 
@@ -98,23 +94,10 @@ func startDurableApp(t *testing.T) *durableApp {
 	}
 
 	requireAzurite(t)
-	host, err := testhost.Start(context.Background(), testhost.Config{
-		SampleDir:   filepath.Join(samplesDir(), "durableFunctions"),
-		FuncExe:     funcExe(),
-		Environment: durableEnv,
-		ArtifactDir: filepath.Join("artifacts", t.Name()),
-		InitTimeout: durableStartTimeout,
-	})
-	if err != nil {
-		t.Fatalf("start durable function host: %v", err)
-	}
-	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := host.Stop(stopCtx); err != nil {
-			t.Errorf("stop durable function host: %v", err)
-		}
-	})
+	// The fixture is used rather than samples/durableFunctions because the
+	// sample depends on modules outside the root module and its go.mod is not
+	// committed, so a fresh checkout cannot build it.
+	host := startTestDataHost(t, "durableFunctions", durableEnv, durableStartTimeout)
 	return &durableApp{t: t, baseURL: host.URL()}
 }
 

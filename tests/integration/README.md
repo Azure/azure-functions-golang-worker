@@ -130,7 +130,7 @@ The runner executes these steps in order:
 
 ## Durable Functions coverage
 
-`TestDurableOrchestrations` runs the `durableFunctions` sample against a real
+`TestDurableOrchestrations` runs the `durableFunctions` fixture against a real
 host and covers the whole Durable Functions path: the `durableClient` binding
 delivering the management endpoint to the worker, the gRPC management client,
 orchestration replay through the trigger pipeline, activity dispatch and input
@@ -166,7 +166,7 @@ reaches the worker or because the extension fell back to its legacy local HTTP
 RPC endpoint and the client's gRPC handshake fails against it. The test detects
 both symptoms and fails with an explanation rather than a bare status code.
 
-The fix shipped in DurableTask extension 3.15.0. The `durableFunctions` sample
+The fix shipped in DurableTask extension 3.15.0. The `durableFunctions` fixture
 pins the experimental bundle, which is the first bundle that resolves to 3.15.0
 or later:
 
