@@ -311,9 +311,7 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 	// makes input bindings (for example, the durable client binding that
 	// delivers the host's durable gRPC endpoint) available to a starter
 	// function reached over the HTTP-streaming path.
-	if raw := extractTriggerInputBytes(arrival.req, arrival.fn); raw != nil {
-		mc.SetInputBytes(raw)
-	}
+	extractTriggerInput(arrival.req, arrival.fn, mc)
 	populateBindingInputs(arrival.req, arrival.fn, mc)
 
 	// Run the user handler via the shared invocation pipeline so both the

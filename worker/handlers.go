@@ -297,9 +297,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	// Handlers retrieve the embedded InvocationContext via sdk.FromContext;
 	// middleware that needs the wrapper calls sdk.MiddlewareContextFrom.
 	mc := buildMiddlewareContext(req, &loadedFunc.Function)
-	if raw := extractTriggerInputBytes(req, loadedFunc); raw != nil {
-		mc.SetInputBytes(raw)
-	}
+	extractTriggerInput(req, loadedFunc, mc)
 	populateBindingInputs(req, loadedFunc, mc)
 	ctx := sdk.ContextWithMiddleware(context.Background(), mc)
 
@@ -481,16 +479,17 @@ func buildMiddlewareContext(req *pb.InvocationRequest, fn *sdk.RegisteredFunctio
 	}
 }
 
-// extractTriggerInputBytes returns the raw bytes of the function's primary
-// trigger input binding. It is used to populate
-// sdk.MiddlewareContext.InputBytes so a short-circuiting middleware (e.g.
+// extractTriggerInput surfaces the raw payload of the function's primary
+// trigger input binding onto mc, so a short-circuiting middleware (e.g.
 // durable orchestration replay) can read the inbound payload directly.
 //
 // The trigger binding is the first "in" binding declared for the function.
-// Its TypedData is rendered to bytes preferring the string form (durable
-// orchestration history arrives as a base64 string), then raw bytes, then
-// JSON. Returns nil when no matching input is present.
-func extractTriggerInputBytes(req *pb.InvocationRequest, lf *LoadedFunction) []byte {
+// Text payloads (durable orchestration history arrives as a base64 string) are
+// handed over as strings and byte payloads are aliased, so this costs nothing
+// beyond a header copy. sdk.MiddlewareContext converts between the two forms
+// on demand, which means invocations whose middleware never reads the payload
+// pay nothing at all.
+func extractTriggerInput(req *pb.InvocationRequest, lf *LoadedFunction, mc *sdk.MiddlewareContext) {
 	triggerName := ""
 	for _, b := range lf.Function.RawBindings {
 		if b.Direction == "in" {
@@ -507,17 +506,14 @@ func extractTriggerInputBytes(req *pb.InvocationRequest, lf *LoadedFunction) []b
 			continue
 		}
 		if s := td.GetString_(); s != "" {
-			return []byte(s)
+			mc.SetInputString(s)
+		} else if bs := td.GetBytes(); bs != nil {
+			mc.SetInputBytes(bs)
+		} else if j := td.GetJson(); j != "" {
+			mc.SetInputString(j)
 		}
-		if bs := td.GetBytes(); bs != nil {
-			return bs
-		}
-		if j := td.GetJson(); j != "" {
-			return []byte(j)
-		}
-		return nil
+		return
 	}
-	return nil
 }
 
 // populateBindingInputs surfaces the raw payloads of input bindings other than
@@ -525,6 +521,9 @@ func extractTriggerInputBytes(req *pb.InvocationRequest, lf *LoadedFunction) []b
 // auxiliary binding data (for example, a durable client binding carrying the
 // host's durable gRPC endpoint). The primary trigger input is already exposed
 // via [sdk.MiddlewareContext.InputBytes] and is skipped here.
+//
+// As with the trigger payload, text is carried as a string and bytes are
+// aliased, so nothing is converted unless middleware asks for it.
 func populateBindingInputs(req *pb.InvocationRequest, lf *LoadedFunction, mc *sdk.MiddlewareContext) {
 	triggerName := ""
 	for _, b := range lf.Function.RawBindings {
@@ -542,16 +541,12 @@ func populateBindingInputs(req *pb.InvocationRequest, lf *LoadedFunction, mc *sd
 		if td == nil {
 			continue
 		}
-		var b []byte
 		if s := td.GetString_(); s != "" {
-			b = []byte(s)
+			mc.SetBindingInputString(name, s)
 		} else if bs := td.GetBytes(); bs != nil {
-			b = bs
+			mc.SetBindingInput(name, bs)
 		} else if j := td.GetJson(); j != "" {
-			b = []byte(j)
-		}
-		if b != nil {
-			mc.SetBindingInput(name, b)
+			mc.SetBindingInputString(name, j)
 		}
 	}
 }
