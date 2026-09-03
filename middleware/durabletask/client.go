@@ -7,11 +7,11 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/microsoft/durabletask-go/api"
 	"github.com/microsoft/durabletask-go/backend"
 	dtclient "github.com/microsoft/durabletask-go/client"
+	"github.com/microsoft/durabletask-go/task"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -22,17 +22,25 @@ import (
 // Scheduler) exposes for management operations, e.g. "127.0.0.1:4001".
 const EnvGrpcEndpoint = "DURABLE_TASK_GRPC_ENDPOINT"
 
-// ErrInstanceNotFound is returned by [Client.GetStatus] when no orchestration
-// instance with the given ID exists.
-var ErrInstanceNotFound = errors.New("durabletask: orchestration instance not found")
-
-// Client starts and manages orchestration instances. It is a thin wrapper
-// around durabletask-go's client.TaskHubGrpcClient: every management call
-// delegates to the upstream client, which speaks the Durable Task gRPC
-// protocol (TaskHubSidecarService). The endpoint is whatever exposes that
-// protocol — the Durable Task Scheduler (DTS), a durabletask-go sidecar, or
-// the Functions host's durable gRPC endpoint delivered via the DurableClient
-// binding.
+// Client starts and manages orchestration instances.
+//
+// It embeds durabletask-go's [dtclient.TaskHubGrpcClient], so every operation
+// that client offers is available directly and nothing needs to be wrapped
+// here to be reachable:
+//
+//	id, err := client.ScheduleNewOrchestration(ctx, "ProcessExpense", api.WithInput(expense))
+//	meta, err := client.FetchOrchestrationMetadata(ctx, id)
+//	err = client.RaiseEvent(ctx, id, "ApprovalDecision", api.WithEventPayload(decision))
+//
+// The endpoint is whatever speaks the Durable Task gRPC protocol
+// (TaskHubSidecarService): the Durable Task Scheduler, a durabletask-go
+// sidecar, or the Functions host's durable gRPC endpoint delivered through the
+// durableClient binding.
+//
+// The methods declared on Client are only those that need something the
+// upstream client cannot know: the connection this package owns, or the
+// webhook details the Functions host supplies through the binding. Everything
+// else is upstream's, unchanged.
 //
 // This is the management half of the integration. The execution half
 // (orchestrator replay) is handled separately by the middleware against the
@@ -40,8 +48,9 @@ var ErrInstanceNotFound = errors.New("durabletask: orchestration instance not fo
 // durabletask-go programming model (task.OrchestrationContext), so the same
 // orchestrator function is driven by either path.
 type Client struct {
-	inner *dtclient.TaskHubGrpcClient
-	conn  *grpc.ClientConn // owned (non-nil) only when created via Dial
+	*dtclient.TaskHubGrpcClient
+
+	conn *grpc.ClientConn // owned (non-nil) only when created via Dial
 
 	// httpBaseURL is the durable webhook root the host advertised through the
 	// durable client binding (…/runtime/webhooks/durabletask). Empty when the
@@ -57,7 +66,7 @@ type Client struct {
 // connection yourself (or in tests, with an in-memory listener). The caller
 // owns the connection's lifecycle.
 func NewClient(conn grpc.ClientConnInterface) *Client {
-	return &Client{inner: dtclient.NewTaskHubGrpcClient(conn, backend.DefaultLogger())}
+	return &Client{TaskHubGrpcClient: dtclient.NewTaskHubGrpcClient(conn, backend.DefaultLogger())}
 }
 
 // Dial connects to a Durable Task gRPC endpoint and returns a [Client] that
@@ -70,8 +79,8 @@ func Dial(endpoint string) (*Client, error) {
 		return nil, fmt.Errorf("durabletask: dial %q: %w", endpoint, err)
 	}
 	return &Client{
-		inner: dtclient.NewTaskHubGrpcClient(conn, backend.DefaultLogger()),
-		conn:  conn,
+		TaskHubGrpcClient: dtclient.NewTaskHubGrpcClient(conn, backend.DefaultLogger()),
+		conn:              conn,
 	}, nil
 }
 
@@ -87,6 +96,11 @@ func grpcTarget(rpcBaseURL string) string {
 }
 
 // Close releases the underlying connection if this Client created it.
+//
+// This is one of the few methods declared here rather than inherited from the
+// embedded client: connection ownership belongs to whoever dialled, and that
+// is this package when the client came from [Dial] or from a durableClient
+// binding.
 func (c *Client) Close() error {
 	if c.conn != nil {
 		return c.conn.Close()
@@ -94,101 +108,38 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// ScheduleNewOrchestration starts a new instance of the named orchestrator
-// with the given (JSON-serializable) input and returns the new instance ID.
-func (c *Client) ScheduleNewOrchestration(ctx context.Context, name string, input any) (string, error) {
-	var opts []api.NewOrchestrationOptions
-	if input != nil {
-		opts = append(opts, api.WithInput(input))
+// StartWorkItemListener is not supported under the Functions host.
+//
+// The embedded durabletask-go client offers this to drive a standalone worker
+// that polls a backend for work. Under Functions the host owns dispatch: it
+// invokes orchestrator and activity functions through the worker's trigger
+// pipeline, and its durable gRPC endpoint does not serve work items at all.
+// Register orchestrators and activities with [Middleware] instead.
+func (c *Client) StartWorkItemListener(context.Context, *task.TaskRegistry) error {
+	return errors.New("durabletask: StartWorkItemListener is not supported under the Functions " +
+		"host, which dispatches orchestrations and activities itself; register them with " +
+		"durabletask.Middleware() and pass it to app.Use")
+}
+
+// RuntimeStatus renders an orchestration's runtime status using the names
+// Durable Functions uses everywhere else — "Pending", "Running", "Completed",
+// "ContinuedAsNew", "Failed", "Terminated", "Suspended" — rather than the
+// protobuf enum name durabletask-go exposes.
+//
+// [api.OrchestrationMetadata.RuntimeStatus]'s String method yields values like
+// "ORCHESTRATION_STATUS_RUNNING". The host's own management API, the .NET
+// worker's OrchestrationRuntimeStatus and the JavaScript worker all report the
+// short form, so an app that echoes the enum name into a status response is
+// inconsistent with every Durable Functions client and tool.
+//
+// This is a translation durabletask-go cannot perform, because it has no
+// notion of running inside Durable Functions. That is why it lives here while
+// the operations themselves are inherited unchanged.
+func RuntimeStatus(m *api.OrchestrationMetadata) string {
+	if m == nil {
+		return ""
 	}
-	id, err := c.inner.ScheduleNewOrchestration(ctx, name, opts...)
-	if err != nil {
-		return "", err
-	}
-	return string(id), nil
-}
-
-// RaiseEvent delivers an external event to a waiting orchestration instance.
-// This is the channel used to deliver human-in-the-loop responses to an
-// orchestration blocked in WaitForSingleEvent.
-func (c *Client) RaiseEvent(ctx context.Context, instanceID, eventName string, payload any) error {
-	var opts []api.RaiseEventOptions
-	if payload != nil {
-		opts = append(opts, api.WithEventPayload(payload))
-	}
-	return c.inner.RaiseEvent(ctx, api.InstanceID(instanceID), eventName, opts...)
-}
-
-// Terminate terminates a running orchestration instance.
-func (c *Client) Terminate(ctx context.Context, instanceID, reason string) error {
-	return c.inner.TerminateOrchestration(ctx, api.InstanceID(instanceID), api.WithOutput(reason))
-}
-
-// Suspend suspends a running orchestration instance.
-func (c *Client) Suspend(ctx context.Context, instanceID, reason string) error {
-	return c.inner.SuspendOrchestration(ctx, api.InstanceID(instanceID), reason)
-}
-
-// Resume resumes a suspended orchestration instance.
-func (c *Client) Resume(ctx context.Context, instanceID, reason string) error {
-	return c.inner.ResumeOrchestration(ctx, api.InstanceID(instanceID), reason)
-}
-
-// Purge deletes the state and history of an orchestration instance.
-func (c *Client) Purge(ctx context.Context, instanceID string) error {
-	return c.inner.PurgeOrchestrationState(ctx, api.InstanceID(instanceID))
-}
-
-// OrchestrationStatus is the status of an orchestration instance.
-// RuntimeStatus is one of: Pending, Running, Completed, ContinuedAsNew,
-// Failed, Terminated, Suspended. Input, Output, and CustomStatus are the
-// serialized (JSON) values; the orchestrator's ctx.SetCustomStatus surfaces
-// in CustomStatus, making it the progress channel.
-type OrchestrationStatus struct {
-	InstanceID    string    `json:"instanceId"`
-	Name          string    `json:"name,omitempty"`
-	RuntimeStatus string    `json:"runtimeStatus"`
-	Input         string    `json:"input,omitempty"`
-	Output        string    `json:"output,omitempty"`
-	CustomStatus  string    `json:"customStatus,omitempty"`
-	CreatedAt     time.Time `json:"createdAt,omitempty"`
-	LastUpdatedAt time.Time `json:"lastUpdatedAt,omitempty"`
-}
-
-// GetStatus queries the runtime status of an orchestration instance. Returns
-// [ErrInstanceNotFound] when the instance does not exist.
-func (c *Client) GetStatus(ctx context.Context, instanceID string) (*OrchestrationStatus, error) {
-	meta, err := c.inner.FetchOrchestrationMetadata(ctx, api.InstanceID(instanceID))
-	if err != nil {
-		if errors.Is(err, api.ErrInstanceNotFound) {
-			return nil, ErrInstanceNotFound
-		}
-		return nil, err
-	}
-	return toStatus(meta), nil
-}
-
-// WaitForCompletion blocks until the orchestration reaches a terminal state
-// (or ctx is cancelled) and returns its final status.
-func (c *Client) WaitForCompletion(ctx context.Context, instanceID string) (*OrchestrationStatus, error) {
-	meta, err := c.inner.WaitForOrchestrationCompletion(ctx, api.InstanceID(instanceID))
-	if err != nil {
-		return nil, err
-	}
-	return toStatus(meta), nil
-}
-
-func toStatus(m *api.OrchestrationMetadata) *OrchestrationStatus {
-	return &OrchestrationStatus{
-		InstanceID:    string(m.InstanceID),
-		Name:          m.Name,
-		RuntimeStatus: runtimeStatusString(m.RuntimeStatus.String()),
-		Input:         m.SerializedInput,
-		Output:        m.SerializedOutput,
-		CustomStatus:  m.SerializedCustomStatus,
-		CreatedAt:     m.CreatedAt,
-		LastUpdatedAt: m.LastUpdatedAt,
-	}
+	return runtimeStatusString(m.RuntimeStatus.String())
 }
 
 // runtimeStatusString trims the protobuf enum prefix and normalizes casing,

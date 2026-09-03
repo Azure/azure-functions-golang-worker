@@ -153,8 +153,11 @@ func TestLoadAndRun_AnnotatesTurnSpan(t *testing.T) {
 	}
 	attrs := spans[0].Attributes
 
-	if v, ok := attrValue(attrs, "durabletask.is_replay"); !ok || v.AsBool() {
-		t.Errorf("durabletask.is_replay = %v (present=%v), want false", v.AsBool(), ok)
+	// There is deliberately no durabletask.is_replay attribute: replay state is
+	// point-in-time within a turn, so no single value is correct for a span
+	// covering the whole turn. history_event_count carries what we do know.
+	if _, ok := attrValue(attrs, "durabletask.is_replay"); ok {
+		t.Error("durabletask.is_replay should not be emitted")
 	}
 	if v, ok := attrValue(attrs, "durabletask.history_event_count"); !ok || v.AsInt64() != 0 {
 		t.Errorf("durabletask.history_event_count = %d (present=%v), want 0", v.AsInt64(), ok)

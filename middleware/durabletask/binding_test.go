@@ -178,18 +178,18 @@ func TestDurable_ClientBinding_EndToEnd(t *testing.T) {
 
 	// The binding-derived client actually works against the sidecar.
 	ctx := context.Background()
-	id, err := client.ScheduleNewOrchestration(ctx, "Hello", nil)
+	id, err := client.ScheduleNewOrchestration(ctx, "Hello")
 	if err != nil {
 		t.Fatalf("schedule: %v", err)
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	final, err := client.WaitForCompletion(waitCtx, id)
+	final, err := client.WaitForOrchestrationCompletion(waitCtx, id)
 	if err != nil {
 		t.Fatalf("wait: %v", err)
 	}
-	if final.RuntimeStatus != "Completed" {
-		t.Fatalf("runtime status = %q, want Completed", final.RuntimeStatus)
+	if got := RuntimeStatus(final); got != "Completed" {
+		t.Fatalf("runtime status = %q, want Completed", got)
 	}
 
 	// The per-endpoint client is cached and reused across invocations.

@@ -2,11 +2,13 @@ package durabletask
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/microsoft/durabletask-go/api"
 	"github.com/microsoft/durabletask-go/backend"
 	"github.com/microsoft/durabletask-go/backend/sqlite"
 	"github.com/microsoft/durabletask-go/task"
@@ -107,10 +109,11 @@ func TestClient_EndToEnd_GrpcSidecar(t *testing.T) {
 	}
 
 	conn := startGrpcSidecar(t, r)
-	client := NewClient(conn) // the package's thin wrapper over TaskHubGrpcClient
+	client := NewClient(conn) // embeds durabletask-go's TaskHubGrpcClient
 
 	// 1. Start via the Client.
-	id, err := client.ScheduleNewOrchestration(ctx, "ProcessExpense", map[string]any{"amount": 750})
+	id, err := client.ScheduleNewOrchestration(ctx, "ProcessExpense",
+		api.WithInput(map[string]any{"amount": 750}))
 	if err != nil {
 		t.Fatalf("schedule: %v", err)
 	}
@@ -119,47 +122,49 @@ func TestClient_EndToEnd_GrpcSidecar(t *testing.T) {
 	}
 
 	// 2. Poll status until the orchestrator reports it is awaiting approval.
-	//    This proves custom status (progress) flows through GetStatus.
+	//    This proves custom status (progress) flows through the client.
 	if !waitForCustomStatus(t, client, id, "awaiting manager approval", 10*time.Second) {
-		st, _ := client.GetStatus(ctx, id)
+		st, _ := client.FetchOrchestrationMetadata(ctx, id)
 		t.Fatalf("orchestration never reached approval wait; last status = %+v", st)
 	}
 
 	// 3. Deliver the HITL response via the Client.
-	if err := client.RaiseEvent(ctx, id, "ApprovalDecision", map[string]any{"approved": true}); err != nil {
+	if err := client.RaiseEvent(ctx, id, "ApprovalDecision",
+		api.WithEventPayload(map[string]any{"approved": true})); err != nil {
 		t.Fatalf("raise event: %v", err)
 	}
 
 	// 4. Wait for completion via the Client and assert the approved output.
-	final, err := client.WaitForCompletion(ctx, id)
+	final, err := client.WaitForOrchestrationCompletion(ctx, id)
 	if err != nil {
 		t.Fatalf("wait completion: %v", err)
 	}
-	if final.RuntimeStatus != "Completed" {
-		t.Fatalf("runtime status = %q, want Completed", final.RuntimeStatus)
+	if got := RuntimeStatus(final); got != "Completed" {
+		t.Fatalf("runtime status = %q, want Completed", got)
 	}
-	if !strings.Contains(final.Output, "approved") {
-		t.Fatalf("output = %q, want approved", final.Output)
+	if !strings.Contains(final.SerializedOutput, "approved") {
+		t.Fatalf("output = %q, want approved", final.SerializedOutput)
 	}
 }
 
-// TestClient_GetStatus_NotFound verifies the not-found mapping.
-func TestClient_GetStatus_NotFound(t *testing.T) {
+// A missing instance surfaces durabletask-go's own sentinel, so callers use
+// errors.Is with api.ErrInstanceNotFound rather than a package-local copy.
+func TestClient_FetchMetadata_NotFound(t *testing.T) {
 	conn := startGrpcSidecar(t, task.NewTaskRegistry())
 	client := NewClient(conn)
 
-	_, err := client.GetStatus(context.Background(), "does-not-exist")
-	if err != ErrInstanceNotFound {
-		t.Fatalf("err = %v, want ErrInstanceNotFound", err)
+	_, err := client.FetchOrchestrationMetadata(context.Background(), "does-not-exist")
+	if !errors.Is(err, api.ErrInstanceNotFound) {
+		t.Fatalf("err = %v, want api.ErrInstanceNotFound", err)
 	}
 }
 
-func waitForCustomStatus(t *testing.T, c *Client, id, want string, timeout time.Duration) bool {
+func waitForCustomStatus(t *testing.T, c *Client, id api.InstanceID, want string, timeout time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		st, err := c.GetStatus(context.Background(), id)
-		if err == nil && strings.Contains(st.CustomStatus, want) {
+		st, err := c.FetchOrchestrationMetadata(context.Background(), id)
+		if err == nil && strings.Contains(st.SerializedCustomStatus, want) {
 			return true
 		}
 		time.Sleep(50 * time.Millisecond)
