@@ -110,3 +110,49 @@ func TestRegisterWithoutUse_StaysOpen(t *testing.T) {
 		t.Fatalf("expected 2 provided functions, got %d", got)
 	}
 }
+
+// ProvidedFunctions is part of a public interface, so anything may call it to
+// inspect what a middleware contributes. Reading it must not close
+// registration: only App.Use does that, via SealRegistration. Before this was
+// split, an introspecting caller made the next registration panic with a
+// message blaming an app.Use call that never happened.
+func TestProvidedFunctions_DoesNotCloseRegistration(t *testing.T) {
+	d := Middleware()
+	d.Orchestrator("First", registrationTestOrchestrator)
+
+	// Inspect twice, the way a diagnostic or a wrapping middleware might.
+	_ = d.ProvidedFunctions()
+	_ = d.ProvidedFunctions()
+
+	d.Activity("Second", registrationTestActivity)
+
+	if got := len(d.ProvidedFunctions()); got != 2 {
+		t.Fatalf("expected the later registration to be kept, got %d provided functions", got)
+	}
+}
+
+// SealRegistration is what actually closes registration, and App.Use may call
+// it more than once if the same middleware is registered twice.
+func TestSealRegistration_IsIdempotentAndClosesRegistration(t *testing.T) {
+	d := Middleware()
+	d.Orchestrator("First", registrationTestOrchestrator)
+
+	d.SealRegistration()
+	d.SealRegistration()
+
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatal("expected a registration after sealing to panic")
+		}
+		message, ok := recovered.(string)
+		if !ok {
+			t.Fatalf("expected a string panic value, got %T", recovered)
+		}
+		if !strings.Contains(message, "after app.Use") {
+			t.Errorf("panic message should explain the ordering, got: %s", message)
+		}
+	}()
+
+	d.Activity("TooLate", registrationTestActivity)
+}

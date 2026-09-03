@@ -156,10 +156,34 @@ type FunctionRegistration struct {
 // know about (ProvidedFunctions), so the host emits metadata for them and
 // dispatches them to the worker.
 //
-// ProvidedFunctions is read once at registration time and should be
-// side-effect-free.
+// ProvidedFunctions is read once at registration time and must be
+// side-effect-free: callers other than [App.Use] may invoke it to inspect what
+// a middleware contributes, and doing so must not change the middleware's
+// behavior. A provider that needs to know when the App has consumed its
+// registrations should implement [RegistrationSealer] instead.
 type FunctionProvider interface {
 	ProvidedFunctions() []FunctionRegistration
+}
+
+// RegistrationSealer is an optional contract a [FunctionProvider] can
+// implement to be told that [App.Use] has consumed its registrations.
+//
+// App.Use reads [FunctionProvider.ProvidedFunctions] exactly once, at the
+// moment it is called. Anything a provider registers afterwards is never seen
+// by the App, so the corresponding function is never indexed by the host and
+// simply never runs. A provider that can detect this should implement
+// SealRegistration and reject late registrations with a clear error rather
+// than accepting them into a registry nothing will read.
+//
+// SealRegistration is called once App.Use has taken the provider's
+// registrations, before they are applied to the App. Sealing first means a
+// failure while applying them cannot leave the provider open and still
+// accepting registrations nothing will read.
+//
+// It may be called more than once if the same middleware is passed to
+// App.Use repeatedly, so implementations should be idempotent.
+type RegistrationSealer interface {
+	SealRegistration()
 }
 
 // Use registers a [Middleware]. Middleware run in registration order: the
@@ -208,7 +232,16 @@ func (app *App) Use(mw Middleware) {
 	}
 
 	if fp, ok := mw.(FunctionProvider); ok {
-		for _, fr := range fp.ProvidedFunctions() {
+		provided := fp.ProvidedFunctions()
+
+		// Seal before applying them. Sealing afterwards would leave the
+		// provider open if registerFunction panicked partway through, and it
+		// would then keep accepting registrations nothing will ever read.
+		if rs, ok := mw.(RegistrationSealer); ok {
+			rs.SealRegistration()
+		}
+
+		for _, fr := range provided {
 			app.registerFunction(fr.Name, fr.Func, fr.Trigger, fr.Options...)
 		}
 	}

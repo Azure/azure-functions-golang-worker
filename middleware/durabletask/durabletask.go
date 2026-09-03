@@ -95,7 +95,7 @@ func Middleware(opts ...Option) *Durable {
 // Orchestrator registers an orchestrator function under name and returns the
 // receiver for chaining. The orchestrator uses the durabletask-go
 // programming model (task.OrchestrationContext: CallActivity, CreateTimer,
-// WaitForExternalEvent, …).
+// WaitForSingleEvent, …).
 //
 // Panics if name is already registered, or if called after the middleware has
 // been passed to [sdk.App.Use] (see [Durable.Activity] for why).
@@ -198,7 +198,7 @@ func activityInputDecoder(fn any) func(context.Context, []byte) (any, error) {
 func (d *Durable) Wrap(next sdk.Handler) sdk.Handler {
 	return func(ctx context.Context, mc *sdk.MiddlewareContext) error {
 		if mc != nil && mc.TriggerType == string(OrchestrationTriggerType) {
-			encodedResponse, err := d.runner.loadAndRun(ctx, string(mc.InputBytes()))
+			encodedResponse, err := d.runner.loadAndRun(ctx, mc.InputString())
 			if err != nil {
 				return err
 			}
@@ -274,11 +274,20 @@ func (d *Durable) cachedClient(rpcBaseURL, httpBaseURL, queryParams string) *Cli
 // ProvidedFunctions implements [sdk.FunctionProvider]. It returns the
 // orchestrator and activity functions registered on this middleware so
 // App.Use registers them with the App.
+//
+// It is side-effect-free, as the interface requires, so it is safe to call for
+// inspection. Registration is closed by [Durable.SealRegistration], which
+// App.Use calls once it has taken these registrations.
 func (d *Durable) ProvidedFunctions() []sdk.FunctionRegistration {
-	// Use collects the registrations once, here. Anything registered after this
-	// point would be invisible to the app, so close registration.
-	d.closed = true
 	return d.provided
+}
+
+// SealRegistration implements [sdk.RegistrationSealer]. App.Use calls it after
+// collecting this middleware's functions; afterwards, registering another
+// orchestrator or activity panics rather than landing in a registry the app
+// will never read again.
+func (d *Durable) SealRegistration() {
+	d.closed = true
 }
 
 // mustBeOpen panics when a function is registered after the app has already
