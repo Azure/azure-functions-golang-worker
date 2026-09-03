@@ -81,9 +81,10 @@ or wrap them in your own functions, as this sample does:
   management URLs), the canonical Durable Functions starter response.
   `StartHelloCities` shows the minimal alternative, returning just the new
   instance ID.
-- **Status / progress** — `GetExpenseStatus` calls `client.GetStatus(id)`.
-  The orchestrator reports progress with `ctx.SetCustomStatus(...)`, which
-  surfaces as `customStatus` in the response.
+- **Status / progress** — `GetExpenseStatus` fetches the orchestration metadata
+  and replies with `durabletask.WriteStatusResponse`, the same payload the
+  host's own management API returns. The orchestrator reports progress with
+  `ctx.SetCustomStatus(...)`, which surfaces as `customStatus` in the response.
 - **HITL response** — `ApproveExpense` calls
   `client.RaiseEvent(id, "ApprovalDecision", payload)`, delivering the event
   the orchestrator is blocked on in `WaitForSingleEvent`.

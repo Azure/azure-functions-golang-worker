@@ -62,16 +62,18 @@ type expenseResult struct {
 	Note      string `json:"note"`
 }
 
-// orchestrationStatus mirrors durabletask.OrchestrationStatus as it is
-// serialized by the sample's status endpoint. Output stays a string because
-// the durable client hands back the raw serialized orchestration output.
+// orchestrationStatus mirrors durabletask.StatusResponse, the standard Durable
+// Functions status payload the sample's endpoint returns. Input, Output and
+// CustomStatus are raw JSON because the payload embeds the orchestration's
+// serialized values as-is, so an object stays an object rather than becoming a
+// quoted string.
 type orchestrationStatus struct {
-	InstanceID    string `json:"instanceId"`
-	Name          string `json:"name"`
-	RuntimeStatus string `json:"runtimeStatus"`
-	Input         string `json:"input"`
-	Output        string `json:"output"`
-	CustomStatus  string `json:"customStatus"`
+	InstanceID    string          `json:"instanceId"`
+	Name          string          `json:"name"`
+	RuntimeStatus string          `json:"runtimeStatus"`
+	Input         json.RawMessage `json:"input"`
+	Output        json.RawMessage `json:"output"`
+	CustomStatus  json.RawMessage `json:"customStatus"`
 }
 
 // durableApp drives the durableFunctions sample over HTTP. It holds no host
@@ -240,16 +242,26 @@ func (a *durableApp) waitForCompletion(instanceID string) orchestrationStatus {
 	})
 }
 
-// decodeExpenseResult unwraps the orchestration output, which arrives as a
-// JSON string holding the serialized result.
-func decodeExpenseResult(t *testing.T, output string) expenseResult {
+// decodeExpenseResult unwraps the orchestration output, which the status
+// payload embeds as raw JSON.
+func decodeExpenseResult(t *testing.T, output json.RawMessage) expenseResult {
 	t.Helper()
 
 	var result expenseResult
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		t.Fatalf("decode expense result %q: %v", output, err)
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("decode expense result %s: %v", output, err)
 	}
 	return result
+}
+
+// customStatusText reads the orchestration's custom status, which the payload
+// embeds as raw JSON (a JSON string for the sample's textual progress).
+func customStatusText(raw json.RawMessage) string {
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return ""
+	}
+	return text
 }
 
 func newExpense(t *testing.T, amount float64) expense {
@@ -284,8 +296,8 @@ func TestDurableOrchestrations(t *testing.T) {
 		}
 
 		var greetings []string
-		if err := json.Unmarshal([]byte(status.Output), &greetings); err != nil {
-			t.Fatalf("decode greetings %q: %v", status.Output, err)
+	if err := json.Unmarshal(status.Output, &greetings); err != nil {
+		t.Fatalf("decode greetings %s: %v", status.Output, err)
 		}
 		// Activity inputs arrive JSON-encoded; the worker decodes them before
 		// binding, so the city must not carry its quotes into the greeting.
@@ -327,7 +339,7 @@ func TestDurableOrchestrations(t *testing.T) {
 		// Custom status is the orchestration's progress channel and proves the
 		// orchestrator parked on the external event rather than finishing.
 		app.waitForStatus(instanceID, "the approval wait", durableCompleteTimeout, func(s orchestrationStatus) bool {
-			return s.CustomStatus == "awaiting manager approval"
+			return customStatusText(s.CustomStatus) == "awaiting manager approval"
 		})
 		if status := app.status(instanceID); status.RuntimeStatus != "Running" {
 			t.Fatalf("expected the orchestration to still be Running while awaiting approval, got %q", status.RuntimeStatus)
@@ -350,7 +362,7 @@ func TestDurableOrchestrations(t *testing.T) {
 
 		instanceID := app.scheduleOrchestration("/api/expenses", newExpense(t, autoApproveLimit+900))
 		app.waitForStatus(instanceID, "the approval wait", durableCompleteTimeout, func(s orchestrationStatus) bool {
-			return s.CustomStatus == "awaiting manager approval"
+			return customStatusText(s.CustomStatus) == "awaiting manager approval"
 		})
 
 		app.approve(instanceID, decision{Approved: false, By: "integration-test"})

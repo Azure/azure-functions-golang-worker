@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/azure/azure-functions-golang-worker/middleware/durabletask"
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/azure/azure-functions-golang-worker/worker"
+	"github.com/microsoft/durabletask-go/api"
 	"github.com/microsoft/durabletask-go/task"
 )
 
@@ -147,14 +149,14 @@ func StartHelloCities(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "durable client unavailable", http.StatusInternalServerError)
 		return
 	}
-	id, err := client.ScheduleNewOrchestration(r.Context(), "HelloCities", nil)
+	id, err := client.ScheduleNewOrchestration(r.Context(), "HelloCities")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]string{"id": id})
+	_ = json.NewEncoder(w).Encode(map[string]string{"id": string(id)})
 }
 
 // SubmitExpense returns the canonical check-status reply.
@@ -169,12 +171,12 @@ func SubmitExpense(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid expense: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	id, err := client.ScheduleNewOrchestration(r.Context(), "ProcessExpense", exp)
+	id, err := client.ScheduleNewOrchestration(r.Context(), "ProcessExpense", api.WithInput(exp))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	_ = client.WriteCheckStatusResponse(w, r, id)
+	_ = client.WriteCheckStatusResponse(w, r, string(id))
 }
 
 // GetExpenseStatus resolves any instance ID, not only expense orchestrations.
@@ -184,8 +186,9 @@ func GetExpenseStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "durable client unavailable", http.StatusInternalServerError)
 		return
 	}
-	status, err := client.GetStatus(r.Context(), instanceIDFromPath(r, "expenses"))
-	if err == durabletask.ErrInstanceNotFound {
+	meta, err := client.FetchOrchestrationMetadata(r.Context(),
+		api.InstanceID(instanceIDFromPath(r, "expenses")))
+	if errors.Is(err, api.ErrInstanceNotFound) {
 		http.Error(w, "no such instance", http.StatusNotFound)
 		return
 	}
@@ -193,8 +196,7 @@ func GetExpenseStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(status)
+	_ = durabletask.WriteStatusResponse(w, meta)
 }
 
 // ApproveExpense raises the ApprovalDecision event the orchestration awaits.
@@ -212,7 +214,8 @@ func ApproveExpense(w http.ResponseWriter, r *http.Request) {
 	if decision.By == "" {
 		decision.By = "manager"
 	}
-	if err := client.RaiseEvent(r.Context(), instanceIDFromPath(r, "expenses"), "ApprovalDecision", decision); err != nil {
+	if err := client.RaiseEvent(r.Context(), api.InstanceID(instanceIDFromPath(r, "expenses")),
+		"ApprovalDecision", api.WithEventPayload(decision)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

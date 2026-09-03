@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -29,6 +30,7 @@ import (
 	"github.com/azure/azure-functions-golang-worker/otelcollector"
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/azure/azure-functions-golang-worker/worker"
+	"github.com/microsoft/durabletask-go/api"
 	"github.com/microsoft/durabletask-go/task"
 )
 
@@ -108,8 +110,8 @@ func ProcessExpense(ctx *task.OrchestrationContext) (any, error) {
 		return nil, err
 	}
 
-	// Progress is reported via custom status, which surfaces in the status
-	// endpoint (client.GetStatus → OrchestrationStatus.CustomStatus).
+	// Progress is reported via custom status, which surfaces as customStatus in
+	// the status endpoint's payload.
 	ctx.SetCustomStatus("validating")
 
 	// Fan-out: schedule all three checks before awaiting any, so they run
@@ -200,14 +202,14 @@ func StartHelloCities(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "durable client unavailable", http.StatusInternalServerError)
 		return
 	}
-	id, err := client.ScheduleNewOrchestration(r.Context(), "HelloCities", nil)
+	id, err := client.ScheduleNewOrchestration(r.Context(), "HelloCities")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]string{"id": id})
+	_ = json.NewEncoder(w).Encode(map[string]string{"id": string(id)})
 }
 
 // SubmitExpense (POST /api/expenses) starts the expense orchestration and
@@ -225,14 +227,14 @@ func SubmitExpense(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid expense: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	id, err := client.ScheduleNewOrchestration(r.Context(), "ProcessExpense", exp)
+	id, err := client.ScheduleNewOrchestration(r.Context(), "ProcessExpense", api.WithInput(exp))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// The canonical Durable Functions starter reply, same as the .NET, Java,
 	// Python, and JavaScript workers return.
-	_ = client.WriteCheckStatusResponse(w, r, id)
+	_ = client.WriteCheckStatusResponse(w, r, string(id))
 }
 
 // GetExpenseStatus (GET /api/expenses/{id}) returns the orchestration's
@@ -245,8 +247,8 @@ func GetExpenseStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := instanceIDFromPath(r, "expenses")
-	status, err := client.GetStatus(r.Context(), id)
-	if err == durabletask.ErrInstanceNotFound {
+	meta, err := client.FetchOrchestrationMetadata(r.Context(), api.InstanceID(id))
+	if errors.Is(err, api.ErrInstanceNotFound) {
 		http.Error(w, "no such instance", http.StatusNotFound)
 		return
 	}
@@ -254,8 +256,11 @@ func GetExpenseStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(status)
+
+	// The same payload the host's own management API returns, so callers can
+	// use this endpoint or the statusQueryGetUri from the check-status reply
+	// interchangeably. This one is anonymous; the host's requires a key.
+	_ = durabletask.WriteStatusResponse(w, meta)
 }
 
 // ApproveExpense (POST /api/expenses/{id}/approve) is the HITL response: it
@@ -277,7 +282,8 @@ func ApproveExpense(w http.ResponseWriter, r *http.Request) {
 	if decision.By == "" {
 		decision.By = "manager"
 	}
-	if err := client.RaiseEvent(r.Context(), id, "ApprovalDecision", decision); err != nil {
+	if err := client.RaiseEvent(r.Context(), api.InstanceID(id), "ApprovalDecision",
+		api.WithEventPayload(decision)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
