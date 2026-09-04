@@ -306,6 +306,14 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 	// hoisting construction above the invocation call.
 	mc := buildMiddlewareContext(arrival.req, &arrival.fn.Function)
 
+	// Surface trigger input and auxiliary input bindings onto the carrier so
+	// middleware sees the same data as on the gRPC-body path. This is what
+	// makes input bindings (for example, the durable client binding that
+	// delivers the host's durable gRPC endpoint) available to a starter
+	// function reached over the HTTP-streaming path.
+	extractTriggerInput(arrival.req, arrival.fn, mc)
+	populateBindingInputs(arrival.req, arrival.fn, mc)
+
 	// Run the user handler via the shared invocation pipeline so both the
 	// HTTP-streaming path and the gRPC-body path produce identical
 	// StatusResult shapes for panics and errors. runUserInvocation

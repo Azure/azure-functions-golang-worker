@@ -128,6 +128,60 @@ The runner executes these steps in order:
 8. Removes only containers that did not exist before the run. Pre-existing
    stopped containers that the runner starts are left in place afterward.
 
+## Durable Functions coverage
+
+`TestDurableOrchestrations` runs the `durableFunctions` fixture against a real
+host and covers the whole Durable Functions path: the `durableClient` binding
+delivering the management endpoint to the worker, the gRPC management client,
+orchestration replay through the trigger pipeline, activity dispatch and input
+decoding, custom status, and external events.
+
+The subtests share one host and cover a sequential orchestration, fan-out/fan-in
+with automatic approval, human approval and rejection through an external event,
+rejection on failed validation, and an unknown instance lookup.
+
+```bash
+cd tests/integration
+go test -run TestDurableOrchestrations -v .
+```
+
+Azurite is the only emulator required. Every assertion goes through the sample's
+own anonymous HTTP endpoints rather than the host's management API, so the same
+subtests run unchanged against a deployed app:
+
+```bash
+DURABLE_E2E_BASE_URL=https://myapp.azurewebsites.net \
+  go test -run TestDurableOrchestrations -v .
+```
+
+When `DURABLE_E2E_BASE_URL` is set the suite skips the local host and the Azurite
+check and drives the given app instead.
+
+### Host extension requirement
+
+Durable Functions on the Go worker needs a DurableTask extension that recognizes
+`FUNCTIONS_WORKER_RUNTIME=native` and selects the gRPC durable protocol. Without
+it the starter endpoints return HTTP 500, either because no durable client
+reaches the worker or because the extension fell back to its legacy local HTTP
+RPC endpoint and the client's gRPC handshake fails against it. The test detects
+both symptoms and fails with an explanation rather than a bare status code.
+
+The fix shipped in DurableTask extension 3.15.0. The `durableFunctions` fixture
+pins the experimental bundle, which is the first bundle that resolves to 3.15.0
+or later:
+
+```json
+"extensionBundle": {
+  "id": "Microsoft.Azure.Functions.ExtensionBundle.Experimental",
+  "version": "[4.7.0, 5.0.0)"
+}
+```
+
+The experimental bundle is published to the same default CDN as the standard
+bundle, so no `FUNCTIONS_EXTENSIONBUNDLE_SOURCE_URI` override is needed. Once a
+standard bundle that resolves to 3.15.0 or later is listed in its CDN index, the
+sample can move back to `Microsoft.Azure.Functions.ExtensionBundle`.
+
 ## Azure DevOps integration
 
 The public Azure DevOps pipeline runs the complete integration suite for pull

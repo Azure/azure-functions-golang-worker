@@ -58,13 +58,17 @@ jobs:
     #     `use` list, and Go rejects an all-versions replace of a
     #     module already in use.
     #   * Second replace: swaps in a newer genproto version that plays
-    #     nicely with the OpenTelemetry collector deps.
+    #     nicely with the OpenTelemetry collector deps. It covers all
+    #     versions because middleware/durabletask pulls a grpc that
+    #     needs the split google.golang.org/genproto/googleapis/rpc
+    #     module, which collides with the old monolithic genproto
+    #     otherwise.
     - script: |
-        go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
+        go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob ./middleware/durabletask
         ROOT_VER=$(awk '$1=="require" && $2=="github.com/azure/azure-functions-golang-worker" {print $3}' middleware/otelfunc/go.mod)
         echo "Detected root module version: ${ROOT_VER}"
         go work edit -replace github.com/azure/azure-functions-golang-worker@${ROOT_VER}=.
-        go work edit -replace google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
+        go work edit -replace google.golang.org/genproto=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
         cat go.work
       displayName: 'Initialize go workspace'
 
@@ -90,6 +94,10 @@ jobs:
     - script: |
         cd triggers/blob && go vet ./...
       displayName: 'Vet triggers/blob'
+
+    - script: |
+        cd middleware/durabletask && go vet ./...
+      displayName: 'Vet middleware/durabletask'
 
     - script: |
         chmod +x eng/ci/scripts/build-all.sh

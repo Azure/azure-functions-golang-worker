@@ -27,7 +27,8 @@ const integrationTestPattern = "^(TestHttpTriggerGet|" +
 	"TestServiceBusTopicTriggerFires|" +
 	"TestServiceBusTopicTriggerMany|" +
 	"TestCosmosDBTriggerFires|" +
-	"TestSQLTriggerFiresOnChanges)$"
+	"TestSQLTriggerFiresOnChanges|" +
+	"TestDurableOrchestrations)$"
 
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), suiteTimeout)

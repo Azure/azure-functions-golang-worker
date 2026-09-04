@@ -20,7 +20,7 @@ echo "==> Initializing go workspace"
 # See eng/ci/templates/jobs/build.yml for why we need go.work and
 # the genproto replace.
 if [[ ! -f go.work ]]; then
-  go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob
+  go work init . ./middleware/otelfunc ./otelcollector ./triggers/blob ./middleware/durabletask
   # Force Go to use the local checkout as the root module instead of
   # downloading an older published copy. See build.yml for the full
   # explanation. The version is read from a submodule's go.mod so
@@ -29,7 +29,7 @@ if [[ ! -f go.work ]]; then
   echo "Detected root module version: ${ROOT_VER}"
   go work edit -replace "github.com/azure/azure-functions-golang-worker@${ROOT_VER}=."
   go work edit -replace \
-    google.golang.org/genproto@v0.0.0-20230110181048-76db0878b65f=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
+    google.golang.org/genproto=google.golang.org/genproto@v0.0.0-20250528174236-200df99c418a
 fi
 cat go.work
 
@@ -41,7 +41,7 @@ echo "==> Building root module"
 # files; they are excluded from CI builds and from CodeQL analysis.
 go build $(go list ./... | grep -v /samples/)
 
-for mod in middleware/otelfunc otelcollector triggers/blob; do
+for mod in middleware/otelfunc otelcollector triggers/blob middleware/durabletask; do
   echo "==> Building submodule: ${mod}"
   ( cd "${mod}" && go build ./... )
 done
