@@ -394,6 +394,12 @@ extends:
                   ROOT_TAG: $(rootTag)
                   SUBMODULES: $(submodules)
 
+              # Only the verification step below needs Go.
+              - task: GoTool@0
+                displayName: 'Install Go 1.25'
+                inputs:
+                  version: '1.25'
+
               # Post-publish gate: prove the freshly-pushed tags resolve and
               # build the way an external consumer sees them. This is the only
               # point where a standalone (non-workspace) build is both possible
@@ -420,6 +426,10 @@ extends:
                   export GOSUMDB=off
                   export GONOSUMCHECK=1
                   export GOPRIVATE="$MODULE_ROOT"
+                  # Use the Go installed above. Unpinned, a submodule with a
+                  # newer `go` directive makes go fetch a toolchain, which the
+                  # GOSUMDB=off above then refuses to verify.
+                  export GOTOOLCHAIN=local
 
                   cd "$SCRATCH"
                   go mod init release-verify >/dev/null
