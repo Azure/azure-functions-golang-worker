@@ -30,6 +30,9 @@ type Config struct {
 	// FuncExe is the path to the Azure Functions Core Tools executable (func / func.exe).
 	FuncExe string
 
+	// NoBuild skips the Core Tools build step when the sample is already compiled.
+	NoBuild bool
+
 	// Environment contains additional environment variables merged into the host process environment.
 	// Variables are appended after the inherited process environment and before the native-worker variables.
 	Environment map[string]string
@@ -222,7 +225,12 @@ func (h *host) processExitError() error {
 // Process handling ensures that stopping a test also stops Core Tools and the
 // Go worker processes it started.
 func newHostCommand(ctx context.Context, config Config, port string, logFile *os.File) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, config.FuncExe, "start", "--port", port)
+	args := []string{"start"}
+	if config.NoBuild {
+		args = append(args, "--no-build")
+	}
+	args = append(args, "--port", port)
+	cmd := exec.CommandContext(ctx, config.FuncExe, args...)
 	cmd.Dir = config.SampleDir
 	cmd.Env = os.Environ()
 	for key, value := range config.Environment {

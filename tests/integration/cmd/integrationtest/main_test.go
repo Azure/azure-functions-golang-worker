@@ -42,6 +42,8 @@ func TestIntegrationTestPatternSelectsEveryScenario(t *testing.T) {
 		"TestBlobTriggerFires",
 		"TestQueueStorageTriggerFires",
 		"TestQueueStorageTriggerMetadata",
+		"TestGenericTriggerQueues",
+		"TestGenericTriggerMCP",
 		"TestEventGridTriggerRegisters",
 		"TestEventHubTriggerFires",
 		"TestEventHubTriggerMany",
@@ -51,10 +53,14 @@ func TestIntegrationTestPatternSelectsEveryScenario(t *testing.T) {
 		"TestServiceBusTopicTriggerMany",
 		"TestCosmosDBTriggerFires",
 		"TestSQLTriggerFiresOnChanges",
+		"TestDurableOrchestrations",
 	}
 	for _, testName := range expectedTests {
 		if !pattern.MatchString(testName) {
 			t.Errorf("integrationTestPattern does not select %s", testName)
+		}
+		if pattern.MatchString("Prefix"+testName) || pattern.MatchString(testName+"Suffix") {
+			t.Errorf("integrationTestPattern is not anchored for %s", testName)
 		}
 	}
 	if pattern.MatchString("TestDefaultRunnerTargetsFullIntegrationSuite") {

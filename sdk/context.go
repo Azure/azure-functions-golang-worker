@@ -46,6 +46,13 @@ type InvocationContext struct {
 	// parameters). Values are flattened to strings for ergonomic access;
 	// non-string TypedData values are skipped.
 	TriggerMetadata map[string]string
+
+	// TriggerMetadataValues preserves host metadata for GenericTrigger handlers.
+	// Values are string, []byte, int64, float64, json.RawMessage, or slices of
+	// the primitive types. JSON remains raw to preserve its shape and integer
+	// precision. Unsupported wire kinds are omitted. Treat values as read-only.
+	// The legacy TriggerMetadata map is unchanged for existing callers.
+	TriggerMetadataValues map[string]any
 }
 
 // TraceContext mirrors the fields of pb.RpcTraceContext that the Functions

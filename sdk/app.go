@@ -287,6 +287,9 @@ func (app *App) RegisterFunction(name string, f any, b bindings.Bind, opts ...Op
 
 func (app *App) registerFunction(name string, f any, b bindings.Bind, opts ...Option) *RegisteredFunction {
 	triggerBinding := b.ToBinding()
+	if triggerBinding.GenericBinding != nil {
+		validateGenericHandler(f, triggerBinding.GenericBinding.Cardinality)
+	}
 	rawBindings := []bindings.Binding{triggerBinding}
 
 	// If this is an HTTP Trigger, we implicitly add the HTTP Output binding
@@ -319,6 +322,12 @@ func (app *App) registerFunction(name string, f any, b bindings.Bind, opts ...Op
 	// Apply all options before storing
 	for _, opt := range opts {
 		opt(rf)
+	}
+	if triggerBinding.GenericBinding != nil {
+		if len(rf.RawBindings) == 0 || rf.RawBindings[0].GenericBinding == nil {
+			panic("GenericTrigger: options must preserve the generic trigger binding")
+		}
+		validateGenericRegistration(rf)
 	}
 
 	funcId, err := HashFunctionID(*rf)

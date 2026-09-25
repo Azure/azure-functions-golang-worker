@@ -19,6 +19,8 @@ const integrationTestPattern = "^(TestHttpTriggerGet|" +
 	"TestBlobTriggerFires|" +
 	"TestQueueStorageTriggerFires|" +
 	"TestQueueStorageTriggerMetadata|" +
+	"TestGenericTriggerQueues|" +
+	"TestGenericTriggerMCP|" +
 	"TestEventGridTriggerRegisters|" +
 	"TestEventHubTriggerFires|" +
 	"TestEventHubTriggerMany|" +
