@@ -27,7 +27,7 @@ exposed (start, status/progress, and the human-in-the-loop response).
 - **Orchestrators** use the durabletask-go programming model
   (`task.OrchestrationContext`: `CallActivity`, `CreateTimer`,
   `WaitForSingleEvent`, `SetCustomStatus`, …). The host sends the
-  orchestration history to the worker; the durable middleware replays the
+  orchestration history to the worker; the registered adapter replays the
   orchestrator and returns the resulting actions. Orchestrator code must be
   deterministic.
 - **Activities** are ordinary functions (input in, result out) and run
@@ -166,7 +166,7 @@ The orchestration patterns are covered by emulator-backed tests in
 [`middleware/durabletask`](../../middleware/durabletask):
 
 - replay equivalence (decode → replay → encode matches the engine directly),
-- the middleware short-circuit and activity pass-through paths,
+- registered replay adapters and activity execution inside the middleware chain,
 - a full end-to-end run of the sequential orchestrator, and
 - a full end-to-end run of fan-out/fan-in **plus the external-event (HITL)
   approval**, driven to completion on the in-memory durabletask backend.

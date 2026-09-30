@@ -192,11 +192,10 @@ func attrValue(attrs []attribute.KeyValue, key string) (attribute.Value, bool) {
 	return attribute.Value{}, false
 }
 
-// TestMiddlewareIntegration_OrchestrationShortCircuits exercises the real SDK
-// seams: App.Use registers the provided functions and the composed middleware
-// chain short-circuits orchestration invocations, producing the response via
-// mc.SetReturnValue without invoking the inner handler.
-func TestMiddlewareIntegration_OrchestrationShortCircuits(t *testing.T) {
+// Replay belongs to the registered function, not to a middleware short-circuit.
+// The full transport path and real otelfunc ordering are covered by the host
+// integration tests; this test pins the registration and delegation contract.
+func TestMiddlewareIntegration_OrchestrationInvokesRegisteredAdapter(t *testing.T) {
 	ctx := context.Background()
 	dt := Middleware(
 		WithOrchestrator("HelloCities", helloCities),
@@ -217,10 +216,23 @@ func TestMiddlewareIntegration_OrchestrationShortCircuits(t *testing.T) {
 	be, client := newEmulatorBackend(t)
 	encoded := scheduleAndEncodeRequest(t, be, client, "HelloCities", "")
 
+	var adapter func(context.Context, string) (string, error)
+	app.GetRegisteredFunctions().Range(func(_, value any) bool {
+		f := value.(*sdk.RegisteredFunction)
+		if f.FuncName == "HelloCities" {
+			adapter, _ = f.Func.(func(context.Context, string) (string, error))
+		}
+		return true
+	})
+	if adapter == nil {
+		t.Fatal("orchestrator registration must contain the callable replay adapter")
+	}
 	innerCalled := false
-	inner := func(_ context.Context, _ *sdk.MiddlewareContext) error {
+	inner := func(ctx context.Context, mc *sdk.MiddlewareContext) error {
 		innerCalled = true
-		return nil
+		result, err := adapter(ctx, encoded)
+		mc.SetReturnValue(result)
+		return err
 	}
 	chain := app.Compose(inner)
 
@@ -233,8 +245,8 @@ func TestMiddlewareIntegration_OrchestrationShortCircuits(t *testing.T) {
 	if err := chain(ctx, mc); err != nil {
 		t.Fatalf("chain: %v", err)
 	}
-	if innerCalled {
-		t.Fatal("orchestration invocation should short-circuit, not call inner")
+	if !innerCalled {
+		t.Fatal("orchestration invocation must reach the registered adapter")
 	}
 
 	got, ok := mc.ReturnValue()

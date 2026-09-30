@@ -11,7 +11,7 @@ import (
 const (
 	// OrchestrationTriggerType identifies an orchestrator function. Its
 	// invocations carry a base64-encoded OrchestratorRequest and are
-	// intercepted by the durable middleware for replay.
+	// executed by the registered replay adapter.
 	OrchestrationTriggerType bindings.BindingType = "orchestrationTrigger"
 
 	// ActivityTriggerType identifies an activity function. Activities run

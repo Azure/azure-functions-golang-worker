@@ -314,8 +314,8 @@ func main() {
 	app.Use(otelfunc.Middleware())
 
 	// Enable Durable Functions. A single middleware registers every
-	// orchestrator and activity (so the host dispatches them) and intercepts
-	// orchestration invocations to replay them. Register as many
+	// replay adapter and activity so the host dispatches them through the
+	// ordinary middleware chain. Register as many
 	// orchestrations as you like here.
 	//
 	// The registrations have to happen before app.Use, which is when the app

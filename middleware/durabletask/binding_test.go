@@ -12,6 +12,7 @@ import (
 	"github.com/microsoft/durabletask-go/backend/sqlite"
 	"github.com/microsoft/durabletask-go/task"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 )
 
 // startGrpcSidecarTCP is the TCP-listener variant of startGrpcSidecar. It
@@ -175,6 +176,7 @@ func TestDurable_ClientBinding_EndToEnd(t *testing.T) {
 	if client == nil {
 		t.Fatal("expected a client from the durable client binding")
 	}
+	t.Cleanup(func() { _ = client.Close() })
 
 	// The binding-derived client actually works against the sidecar.
 	ctx := context.Background()
@@ -197,8 +199,16 @@ func TestDurable_ClientBinding_EndToEnd(t *testing.T) {
 		t.Error("expected the binding client to be reused across invocations")
 	}
 
-	// Shutdown closes the cached binding client.
-	if err := d.Shutdown(context.Background()); err != nil {
+	// Installing the extension retains SDK-owned shutdown of the cached client.
+	app := sdk.FunctionApp()
+	app.Use(d)
+	if client.conn.GetState() == connectivity.Shutdown {
+		t.Fatal("connection was already shut down before SDK shutdown")
+	}
+	if err := app.RunShutdowns(context.Background()); err != nil {
 		t.Errorf("shutdown: %v", err)
+	}
+	if state := client.conn.GetState(); state != connectivity.Shutdown {
+		t.Errorf("connection state after SDK shutdown = %v, want Shutdown", state)
 	}
 }

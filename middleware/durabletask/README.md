@@ -140,10 +140,44 @@ dispatches work, and its durable endpoint serves no work items.
 
 ## Tracing
 
-There is no tracing code in this package. Orchestrator and activity executions
-arrive as ordinary trigger invocations, so registering `middleware/otelfunc`
-alongside this one traces them, using the W3C trace context the host supplies.
-Register `otelfunc` first so it wraps durable's replay short-circuit.
+Orchestrator and activity executions arrive as ordinary trigger invocations.
+Registering `middleware/otelfunc` wraps their execution in spans, using inbound
+trace context when available. The replay runner also annotates an active span
+with per-turn instance and event information.
+
+Durable registers a callable replay adapter instead of executing replay in its
+middleware. Both `app.Use(durable)` before `app.Use(otelfunc.Middleware())` and
+the reverse order allow tracing to wrap replay. Ordinary middleware still runs
+in registration order and can deliberately stop downstream execution.
+
+This changes behavior for apps that previously registered middleware after
+Durable: those middleware now run for orchestrator invocations too. Scope
+trigger-specific policies explicitly, and keep non-deterministic application
+work in activities. A middleware that needs `ClientFromContext` before calling
+`next` must follow Durable; Durable does not inject a client into orchestrations.
+
+The worker binds arguments before middleware runs, but the replay adapter reads
+`MiddlewareContext.InputString()` at execution time. This preserves the late
+input read from the previous middleware implementation: replacements made with
+`SetInputString` before `next` reach replay. A present carrier's `InputString()`
+result is authoritative, even when it is empty or malformed; the runner validates
+that result rather than falling back to the bound argument. Direct adapter calls
+without a carrier use their explicit argument.
+
+Middleware must preserve the invocation carrier when passing a context to `next`.
+Derive it from the supplied `ctx` (including `context.WithoutCancel` when needed),
+or explicitly attach `mc` with `sdk.ContextWithMiddleware`. A fresh
+`context.Background()` drops the carrier, while `sdk.NewContext` creates a new,
+empty carrier. Neither preserves late input changes by itself.
+
+This is Durable-specific compatibility, not a general rebinding feature for
+ordinary functions. It preserves the existing string/byte accessor semantics;
+it does not change cross-representation cache invalidation. For example, clearing
+only the string after reading `InputBytes()` can still expose cached bytes through
+`InputString()`, as before. Replay input is a
+protocol envelope containing history, not just the application's start input.
+Middleware can also inspect the replay return value after `next`, or deliberately
+replace it using `SetReturnValue`.
 
 Linking a starter's span to the orchestration it schedules needs the client to
 propagate trace context on the start call, which depends on an upstream

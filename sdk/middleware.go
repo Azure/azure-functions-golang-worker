@@ -10,9 +10,9 @@
 // concerns: distributed tracing, structured logging, authentication, retry
 // policies, panic recovery, and request/response validation.
 //
-// Middleware that wants to replace function execution entirely (e.g.
-// orchestration replay) can short-circuit the chain by skipping next();
-// no separate extension point is provided today.
+// Middleware can deliberately skip downstream execution by not calling next.
+// An extension that supplies a different execution mechanism can register an
+// adapter via FunctionProvider, so the ordinary chain wraps that execution too.
 package sdk
 
 import (
@@ -151,10 +151,9 @@ type FunctionRegistration struct {
 // the whole feature with a single App.Use call.
 //
 // The motivating consumer is durable functions: a single
-// durabletask.Middleware() both intercepts orchestration invocations (Wrap)
-// and declares the orchestrator / activity / client functions the host must
-// know about (ProvidedFunctions), so the host emits metadata for them and
-// dispatches them to the worker.
+// durabletask.Middleware() supplies management clients (Wrap) and declares
+// callable orchestrator adapters and activities (ProvidedFunctions), so the
+// host emits metadata for them and dispatches them through the normal pipeline.
 //
 // ProvidedFunctions is read once at registration time and must be
 // side-effect-free: callers other than [App.Use] may invoke it to inspect what

@@ -1,8 +1,7 @@
 // Command durableFunctions is the integration fixture for Durable Functions.
 //
-// It mirrors samples/durableFunctions minus the OpenTelemetry wiring, which the
-// durable assertions do not exercise and which would otherwise pull the
-// collector and its exporters into this module.
+// It mirrors samples/durableFunctions without an embedded collector. The
+// opt-in ordering probe uses an in-memory OpenTelemetry exporter.
 package main
 
 import (
@@ -247,7 +246,9 @@ func main() {
 	durable.Activity("CheckBudget", CheckBudget)
 	durable.Activity("RecordDecision", RecordDecision)
 
-	app.Use(durable)
+	if !configureOrderingProbe(app, durable) {
+		app.Use(durable)
+	}
 
 	app.HTTP("StartHelloCities", StartHelloCities,
 		sdk.WithMethods("post"), sdk.WithRoute("hello"), sdk.WithAuth("anonymous"),

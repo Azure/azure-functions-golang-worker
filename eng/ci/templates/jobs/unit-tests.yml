@@ -95,6 +95,14 @@ jobs:
       displayName: 'Test middleware/durabletask'
 
     - script: |
+        cd tests/integration && GOWORK=off go test -mod=readonly ./cmd/integrationtest
+      displayName: 'Test integration scenario selection'
+
+    - script: |
+        cd tests/integration/testdata/durableFunctions && GOWORK=off go test -mod=readonly ./...
+      displayName: 'Test Durable integration fixture'
+
+    - script: |
         export PATH=$PATH:$(go env GOPATH)/bin
         gocover-cobertura -ignore-gen-files < $(Build.SourcesDirectory)/coverage.out > $(Build.SourcesDirectory)/coverage.xml
       displayName: 'Convert coverage to Cobertura'

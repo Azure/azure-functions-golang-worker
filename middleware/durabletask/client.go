@@ -43,8 +43,8 @@ const EnvGrpcEndpoint = "DURABLE_TASK_GRPC_ENDPOINT"
 // else is upstream's, unchanged.
 //
 // This is the management half of the integration. The execution half
-// (orchestrator replay) is handled separately by the middleware against the
-// Functions trigger payload — see [Durable.Wrap]. Both share the same
+// (orchestrator replay) is handled by the adapter registered through
+// [Durable.Orchestrator], inside the middleware chain. Both share the same
 // durabletask-go programming model (task.OrchestrationContext), so the same
 // orchestrator function is driven by either path.
 type Client struct {

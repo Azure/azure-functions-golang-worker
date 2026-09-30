@@ -53,14 +53,14 @@
 //
 // The package implements [sdk.Middleware] plus three optional contracts:
 //
-//   - [sdk.Middleware] (Wrap): intercepts orchestration invocations, reads
-//     the inbound history via mc.InputString, replays via durabletask-go, and
-//     records the response via mc.SetReturnValue — short-circuiting the chain
-//     so the registered orchestrator placeholder never runs. Every other
-//     trigger (activities, HTTP starters, timers) passes through to next.
-//   - [sdk.FunctionProvider]: contributes the orchestrator and activity
-//     functions to the App so the host receives metadata for them. This is
-//     what lets a single App.Use wire the whole feature.
+//   - [sdk.Middleware] (Wrap): supplies management clients to non-orchestration
+//     invocations and delegates all invocations to the remaining middleware.
+//   - [sdk.FunctionProvider]: contributes callable replay adapters and activity
+//     functions. An adapter accepts the host's encoded history as a string and
+//     returns the encoded actions through the normal function return path.
+//     When an invocation carrier is present, the adapter reads its current
+//     InputString at execution time rather than using the pre-bound argument.
+//     Middleware wraps replay just as it wraps an ordinary function.
 //   - [sdk.RegistrationSealer]: learns when App.Use has taken those
 //     registrations, so a later one fails loudly instead of landing in a
 //     registry the app will never read again.
@@ -68,6 +68,12 @@
 //     connection at worker shutdown when the middleware created it.
 //
 // # Management client
+//
+// Ordinary middleware retains registration order and may intentionally stop
+// execution by not calling next. Durable itself no longer skips downstream
+// middleware for orchestrations. Middleware that needs a Durable client before
+// calling next should be registered after Durable; orchestrations do not receive
+// a management client from Durable.
 //
 // Starter functions schedule and manage instances through a [Client] obtained
 // from the invocation context via [ClientFromContext]. A starter declares it

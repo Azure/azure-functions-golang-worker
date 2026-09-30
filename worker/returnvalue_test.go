@@ -33,7 +33,7 @@ func TestEncodeReturnValue(t *testing.T) {
 }
 
 // TestHandleInvocationRequest_MiddlewareSetsReturnValue verifies the seam
-// durable orchestration relies on: a middleware that short-circuits the
+// available to short-circuiting middleware: a middleware that stops the
 // chain and records a return value via mc.SetReturnValue has that value
 // encoded into InvocationResponse.ReturnValue, and the user function is
 // never invoked.
@@ -72,7 +72,7 @@ func TestHandleInvocationRequest_MiddlewareSetsReturnValue(t *testing.T) {
 
 // TestHandleInvocationRequest_InputBytesAvailableToMiddleware verifies the
 // dispatcher surfaces the raw trigger payload on mc.InputBytes so a
-// middleware (e.g. durable orchestration replay) can read it directly.
+// middleware can read it directly without binding a user argument.
 func TestHandleInvocationRequest_InputBytesAvailableToMiddleware(t *testing.T) {
 	disp := newTestDispatcher("req-in")
 
