@@ -22,7 +22,7 @@ func TestBuildWorkerMetadata_StaticFields(t *testing.T) {
 }
 
 func TestBuildWorkerMetadata_CustomPropertiesAlwaysPresent(t *testing.T) {
-	// All four documented keys must appear in CustomProperties even when
+	// All documented keys must appear in CustomProperties even when
 	// the build has no VCS info and no replace directive. Telemetry
 	// consumers query for these keys unconditionally.
 	md := buildWorkerMetadata()
@@ -31,6 +31,8 @@ func TestBuildWorkerMetadata_CustomPropertiesAlwaysPresent(t *testing.T) {
 		MetaSDKReplacePath,
 		MetaAppBuiltDirty,
 		MetaAppVCSRevision,
+		MetaAppDependencies,
+		MetaAppBinarySizeBytes,
 	} {
 		if _, ok := md.CustomProperties[k]; !ok {
 			t.Errorf("CustomProperties missing key %q", k)

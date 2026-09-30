@@ -13,6 +13,7 @@ running Go applications natively on Azure Functions.
 - Concepts
   - [Architecture](concepts/architecture.md)
   - [Triggers and bindings](concepts/triggers-and-bindings.md)
+  - [Dependency metadata](concepts/dependency-metadata.md)
 - Guides
   - [Container images](guides/container-images.md)
   - [Deployment](guides/deployment.md)
