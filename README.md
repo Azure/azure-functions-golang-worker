@@ -1,8 +1,8 @@
-# Azure Functions Go Worker (Preview)
+# Azure Functions Go Worker
 [![Go Report Card](https://goreportcard.com/badge/github.com/Azure/azure-functions-golang-worker)](https://goreportcard.com/report/github.com/Azure/azure-functions-golang-worker)
 [![Go Reference](https://pkg.go.dev/badge/github.com/Azure/azure-functions-golang-worker.svg)](https://pkg.go.dev/github.com/Azure/azure-functions-golang-worker)
 
-> Public preview. The features described here are available for preview use and may change before general availability.
+> Version 1.0.0 is the first generally available release. The public Go APIs are stable across v1.x releases, and native Go hosting is generally available on Flex Consumption.
 
 The `azure-functions-golang-worker` repository provides the SDK and worker implementation to run Go (Golang) applications natively on Azure Functions. This allows developers to write serverless applications using familiar idiomatic Go structures, such as standard `net/http` handlers and structured types, while deeply integrating with Azure Function's bindings and trigger ecosystem.
 
@@ -19,7 +19,7 @@ The `azure-functions-golang-worker` repository provides the SDK and worker imple
 
 ### Prerequisites
 
-* [Go 1.24+](https://go.dev/dl/)
+* [Go 1.24+](https://go.dev/dl/) for the core worker; Go 1.25+ for extension modules
 * [Azure Functions Core Tools](https://www.npmjs.com/package/azure-functions-core-tools/v/4.12.0) 4.12.0 or later (includes Go worker support)
 
 ```bash
@@ -35,11 +35,11 @@ Initialize a standard Go module for your project:
 mkdir my-go-func
 cd my-go-func
 go mod init myapp
-go get github.com/azure/azure-functions-golang-worker
+go get github.com/azure/azure-functions-golang-worker@v1.0.0
 go mod tidy
 ```
 
-> **Use a tagged release.** We encourage pinning your project to a published, tagged release of the worker (e.g. `go get github.com/azure/azure-functions-golang-worker@v0.7.0`) rather than building against whatever is currently on `main`. Tagged releases are the versions we validate and support; `main` is an active development branch and may contain in-progress or breaking changes. To upgrade later, re-run `go get` with the newer tag. You can find the available versions on the [releases page](https://github.com/Azure/azure-functions-golang-worker/releases).
+> **Use a tagged release.** Pin your project to a published release, such as `go get github.com/azure/azure-functions-golang-worker@v1.0.0`, rather than building against `main`. Version 1.x minor and patch releases preserve public API compatibility. `main` is an active development branch and is not a supported release. To upgrade later, re-run `go get` with the newer tag. Available versions are listed on the [releases page](https://github.com/Azure/azure-functions-golang-worker/releases).
 
 Create a `main.go` file:
 
@@ -166,20 +166,43 @@ This is similar to the .NET worker extensions model (`Microsoft.Azure.Functions.
 ### Generic host triggers
 
 Use `App.GenericTrigger` when a host extension supports a trigger that has no
-dedicated Go registration method. No user-authored trigger package or client
-factory is required.
+dedicated Go registration method. Choose either of the two options below.
+Both use `App.GenericTrigger` and the same invocation pipeline.
+
+#### Option 1 - Direct registration
+
+Use the SDK and binding descriptor directly. No user-authored trigger package
+or client factory is required.
 
 ```go
-app.GenericTrigger("ProcessOrder", func(ctx context.Context, body []byte) error {
+handleOrder := func(ctx context.Context, body []byte) error {
     slog.InfoContext(ctx, "order", "body", string(body))
     return nil
-}, &bindings.GenericTrigger{
+}
+
+app.GenericTrigger("ProcessOrder", handleOrder, &bindings.GenericTrigger{
     Type: "queueTrigger", Name: "message", DataType: "string",
     Properties: map[string]any{
         "queueName": "orders", "connection": "AzureWebJobsStorage",
     },
 })
 ```
+
+#### Option 2 - Typed helper package
+
+An optional typed helper can translate configuration into the same descriptor
+and call `App.GenericTrigger` with the original handler. The sample's `queue`
+package illustrates this style; it is not a required dependency or a separate
+registration pipeline.
+
+```go
+queue.Register(app, "ProcessOrder", handleOrder, queue.Config{
+    QueueName: "orders", Connection: "AzureWebJobsStorage",
+})
+```
+
+Use either option to register `ProcessOrder`, not both. The handler and
+invocation behavior are the same; only the configuration surface differs.
 
 Text and byte slices receive the raw payload. Structs and other JSON models
 are decoded into the handler's parameter type. Results are returned as raw
@@ -189,16 +212,12 @@ such as channels. Dynamic JSON fields use
 request host batching when the extension supports it, and accept a slice.
 The usual invocation context and middleware still apply.
 
-An optional typed package can translate a configuration struct into the same
-descriptor and pass the original handler through. This adds defaults and
-configuration checks without a separate invocation pipeline.
-
 The compatible host extension must be installed. Generic registration does
 not provide HTTP handling, SDK-client injection, Durable replay, or message
 settlement. Use their existing adapters. See the
 [generic trigger sample](samples/genericTriggers/README.md) for direct raw/JSON
 registrations, the optional typed wrapper, metadata, batches, and an MCP tool.
-Use the local checkout until a release containing this API is available.
+Generic trigger registration is available in v1.0.0 and later.
 
 ---
 
