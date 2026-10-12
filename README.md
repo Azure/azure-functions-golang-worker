@@ -163,6 +163,43 @@ app.Blob("processBlobTrigger", handler,
 
 This is similar to the .NET worker extensions model (`Microsoft.Azure.Functions.Worker.Extensions.*`) but avoids over-abstracting core triggers that don't need external dependencies.
 
+### Generic host triggers
+
+Use `App.GenericTrigger` when a host extension supports a trigger that has no
+dedicated Go registration method. No user-authored trigger package or client
+factory is required.
+
+```go
+app.GenericTrigger("ProcessOrder", func(ctx context.Context, body []byte) error {
+    slog.InfoContext(ctx, "order", "body", string(body))
+    return nil
+}, &bindings.GenericTrigger{
+    Type: "queueTrigger", Name: "message", DataType: "string",
+    Properties: map[string]any{
+        "queueName": "orders", "connection": "AzureWebJobsStorage",
+    },
+})
+```
+
+Text and byte slices receive the raw payload. Structs and other JSON models
+are decoded into the handler's parameter type. Results are returned as raw
+text, raw bytes, or JSON. Registration rejects types JSON cannot represent,
+such as channels. Dynamic JSON fields use
+`json.Number` instead of `float64` so large integer IDs remain exact. Set `Cardinality: "many"` to
+request host batching when the extension supports it, and accept a slice.
+The usual invocation context and middleware still apply.
+
+An optional typed package can translate a configuration struct into the same
+descriptor and pass the original handler through. This adds defaults and
+configuration checks without a separate invocation pipeline.
+
+The compatible host extension must be installed. Generic registration does
+not provide HTTP handling, SDK-client injection, Durable replay, or message
+settlement. Use their existing adapters. See the
+[generic trigger sample](samples/genericTriggers/README.md) for direct raw/JSON
+registrations, the optional typed wrapper, metadata, batches, and an MCP tool.
+Use the local checkout until a release containing this API is available.
+
 ---
 
 ## Goroutine safety & panic recovery

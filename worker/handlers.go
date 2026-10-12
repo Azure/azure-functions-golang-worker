@@ -78,6 +78,7 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *
 
 func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.App, requestId string) *pb.StreamingMessage {
 	var functions []*pb.RpcFunctionMetadata
+	var metadataErr error
 	app.GetRegisteredFunctions().Range(func(key, value any) bool {
 		rf := value.(*sdk.RegisteredFunction)
 
@@ -101,10 +102,21 @@ func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.A
 				Direction: dir,
 				DataType:  pb.BindingInfo_undefined,
 			}
-
-			if bData, err := json.Marshal(b); err == nil {
-				rawBindings = append(rawBindings, string(bData))
+			if g := b.GenericBinding; g != nil {
+				switch g.DataType {
+				case "string":
+					bindingsMap[b.Name].DataType = pb.BindingInfo_string
+				case "binary":
+					bindingsMap[b.Name].DataType = pb.BindingInfo_binary
+				}
 			}
+
+			bData, err := json.Marshal(b)
+			if err != nil {
+				metadataErr = fmt.Errorf("function %q binding %q: %w", rf.FuncName, b.Name, err)
+				return false
+			}
+			rawBindings = append(rawBindings, string(bData))
 		}
 
 		functions = append(functions, &pb.RpcFunctionMetadata{
@@ -118,6 +130,13 @@ func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.A
 		})
 		return true
 	})
+	if metadataErr != nil {
+		return &pb.StreamingMessage{RequestId: requestId, Content: &pb.StreamingMessage_FunctionMetadataResponse{
+			FunctionMetadataResponse: &pb.FunctionMetadataResponse{Result: &pb.StatusResult{
+				Status: pb.StatusResult_Failure, Exception: &pb.RpcException{Message: metadataErr.Error()},
+			}},
+		}}
+	}
 
 	return &pb.StreamingMessage{
 		RequestId: requestId,
@@ -205,6 +224,7 @@ func handleFunctionLoadRequest(req *pb.FunctionLoadRequest, disp *Dispatcher, re
 			Position:   argIndex,
 			Direction:  b.Direction,
 			IsArgument: true,
+			Generic:    b.GenericBinding != nil,
 		}
 		argIndex++
 	}
@@ -338,7 +358,7 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 
 	// 2. Populate trigger input
 	if err := FromProto(req, loadedFunc.Fields, args); err != nil {
-		return nil, err
+		return bindingFailureResponse(requestId, req.InvocationId, err), nil
 	}
 
 	// 2b. If the function has a ClientFactory, use it to create the trigger client
@@ -433,9 +453,16 @@ func handleInvocationRequest(req *pb.InvocationRequest, disp *Dispatcher, reques
 	// either the user function's first non-error return value (captured in
 	// inner above) or a value a short-circuiting middleware produced (e.g.
 	// durable orchestration replay via mc.SetReturnValue).
-	if returnValue == nil {
+	if returnValue == nil && status.Status == pb.StatusResult_Success {
 		if v, ok := mc.ReturnValue(); ok {
-			returnValue = encodeReturnValue(v)
+			var err error
+			returnValue, err = encodeReturnValue(v)
+			if err != nil {
+				status = &pb.StatusResult{
+					Status:    pb.StatusResult_Failure,
+					Exception: &pb.RpcException{Source: "Binding conversion", Message: err.Error()},
+				}
+			}
 		}
 	}
 
@@ -466,15 +493,20 @@ var httpRequestPtrType = reflect.TypeOf((*http.Request)(nil))
 // (which receives invocations via the loopback HTTP server instead of
 // the gRPC body) can construct the same value.
 func buildMiddlewareContext(req *pb.InvocationRequest, fn *sdk.RegisteredFunction) *sdk.MiddlewareContext {
+	var metadataValues map[string]any
+	if len(fn.RawBindings) > 0 && fn.RawBindings[0].GenericBinding != nil {
+		metadataValues = genericTriggerMetadata(req.GetTriggerMetadata())
+	}
 	return &sdk.MiddlewareContext{
 		InvocationContext: &sdk.InvocationContext{
-			InvocationID:    req.GetInvocationId(),
-			FunctionID:      req.GetFunctionId(),
-			FunctionName:    fn.FuncName,
-			TriggerType:     fn.TriggerType,
-			TraceContext:    convertTraceContext(req.GetTraceContext()),
-			RetryContext:    convertRetryContext(req.GetRetryContext()),
-			TriggerMetadata: flattenTriggerMetadata(req.GetTriggerMetadata()),
+			InvocationID:          req.GetInvocationId(),
+			FunctionID:            req.GetFunctionId(),
+			FunctionName:          fn.FuncName,
+			TriggerType:           fn.TriggerType,
+			TraceContext:          convertTraceContext(req.GetTraceContext()),
+			RetryContext:          convertRetryContext(req.GetRetryContext()),
+			TriggerMetadata:       flattenTriggerMetadata(req.GetTriggerMetadata()),
+			TriggerMetadataValues: metadataValues,
 		},
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -42,6 +43,35 @@ func TestHostContract(t *testing.T) {
 
 	if config.SampleDir == "" || config.FuncExe == "" || config.ArtifactDir == "" {
 		t.Fatal("Config fields should preserve their values")
+	}
+}
+
+func TestNewHostCommandNoBuild(t *testing.T) {
+	for _, noBuild := range []bool{false, true} {
+		t.Run(strconv.FormatBool(noBuild), func(t *testing.T) {
+			before, existed := os.LookupEnv("GOWORK")
+			config := Config{
+				SampleDir: "sample", FuncExe: "func", NoBuild: noBuild,
+				Environment: map[string]string{"GOWORK": "off"},
+			}
+			cmd := newHostCommand(context.Background(), config, "7075", nil)
+			want := []string{"func", "start", "--port", "7075"}
+			if noBuild {
+				want = []string{"func", "start", "--no-build", "--port", "7075"}
+			}
+			if !reflect.DeepEqual(cmd.Args, want) {
+				t.Fatalf("command args = %q, want %q", cmd.Args, want)
+			}
+			if cmd.Dir != config.SampleDir {
+				t.Fatalf("command directory = %q, want %q", cmd.Dir, config.SampleDir)
+			}
+			if !strings.Contains(strings.Join(cmd.Environ(), "\n"), "GOWORK=off") {
+				t.Fatal("command environment does not include GOWORK=off")
+			}
+			if after, exists := os.LookupEnv("GOWORK"); after != before || exists != existed {
+				t.Fatal("newHostCommand changed the parent GOWORK environment")
+			}
+		})
 	}
 }
 

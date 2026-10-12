@@ -21,6 +21,10 @@ type Binding struct {
 	Type      string `json:"type"`
 	Direction string `json:"direction"`
 
+	// GenericBinding carries configuration for bindings without a typed SDK
+	// model. It must not be combined with the typed configuration fields.
+	GenericBinding *GenericBinding `json:"-"`
+
 	*CosmosDBBinding
 	*HTTPBinding
 	*BlobBinding
@@ -34,6 +38,9 @@ type Binding struct {
 // MarshalJSON flattens the embedded sub-binding fields into the top-level
 // JSON object alongside name, type, and direction.
 func (b Binding) MarshalJSON() ([]byte, error) {
+	if b.GenericBinding != nil {
+		return b.marshalGeneric()
+	}
 	m := make(map[string]interface{})
 	m["name"] = b.Name
 	m["type"] = b.Type
