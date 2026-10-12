@@ -1,13 +1,14 @@
 # Roadmap
 
-Go support for Azure Functions is currently in public preview. This page shows
-the current support surface and areas being explored.
+Native Go hosting on Flex Consumption is generally available. Version 1.x of
+the Go worker provides stable public APIs. This page shows the current support
+surface and areas being explored.
 
 ## Hosting plans
 
 | Plan | Status |
 | --- | --- |
-| Flex Consumption | Public preview; GA is on the roadmap |
+| Flex Consumption | Generally available |
 | Elastic Premium | On the roadmap |
 | Dedicated (Linux App Service plan) | On the roadmap |
 
@@ -27,13 +28,14 @@ Go applications must target Linux x64 with CGO disabled
 | Azure Event Hubs | Supported | |
 | Azure Service Bus queues and topics | Supported | |
 | Azure SQL | Supported | |
+| Generic host triggers | Supported | Requires a compatible installed host extension |
 
 ## Capabilities
 
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Deferred bindings | On the roadmap | SDK-typed trigger and input bindings |
-| Durable Functions | On the roadmap | |
+| Durable Functions | Supported | Orchestrations, activities, and management clients; entities are not supported |
 
 !!! tip "Help shape the roadmap"
     Don't see the hosting plan, trigger, binding, or feature you need?

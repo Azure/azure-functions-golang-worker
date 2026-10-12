@@ -4,8 +4,8 @@ go 1.25.7
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.7.0
-	github.com/azure/azure-functions-golang-worker v0.7.0-preview
-	github.com/azure/azure-functions-golang-worker/triggers/blob v0.0.0
+	github.com/azure/azure-functions-golang-worker v1.0.0
+	github.com/azure/azure-functions-golang-worker/triggers/blob v1.0.0
 )
 
 require (

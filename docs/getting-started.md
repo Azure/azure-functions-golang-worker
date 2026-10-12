@@ -7,7 +7,8 @@ application.
 
 Before creating your first function, install:
 
-- [Go 1.24 or later](https://go.dev/dl/)
+- [Go 1.24 or later](https://go.dev/dl/) for the core worker; Go 1.25 or later
+  for extension modules
 - [Azure Functions Core Tools](https://www.npmjs.com/package/azure-functions-core-tools/v/4.12.0)
   version 4.12.0 or later, which includes Go worker support
 - [Azure CLI 2.87.0 or later](https://learn.microsoft.com/cli/azure/install-azure-cli)
@@ -29,7 +30,7 @@ az version
 
 ## Create a Function App in Azure
 
-Go support is currently in preview and uses the native Go runtime on the
+Go support is generally available and uses the native Go runtime on the
 [Flex Consumption plan](https://learn.microsoft.com/azure/azure-functions/flex-consumption-plan).
 
 The simplest way to create a Function App is through the
