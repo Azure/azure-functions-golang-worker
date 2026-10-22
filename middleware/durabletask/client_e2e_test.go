@@ -3,74 +3,20 @@ package durabletask
 import (
 	"context"
 	"errors"
-	"net"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/microsoft/durabletask-go/api"
-	"github.com/microsoft/durabletask-go/backend"
-	"github.com/microsoft/durabletask-go/backend/sqlite"
 	"github.com/microsoft/durabletask-go/task"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/test/bufconn"
 )
 
-// startGrpcSidecar stands up a durabletask-go gRPC "sidecar" backed by an
-// in-memory sqlite store, with in-process workers that execute the registered
-// orchestrations/activities. This is the same TaskHubSidecarService protocol
-// the Durable Task Scheduler (DTS) speaks, so it is a faithful end-to-end
-// target for the management [Client] (which wraps durabletask-go's
-// TaskHubGrpcClient).
-//
-// Execution is in-process (task.NewTaskExecutor), so no separate gRPC work
-// item listener is needed; the gRPC server is purely the management
-// front-door that the Client dials.
-func startGrpcSidecar(t *testing.T, r *task.TaskRegistry) *grpc.ClientConn {
-	t.Helper()
-	ctx := context.Background()
-	logger := backend.DefaultLogger()
-
-	be := sqlite.NewSqliteBackend(sqlite.NewSqliteOptions(""), logger)
-	executor := task.NewTaskExecutor(r)
-	orchestrationWorker := backend.NewOrchestrationWorker(be, executor, logger)
-	activityWorker := backend.NewActivityTaskWorker(be, executor, logger)
-	hub := backend.NewTaskHubWorker(be, orchestrationWorker, activityWorker, logger)
-	if err := hub.Start(ctx); err != nil {
-		t.Fatalf("start hub: %v", err)
-	}
-	t.Cleanup(func() { _ = hub.Shutdown(context.Background()) })
-
-	// gRPC management front-door over an in-memory listener.
-	_, registerFn := backend.NewGrpcExecutor(be, logger)
-	grpcServer := grpc.NewServer()
-	registerFn(grpcServer)
-
-	lis := bufconn.Listen(1 << 20)
-	go func() { _ = grpcServer.Serve(lis) }()
-	t.Cleanup(grpcServer.Stop)
-
-	conn, err := grpc.NewClient(
-		"passthrough:///bufnet",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			return lis.DialContext(ctx)
-		}),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		t.Fatalf("dial bufconn: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	return conn
-}
-
 // TestClient_EndToEnd_GrpcSidecar exercises the management Client end to end
-// against a real durabletask gRPC server: schedule → wait for the orchestrator
+// against a local gRPC protocol fixture: schedule → wait for the orchestrator
 // to reach the HITL wait point → query status (custom status = progress) →
 // raise the approval event (HITL response) → wait for completion. The
 // orchestration uses fan-out/fan-in and an external event, the same patterns
-// the durableFunctions sample relies on.
+// the durableFunctions sample relies on. This is not a host or DTS integration test.
 func TestClient_EndToEnd_GrpcSidecar(t *testing.T) {
 	ctx := context.Background()
 

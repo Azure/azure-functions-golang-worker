@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"github.com/microsoft/durabletask-go/api"
-	"github.com/microsoft/durabletask-go/backend"
-	"github.com/microsoft/durabletask-go/backend/sqlite"
 	"github.com/microsoft/durabletask-go/task"
 )
 
@@ -17,28 +15,13 @@ type approvalDecision struct {
 	Approved bool `json:"approved"`
 }
 
-// startEmulatorHub stands up a full in-memory durabletask worker (the
-// "emulator") that actually executes orchestrators and activities, plus a
-// client. Unlike newEmulatorBackend (which is used to capture a single
-// OrchestratorRequest for the replay-equivalence tests), this runs the whole
-// task hub so multi-turn orchestrations — fan-out, timers, external events —
-// drive to completion.
-func startEmulatorHub(t *testing.T, r *task.TaskRegistry) backend.TaskHubClient {
+// startEmulatorHub runs the registry on the in-memory emulator and returns a
+// management client for it, so multi-turn orchestrations (fan-out, timers,
+// external events) drive to completion.
+func startEmulatorHub(t *testing.T, r *task.TaskRegistry) *Client {
 	t.Helper()
-	ctx := context.Background()
-	logger := backend.DefaultLogger()
-	be := sqlite.NewSqliteBackend(sqlite.NewSqliteOptions(""), logger)
-	executor := task.NewTaskExecutor(r)
-	orchestrationWorker := backend.NewOrchestrationWorker(be, executor, logger)
-	activityWorker := backend.NewActivityTaskWorker(be, executor, logger)
-	hub := backend.NewTaskHubWorker(be, orchestrationWorker, activityWorker, logger)
-	if err := hub.Start(ctx); err != nil {
-		t.Fatalf("start hub: %v", err)
-	}
-	t.Cleanup(func() { _ = hub.Shutdown(ctx) })
-	return backend.NewTaskHubClient(be)
+	return NewClient(startGrpcSidecar(t, r))
 }
-
 // TestEndToEnd_FanOutAndExternalEvent validates the core patterns the
 // durableFunctions sample's ProcessExpense orchestration relies on, executed
 // end-to-end on the emulator: fan-out/fan-in across parallel activities,

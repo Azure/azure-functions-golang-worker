@@ -2,7 +2,7 @@ package durabletask
 
 import (
 	"context"
-	"encoding/base64"
+
 	"errors"
 	"reflect"
 	"strings"
@@ -26,19 +26,9 @@ func TestRegisteredAdapter_PreservesMiddlewareInput(t *testing.T) {
 				received = append(received, input)
 				return input, nil
 			}))
-			be, client := newEmulatorBackend(t)
-			original := scheduleAndEncodeRequest(t, be, client, "Echo", "original")
-			instanceID, past, events := decodeRequest(t, original)
-			for _, event := range events {
-				if started := event.GetExecutionStarted(); started != nil {
-					started.Input.Value = `"replacement"`
-				}
-			}
-			raw, err := encodeOrchestratorRequest(instanceID, past, events)
-			if err != nil {
-				t.Fatal(err)
-			}
-			replacement := base64.StdEncoding.EncodeToString(raw)
+			instanceID := nextInstanceID()
+			original := encodeFirstTurn(t, instanceID, "Echo", "original")
+			replacement := encodeFirstTurn(t, instanceID, "Echo", "replacement")
 			if replacement == original {
 				t.Fatal("test must change the replay input")
 			}
@@ -92,9 +82,8 @@ func TestRegisteredAdapter_InputContext(t *testing.T) {
 		}
 		return received, nil
 	}))
-	be, client := newEmulatorBackend(t)
-	original := scheduleAndEncodeRequest(t, be, client, "Echo", "original")
-	replacement := scheduleAndEncodeRequest(t, be, client, "Echo", "replacement")
+	original := scheduleAndEncodeRequest(t, "Echo", "original")
+	replacement := scheduleAndEncodeRequest(t, "Echo", "replacement")
 	adapter := d.provided[0].Func.(func(context.Context, string) (string, error))
 	for _, tc := range []struct {
 		name    string
@@ -157,8 +146,7 @@ func TestRegisteredAdapter_InputContext(t *testing.T) {
 
 func TestRegisteredAdapter_InputSource(t *testing.T) {
 	d := Middleware(WithOrchestrator("HelloCities", helloCities))
-	be, client := newEmulatorBackend(t)
-	original := scheduleAndEncodeRequest(t, be, client, "HelloCities", nil)
+	original := scheduleAndEncodeRequest(t, "HelloCities", nil)
 	adapter := d.provided[0].Func.(func(context.Context, string) (string, error))
 
 	for _, tc := range []struct {
@@ -264,8 +252,7 @@ func TestRegisteredAdapter_RespectsMiddlewareShortCircuit(t *testing.T) {
 				calls++
 				return "must not execute", nil
 			}))
-			be, client := newEmulatorBackend(t)
-			encoded := scheduleAndEncodeRequest(t, be, client, "Blocked", nil)
+			encoded := scheduleAndEncodeRequest(t, "Blocked", nil)
 			app := sdk.FunctionApp()
 			if durableFirst {
 				app.Use(d)
@@ -350,8 +337,7 @@ func TestRegisteredAdapters_UseTheirOwningRegistry(t *testing.T) {
 	app := sdk.FunctionApp()
 	app.Use(a)
 	app.Use(b)
-	be, client := newEmulatorBackend(t)
-	encoded := scheduleAndEncodeRequest(t, be, client, "Second", "")
+	encoded := scheduleAndEncodeRequest(t, "Second", "")
 	var f func(context.Context, string) (string, error)
 	app.GetRegisteredFunctions().Range(func(_, value any) bool {
 		r := value.(*sdk.RegisteredFunction)
