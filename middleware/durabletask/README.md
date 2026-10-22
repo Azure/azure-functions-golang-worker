@@ -111,8 +111,8 @@ ctx.CallSubOrchestrator("ProcessLine",
 	task.WithSubOrchestratorInput(line))
 ```
 
-Without one the worker generates `<parent>:<action id>`, matching what the
-durabletask-go backend produces when it runs standalone.
+Without one the worker generates `<parent>:<action id>`, the same format
+durabletask-go used for its former standalone backend.
 
 ## The management client
 
@@ -200,9 +200,25 @@ build resolve the sample against the root module and fail.
 
 ## Known gaps
 
-- **Entities** are not supported; durabletask-go has no entity support yet.
+- This module uses **durabletask-go v1.0.0-beta3** and requires Go 1.25 or later.
+  Upstream's protobuf messages are now internal. Replay still uses its task
+  executor, with a wire-level request envelope and inferred history event types.
+- **Entities** are not supported by this middleware yet, even though the upstream
+  SDK now supports them.
 - **Extended sessions** are rejected by the host for non-.NET workers, so the
   worker does not implement session caching. It fails loudly rather than
   replaying a withheld history.
 - **Rewind** appears in the management URLs for parity with the other workers,
   but only the Azure Storage backend implements it.
+
+The unit tests use the upstream executor and a limited in-memory protocol
+fixture in place of the removed upstream SQLite backend. They do not establish
+compatibility with a running Functions host or Durable Task Scheduler. The
+black-box tests in `tests/integration` exercise that boundary when a host and
+storage are available.
+
+With beta3, an orchestrator panic is recorded as a failed orchestration with
+failure details by the upstream executor. Like an orchestrator returning an
+error, it produces a successfully processed replay response. It does not escape
+to middleware recovery or mark the replay invocation span as an error. Request
+decoding and transport failures still surface as invocation errors.

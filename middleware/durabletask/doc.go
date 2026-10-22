@@ -102,7 +102,8 @@
 // (task.NewTaskExecutor(...).ExecuteOrchestrator). Because the upstream
 // OrchestratorRequest / OrchestratorResponse protobuf types currently live
 // in an internal package, this package parses the request envelope with
-// protowire (see runner.go) and marshals the engine's response value
+// protowire (see runner.go), hands raw history events to the executor through
+// generic type inference, and marshals the engine's response value
 // directly. If/when durabletask-go exposes a public bytes-in/bytes-out
 // runner (e.g. OrchestrationRunner.LoadAndRun), runner.go can be reduced to
 // a one-line delegation with no change to this package's public API.

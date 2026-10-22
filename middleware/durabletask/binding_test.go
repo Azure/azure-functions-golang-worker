@@ -3,50 +3,13 @@ package durabletask
 import (
 	"context"
 	"fmt"
-	"net"
 	"testing"
 	"time"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
-	"github.com/microsoft/durabletask-go/backend"
-	"github.com/microsoft/durabletask-go/backend/sqlite"
 	"github.com/microsoft/durabletask-go/task"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 )
-
-// startGrpcSidecarTCP is the TCP-listener variant of startGrpcSidecar. It
-// returns the "host:port" address of the durabletask gRPC sidecar so a test
-// can exercise the real dial path (grpc.NewClient against an address), which
-// is what the durable client binding delivery uses — unlike the bufconn
-// helper, which bypasses the address with a custom dialer.
-func startGrpcSidecarTCP(t *testing.T, r *task.TaskRegistry) string {
-	t.Helper()
-	ctx := context.Background()
-	logger := backend.DefaultLogger()
-
-	be := sqlite.NewSqliteBackend(sqlite.NewSqliteOptions(""), logger)
-	executor := task.NewTaskExecutor(r)
-	orchestrationWorker := backend.NewOrchestrationWorker(be, executor, logger)
-	activityWorker := backend.NewActivityTaskWorker(be, executor, logger)
-	hub := backend.NewTaskHubWorker(be, orchestrationWorker, activityWorker, logger)
-	if err := hub.Start(ctx); err != nil {
-		t.Fatalf("start hub: %v", err)
-	}
-	t.Cleanup(func() { _ = hub.Shutdown(context.Background()) })
-
-	_, registerFn := backend.NewGrpcExecutor(be, logger)
-	grpcServer := grpc.NewServer()
-	registerFn(grpcServer)
-
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	go func() { _ = grpcServer.Serve(lis) }()
-	t.Cleanup(grpcServer.Stop)
-	return lis.Addr().String()
-}
 
 // TestGrpcTarget verifies the rpcBaseUrl -> gRPC dial target conversion the
 // durable client binding relies on.

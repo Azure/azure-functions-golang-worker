@@ -8,8 +8,6 @@ import (
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/microsoft/durabletask-go/api"
-	"github.com/microsoft/durabletask-go/backend"
-	"github.com/microsoft/durabletask-go/backend/sqlite"
 	"github.com/microsoft/durabletask-go/task"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -37,45 +35,7 @@ func sayHello(_ context.Context, city string) (string, error) {
 	return "Hello, " + city + "!", nil
 }
 
-// newEmulatorBackend stands up an in-memory durabletask backend (the
-// "emulator") and returns it plus a client.
-func newEmulatorBackend(t *testing.T) (backend.Backend, backend.TaskHubClient) {
-	t.Helper()
-	ctx := context.Background()
-	logger := backend.DefaultLogger()
-	be := sqlite.NewSqliteBackend(sqlite.NewSqliteOptions(""), logger)
-	if err := be.CreateTaskHub(ctx); err != nil {
-		t.Fatalf("create task hub: %v", err)
-	}
-	if err := be.Start(ctx); err != nil {
-		t.Fatalf("start backend: %v", err)
-	}
-	t.Cleanup(func() { _ = be.Stop(ctx) })
-	return be, backend.NewTaskHubClient(be)
-}
-
-// scheduleAndEncodeRequest schedules a new orchestration on the emulator and
-// returns the first work item rendered as a base64 OrchestratorRequest — the
-// exact payload the Functions host would send to the worker for the first
-// orchestrator turn.
-func scheduleAndEncodeRequest(t *testing.T, be backend.Backend, client backend.TaskHubClient, name string, input any) string {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := client.ScheduleNewOrchestration(ctx, name, api.WithInput(input)); err != nil {
-		t.Fatalf("schedule orchestration: %v", err)
-	}
-	wi, err := be.GetOrchestrationWorkItem(ctx)
-	if err != nil {
-		t.Fatalf("get work item: %v", err)
-	}
-	reqBytes, err := encodeOrchestratorRequest(string(wi.InstanceID), nil, wi.NewEvents)
-	if err != nil {
-		t.Fatalf("encode request: %v", err)
-	}
-	return base64.StdEncoding.EncodeToString(reqBytes)
-}
-
-// TestOrchestratorReplay_MatchesEngine drives a real (emulator-produced)
+// TestOrchestratorReplay_MatchesEngine drives a schema-backed fixture
 // OrchestratorRequest through the middleware's runner and asserts that the
 // resulting OrchestratorResponse (a) schedules the first activity and (b) is
 // byte-for-byte equivalent to what durabletask-go's executor produces
@@ -87,8 +47,7 @@ func TestOrchestratorReplay_MatchesEngine(t *testing.T) {
 		WithActivity("SayHello", sayHello),
 	)
 
-	be, client := newEmulatorBackend(t)
-	encoded := scheduleAndEncodeRequest(t, be, client, "HelloCities", "")
+	encoded := scheduleAndEncodeRequest(t, "HelloCities", "")
 
 	gotB64, err := dt.runner.loadAndRun(ctx, encoded)
 	if err != nil {
@@ -106,13 +65,8 @@ func TestOrchestratorReplay_MatchesEngine(t *testing.T) {
 	}
 
 	// Equivalence with the engine's direct output.
-	reqBytes, _ := base64.StdEncoding.DecodeString(encoded)
-	id, past, newEvents, err := decodeOrchestratorRequest(reqBytes)
-	if err != nil {
-		t.Fatalf("decode request: %v", err)
-	}
 	executor := task.NewTaskExecutor(dt.registry)
-	direct, err := executor.ExecuteOrchestrator(ctx, api.InstanceID(id), past, newEvents)
+	direct, err := executeUpstreamRequest(t, executor.ExecuteOrchestrator, encoded)
 	if err != nil {
 		t.Fatalf("direct execute: %v", err)
 	}
@@ -135,8 +89,7 @@ func TestLoadAndRun_AnnotatesTurnSpan(t *testing.T) {
 		WithActivity("SayHello", sayHello),
 	)
 
-	be, client := newEmulatorBackend(t)
-	encoded := scheduleAndEncodeRequest(t, be, client, "HelloCities", "")
+	encoded := scheduleAndEncodeRequest(t, "HelloCities", "")
 
 	exp := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
@@ -213,8 +166,7 @@ func TestMiddlewareIntegration_OrchestrationInvokesRegisteredAdapter(t *testing.
 		t.Fatalf("activity SayHello was not registered on the app: %v", names)
 	}
 
-	be, client := newEmulatorBackend(t)
-	encoded := scheduleAndEncodeRequest(t, be, client, "HelloCities", "")
+	encoded := scheduleAndEncodeRequest(t, "HelloCities", "")
 
 	var adapter func(context.Context, string) (string, error)
 	app.GetRegisteredFunctions().Range(func(_, value any) bool {
@@ -358,8 +310,8 @@ func TestActivityInputDecoder(t *testing.T) {
 }
 
 // TestEndToEnd_Emulator runs the full orchestration to completion on the
-// in-memory durabletask worker, validating that the orchestrator logic in the
-// sample produces the expected output across multiple replay turns.
+// in-memory emulator, validating that the orchestrator logic in the sample
+// produces the expected output across multiple replay turns.
 func TestEndToEnd_Emulator(t *testing.T) {
 	ctx := context.Background()
 	r := task.NewTaskRegistry()
@@ -376,18 +328,7 @@ func TestEndToEnd_Emulator(t *testing.T) {
 		t.Fatalf("add activity: %v", err)
 	}
 
-	logger := backend.DefaultLogger()
-	be := sqlite.NewSqliteBackend(sqlite.NewSqliteOptions(""), logger)
-	executor := task.NewTaskExecutor(r)
-	orchestrationWorker := backend.NewOrchestrationWorker(be, executor, logger)
-	activityWorker := backend.NewActivityTaskWorker(be, executor, logger)
-	hub := backend.NewTaskHubWorker(be, orchestrationWorker, activityWorker, logger)
-	if err := hub.Start(ctx); err != nil {
-		t.Fatalf("start hub: %v", err)
-	}
-	defer func() { _ = hub.Shutdown(ctx) }()
-
-	client := backend.NewTaskHubClient(be)
+	client := startEmulatorHub(t, r)
 	id, err := client.ScheduleNewOrchestration(ctx, "HelloCities", api.WithInput(""))
 	if err != nil {
 		t.Fatalf("schedule: %v", err)
