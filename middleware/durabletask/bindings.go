@@ -18,6 +18,10 @@ const (
 	// through the normal worker pipeline (input in, result out).
 	ActivityTriggerType bindings.BindingType = "activityTrigger"
 
+	// EntityTriggerType identifies a Functions entity. The worker receives a
+	// base64-encoded EntityBatchRequest and returns a base64-encoded result.
+	EntityTriggerType bindings.BindingType = "entityTrigger"
+
 	// DurableClientBindingType identifies a durable client input binding. A
 	// starter function declares it (via [ClientInput]) to receive the host's
 	// durable gRPC endpoint, which the middleware uses to reach the management
@@ -32,6 +36,7 @@ const (
 const (
 	orchestrationParamName = "context"
 	activityParamName      = "input"
+	entityParamName        = "context"
 
 	// durableClientParamName is the binding name for a durable client input
 	// binding. The host echoes it as the InputData entry name carrying the
@@ -64,6 +69,20 @@ type activityTriggerBinding struct{}
 
 func (activityTriggerBinding) GetBindingType() bindings.BindingType {
 	return ActivityTriggerType
+}
+
+type entityTriggerBinding struct{}
+
+func (entityTriggerBinding) GetBindingType() bindings.BindingType {
+	return EntityTriggerType
+}
+
+func (entityTriggerBinding) ToBinding() bindings.Binding {
+	return bindings.Binding{
+		Name:      entityParamName,
+		Type:      string(EntityTriggerType),
+		Direction: "in",
+	}
 }
 
 func (activityTriggerBinding) ToBinding() bindings.Binding {
