@@ -36,7 +36,8 @@ const (
 // on the raw wire bytes of the events and only materializes the upstream types
 // at the executor call, through type inference (see [executeOrchestrator]).
 type orchestrationRunner struct {
-	registry *task.TaskRegistry
+	registry      *task.TaskRegistry
+	largePayloads *api.LargePayloadOptions
 }
 
 // loadAndRun decodes encodedRequest (a base64 OrchestratorRequest), replays
@@ -61,12 +62,18 @@ func (r *orchestrationRunner) loadAndRun(ctx context.Context, encodedRequest str
 		pastEvents,
 		newEvents,
 		entityParameters,
+		r.largePayloads,
 	)
 	if err != nil {
 		return "", fmt.Errorf("durabletask: execute orchestrator: %w", err)
 	}
 
 	assignSubOrchestrationIDs(instanceID, results)
+	if results != nil && results.Response != nil {
+		if err := transformPayloadMessage(ctx, r.largePayloads, results.Response.ProtoReflect(), true); err != nil {
+			return "", fmt.Errorf("durabletask: offload orchestrator response: %w", err)
+		}
+	}
 
 	// Record per-turn Durable diagnostics on the active invocation span (when
 	// the app uses the otelfunc middleware). Safe no-op otherwise.
@@ -282,6 +289,7 @@ func executeOrchestratorWithEntityParameters[E, EP, ES any, PE interface {
 	instanceID string,
 	pastEvents, newEvents [][]byte,
 	entityParameters []byte,
+	payloadOptions ...*api.LargePayloadOptions,
 ) (*task.ExecutionResults, error) {
 	past, err := unmarshalEvents[E, PE](pastEvents)
 	if err != nil {
@@ -300,6 +308,17 @@ func executeOrchestratorWithEntityParameters[E, EP, ES any, PE interface {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("normalize Functions entity history: %w", err)
+	}
+	var payloads *api.LargePayloadOptions
+	if len(payloadOptions) != 0 {
+		payloads = payloadOptions[0]
+	}
+	for _, events := range [][]PE{past, next} {
+		for _, event := range events {
+			if err := transformPayloadMessage(ctx, payloads, event.ProtoReflect(), false); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	var parameters *EP

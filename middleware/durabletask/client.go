@@ -14,6 +14,7 @@ import (
 	"github.com/microsoft/durabletask-go/task"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 // EnvGrpcEndpoint is the environment variable the default client dials when
@@ -37,10 +38,9 @@ const EnvGrpcEndpoint = "DURABLE_TASK_GRPC_ENDPOINT"
 // sidecar, or the Functions host's durable gRPC endpoint delivered through the
 // durableClient binding.
 //
-// The methods declared on Client are only those that need something the
-// upstream client cannot know: the connection this package owns, or the
-// webhook details the Functions host supplies through the binding. Everything
-// else is upstream's, unchanged.
+// Methods declared on Client add connection ownership, host webhook details,
+// and reserved Functions payload validation. Management execution and payload
+// storage remain upstream.
 //
 // This is the management half of the integration. The execution half
 // (orchestrator replay) is handled by the adapter registered through
@@ -50,7 +50,9 @@ const EnvGrpcEndpoint = "DURABLE_TASK_GRPC_ENDPOINT"
 type Client struct {
 	*dtclient.TaskHubGrpcClient
 
-	conn *grpc.ClientConn // owned (non-nil) only when created via Dial
+	conn          *grpc.ClientConn // owned (non-nil) only when created via Dial
+	connection    grpc.ClientConnInterface
+	largePayloads *api.LargePayloadOptions
 
 	// httpBaseURL is the durable webhook root the host advertised through the
 	// durable client binding (…/runtime/webhooks/durabletask). Empty when the
@@ -65,23 +67,95 @@ type Client struct {
 // NewClient wraps an existing gRPC connection. Use this when you manage the
 // connection yourself (or in tests, with an in-memory listener). The caller
 // owns the connection's lifecycle.
-func NewClient(conn grpc.ClientConnInterface) *Client {
-	return &Client{TaskHubGrpcClient: dtclient.NewTaskHubGrpcClient(conn, api.NewSlogLogger(slog.Default()))}
+func NewClient(conn grpc.ClientConnInterface, opts ...ClientOption) *Client {
+	c := &Client{connection: conn}
+	for _, opt := range opts {
+		opt(c)
+	}
+	c.configurePayloads(c.largePayloads)
+	return c
+}
+
+// ClientOption configures a management client.
+type ClientOption func(*Client)
+
+// WithClientLargePayloads configures management payload offloading. Pass the
+// same options to middleware WithLargePayloads when executing under Functions.
+func WithClientLargePayloads(options *api.LargePayloadOptions) ClientOption {
+	return func(c *Client) { c.largePayloads = mustNormalizeLargePayloads(options) }
+}
+
+func (c *Client) configurePayloads(options *api.LargePayloadOptions) {
+	c.largePayloads = options
+	converter := api.DefaultDataConverter()
+	if options != nil {
+		converter = functionsPayloadConverter{converter}
+	}
+	c.TaskHubGrpcClient = dtclient.NewTaskHubGrpcClient(functionsPayloadConnection{c.connection}, api.NewSlogLogger(slog.Default()),
+		dtclient.WithLargePayloads(options),
+		dtclient.WithDataConverter(converter))
+}
+
+// The final option validates the configured request before upstream offloading,
+// including raw options which intentionally bypass the data converter.
+func payloadValidationOption[Request proto.Message, Option ~func(Request, api.DataConverter) error](_ Option) Option {
+	return func(request Request, _ api.DataConverter) error {
+		return visitPayloadFields(request.ProtoReflect(), func(value string) (string, error) {
+			return value, rejectPayloadEnvelope(value)
+		})
+	}
+}
+
+// ScheduleNewOrchestration validates reserved Functions payload objects,
+// including raw inputs, before delegating to durabletask-go.
+func (c *Client) ScheduleNewOrchestration(ctx context.Context, name string, opts ...api.NewOrchestrationOptions) (api.InstanceID, error) {
+	if c.largePayloads != nil {
+		opts = append(append([]api.NewOrchestrationOptions(nil), opts...), payloadValidationOption(api.WithRawInput("")))
+	}
+	return c.TaskHubGrpcClient.ScheduleNewOrchestration(ctx, name, opts...)
+}
+
+// RaiseEvent validates typed and raw event data before upstream offloading.
+func (c *Client) RaiseEvent(ctx context.Context, id api.InstanceID, name string, opts ...api.RaiseEventOptions) error {
+	if c.largePayloads != nil {
+		opts = append(append([]api.RaiseEventOptions(nil), opts...), payloadValidationOption(api.WithRawEventData("")))
+	}
+	return c.TaskHubGrpcClient.RaiseEvent(ctx, id, name, opts...)
+}
+
+// TerminateOrchestration validates typed and raw output before upstream offloading.
+func (c *Client) TerminateOrchestration(ctx context.Context, id api.InstanceID, opts ...api.TerminateOptions) error {
+	if c.largePayloads != nil {
+		opts = append(append([]api.TerminateOptions(nil), opts...), payloadValidationOption(api.WithRawOutput("")))
+	}
+	return c.TaskHubGrpcClient.TerminateOrchestration(ctx, id, opts...)
+}
+
+// SignalEntity validates typed and raw operation inputs before upstream offloading.
+func (c *Client) SignalEntity(ctx context.Context, id api.EntityID, name string, opts ...api.SignalEntityOptions) error {
+	if c.largePayloads != nil {
+		opts = append(append([]api.SignalEntityOptions(nil), opts...), payloadValidationOption(api.WithRawSignalInput("")))
+	}
+	return c.TaskHubGrpcClient.SignalEntity(ctx, id, name, opts...)
 }
 
 // Dial connects to a Durable Task gRPC endpoint and returns a [Client] that
 // owns the connection (close it with [Client.Close]). It uses insecure
 // transport, suitable for a local sidecar / DTS emulator; supply your own
 // connection via [NewClient] for TLS.
-func Dial(endpoint string) (*Client, error) {
+func Dial(endpoint string, opts ...ClientOption) (*Client, error) {
+	c := &Client{}
+	for _, opt := range opts {
+		opt(c)
+	}
 	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("durabletask: dial %q: %w", endpoint, err)
 	}
-	return &Client{
-		TaskHubGrpcClient: dtclient.NewTaskHubGrpcClient(conn, api.NewSlogLogger(slog.Default())),
-		conn:              conn,
-	}, nil
+	c.connection = conn
+	c.configurePayloads(c.largePayloads)
+	c.conn = conn
+	return c, nil
 }
 
 // grpcTarget converts a durable client binding's rpcBaseUrl (an HTTP(S) URL
@@ -161,12 +235,12 @@ func runtimeStatusString(enum string) string {
 // defaultClientFromEnv builds a [Client] from EnvGrpcEndpoint, or returns nil
 // when the variable is unset (so the middleware can run without a client when
 // only orchestrator/activity execution is needed).
-func defaultClientFromEnv() *Client {
+func defaultClientFromEnv(opts ...ClientOption) *Client {
 	endpoint := os.Getenv(EnvGrpcEndpoint)
 	if endpoint == "" {
 		return nil
 	}
-	c, err := Dial(endpoint)
+	c, err := Dial(endpoint, opts...)
 	if err != nil {
 		return nil
 	}

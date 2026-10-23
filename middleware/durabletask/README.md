@@ -27,6 +27,94 @@ func main() {
 API reference: <https://pkg.go.dev/github.com/azure/azure-functions-golang-worker/middleware/durabletask>.
 A complete application is in [`samples/durableFunctions`](../../samples/durableFunctions).
 
+## Blob payload offloading
+
+Offloading is opt-in. Construct durabletask-go's Azure Blob store once, then
+give its options to the middleware before registering functions:
+
+```go
+import (
+	"github.com/microsoft/durabletask-go/api"
+	"github.com/microsoft/durabletask-go/payload"
+)
+
+store, err := payload.NewAzureBlobStore(payload.AzureBlobStoreOptions{
+	ConnectionString: os.Getenv("DURABLE_PAYLOAD_STORAGE"),
+})
+if err != nil {
+	log.Fatal(err)
+}
+options := &api.LargePayloadOptions{Store: store, Resolver: store}
+durable := durabletask.Middleware(durabletask.WithLargePayloads(options))
+durable.Orchestrator("HelloCities", HelloCities)
+durable.Activity("SayHello", SayHello)
+app.Use(durable)
+```
+
+Alternatively, set `AccountURL` and `Credential` on `AzureBlobStoreOptions`
+for token authentication. Exactly one authentication mode is required. The
+store owns URL and token validation, compression, and integrity checks. Its
+defaults are a `durabletask-payloads` container, gzip compression, an inclusive
+256 KiB threshold, and a 10 MiB uncompressed payload limit. Thresholds measure
+the serialized UTF-8 JSON bytes, not the size of the Go value or compressed
+blob. `api.LargePayloadOptions` can override the threshold and limit subject
+to the store's validation. Invalid options panic during middleware/client
+construction rather than failing only when a large payload first appears.
+
+The same configuration covers orchestration history and actions, activity
+inputs and results, entity state, operation inputs and results, entity actions,
+and management requests and responses supported by durabletask-go. Application
+handlers see their original JSON values, not storage references. The upstream
+store writes native `blob:v2:` tokens and reads `blob:v1:` as well.
+
+Functions needs a distinct transport representation. Its activity binding parses
+inputs as JSON before dispatch, and the Azure Storage backend interprets raw
+absolute URIs as its own large-message references. This middleware therefore
+transports upstream references inside a versioned JSON object:
+
+```json
+{"$durabletaskPayload":{"version":1,"reference":"blob:v2:https://account.blob.core.windows.net/durabletask-payloads/example"}}
+```
+
+`$durabletaskPayload` is reserved at the top level of a payload object.
+Application outputs and management inputs, including raw-input options, using that key are rejected rather
+than accidentally hydrated. Ordinary strings containing tokens or envelope JSON,
+and objects with the key nested beneath an application property, remain unchanged.
+Malformed recognized envelopes and unsupported versions fail explicitly.
+Reserved references fail when a compatible store is unavailable.
+
+This envelope is a Go Functions middleware protocol, not the Functions
+extension's built-in `payloadStorageEnabled` feature. All consumers of these
+histories must understand it. Raw DTS token consumers and other SDKs do not
+automatically understand the envelope. Sharing the upstream blob format alone
+does not establish cross-SDK orchestration interoperability.
+
+Clients supplied through `WithClient`, created from `DURABLE_TASK_GRPC_ENDPOINT`,
+or cached from a `ClientInput()` binding use the middleware's configuration.
+Without `WithLargePayloads`, middleware adopts an explicitly supplied client's
+configuration. An explicit middleware option takes precedence without modifying
+the caller's client. For an independently used client, use the same options:
+
+```go
+client, err := durabletask.Dial(endpoint,
+	durabletask.WithClientLargePayloads(options))
+// Or NewClient(conn, durabletask.WithClientLargePayloads(options)).
+```
+
+The caller still closes clients supplied through `WithClient`. Middleware closes
+only connections it creates. With no payload configuration, existing inline
+payload behavior is unchanged. `AzureWebJobsStorage` never enables this feature
+implicitly.
+
+All participating workers and management clients need access to the same blob
+store. The host's built-in HTTP status endpoint is not configured by this
+middleware and may expose reference envelopes. Use the configured Go client when hydrated
+management values are required. Blob lifecycle and retention are application
+responsibilities. Failed turns or retried writes can leave unreferenced blobs,
+so do not delete blobs that an active instance's history may still reference.
+Do not perform blob I/O in orchestrator user code. The adapter hydrates before
+replay and externalizes actions after execution, outside deterministic replay.
+
 ## Requirements
 
 Durable Functions needs an extension bundle whose DurableTask extension is
