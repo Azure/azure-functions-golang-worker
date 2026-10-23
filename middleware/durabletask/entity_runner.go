@@ -5,13 +5,14 @@ import (
 	"encoding/base64"
 	"fmt"
 
+	"github.com/microsoft/durabletask-go/api"
 	"github.com/microsoft/durabletask-go/task"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func runEntityBatch(ctx context.Context, registry *task.TaskRegistry, encoded string) (string, error) {
+func runEntityBatch(ctx context.Context, registry *task.TaskRegistry, encoded string, payloadOptions ...*api.LargePayloadOptions) (string, error) {
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return "", fmt.Errorf("durabletask: decode entity batch base64: %w", err)
@@ -21,7 +22,7 @@ func runEntityBatch(ctx context.Context, registry *task.TaskRegistry, encoded st
 	if !ok {
 		return "", fmt.Errorf("durabletask: upstream executor does not support entity batches")
 	}
-	response, err := executeEntityBatch(ctx, executor.ExecuteEntity, raw)
+	response, err := executeEntityBatch(ctx, executor.ExecuteEntity, raw, payloadOptions...)
 	if err != nil {
 		return "", fmt.Errorf("durabletask: execute entity batch: %w", err)
 	}
@@ -42,6 +43,7 @@ func executeEntityBatch[Request, Response any, RequestPtr interface {
 	ctx context.Context,
 	execute func(context.Context, *Request) (*Response, error),
 	raw []byte,
+	payloadOptions ...*api.LargePayloadOptions,
 ) (ResponsePtr, error) {
 	request := RequestPtr(new(Request))
 	if err := proto.Unmarshal(raw, request); err != nil {
@@ -82,9 +84,21 @@ func executeEntityBatch[Request, Response any, RequestPtr interface {
 		response.ProtoReflect().Set(requiresStateField, protoreflect.ValueOfBool(true))
 		return response, nil
 	}
+	var payloads *api.LargePayloadOptions
+	if len(payloadOptions) != 0 {
+		payloads = payloadOptions[0]
+	}
+	if err := transformPayloadMessage(ctx, payloads, requestMessage, false); err != nil {
+		var zero ResponsePtr
+		return zero, err
+	}
 
 	response, err := execute(ctx, (*Request)(request))
 	if err != nil {
+		var zero ResponsePtr
+		return zero, err
+	}
+	if err := transformPayloadMessage(ctx, payloads, ResponsePtr(response).ProtoReflect(), true); err != nil {
 		var zero ResponsePtr
 		return zero, err
 	}
