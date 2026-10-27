@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
@@ -81,6 +82,22 @@ func encodeFirstTurn(t testing.TB, instanceID, name string, input any) string {
 		executionStartedEvent(t, instanceID, name, string(j)),
 	})
 	return base64.StdEncoding.EncodeToString(raw)
+}
+
+func encodeOrchestratorRequest(instanceID string, pastEvents, newEvents [][]byte) []byte {
+	var b []byte
+	b = protowire.AppendTag(b, fieldInstanceID, protowire.BytesType)
+	b = protowire.AppendBytes(b, []byte(instanceID))
+
+	for _, raw := range pastEvents {
+		b = protowire.AppendTag(b, fieldPastEvents, protowire.BytesType)
+		b = protowire.AppendBytes(b, raw)
+	}
+	for _, raw := range newEvents {
+		b = protowire.AppendTag(b, fieldNewEvents, protowire.BytesType)
+		b = protowire.AppendBytes(b, raw)
+	}
+	return b
 }
 
 func decodeRequest(t testing.TB, encoded string) (string, [][]byte, [][]byte) {

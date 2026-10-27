@@ -36,18 +36,28 @@ func startDurableHost(t *testing.T, overrides map[string]string) (testhost.Host,
 	if strings.EqualFold(strings.TrimSpace(storage), "UseDevelopmentStorage=true") {
 		t.Fatalf("%s must use test-owned storage, not shared development storage (see README)", durableStorageEnv)
 	}
-	appDir := filepath.Join(integrationTestDataDir(), "durableFunctions")
+	sourceDir := filepath.Join(integrationTestDataDir(), "durableFunctions")
+	appDir := filepath.Join(t.TempDir(), "durableFunctions")
 	executable := filepath.Join(appDir, "bin", "app")
 	if runtime.GOOS == "windows" {
 		executable += ".exe"
 	}
+	// Core Tools validates bin/app even with an absolute executable override.
+	// Stage only the runtime layout, leaving source and build output separate.
 	if err := os.MkdirAll(filepath.Dir(executable), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostConfig, err := os.ReadFile(filepath.Join(sourceDir, "host.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "host.json"), hostConfig, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	buildCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	build := exec.CommandContext(buildCtx, "go", "build", "-o", executable, ".")
-	build.Dir = appDir
+	build.Dir = sourceDir
 	build.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build durable fixture: %v\n%s", err, output)
