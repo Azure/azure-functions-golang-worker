@@ -20,8 +20,17 @@ func TestDefaultRunnerTargetsFullIntegrationSuite(t *testing.T) {
 	if runner.TestPattern != integrationTestPattern {
 		t.Fatalf("TestPattern = %q", runner.TestPattern)
 	}
-	if len(runner.Emulators) != 5 {
-		t.Fatalf("len(Emulators) = %d, want 5", len(runner.Emulators))
+	if len(runner.Emulators) != 6 {
+		t.Fatalf("len(Emulators) = %d, want 6", len(runner.Emulators))
+	}
+	foundDurableStorage := false
+	for _, emulator := range runner.Emulators {
+		if emulator.Name == "durable-azurite" {
+			foundDurableStorage = emulator.WaitReady != nil && emulator.ArtifactFile == "durable-azurite.log"
+		}
+	}
+	if !foundDurableStorage {
+		t.Fatal("runner must own dedicated Durable storage readiness and diagnostics")
 	}
 	if runner.FuncExe != "func" {
 		t.Fatalf("FuncExe = %q", runner.FuncExe)

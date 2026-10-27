@@ -18,7 +18,7 @@ import (
 // verified against captured requests from sequential, fan-out, timer,
 // external-event, ContinueAsNew and sub-orchestration runs.
 func TestCheckHistoryPresent_AcceptsFirstAndLaterTurns(t *testing.T) {
-	encoded := scheduleAndEncodeRequest(t, "HelloCities", "")
+	encoded := firstTurnRequest(t, "HelloCities", "")
 
 	instanceID, pastEvents, newEvents := decodeRequest(t, encoded)
 
@@ -45,7 +45,7 @@ func TestCheckHistoryPresent_AcceptsFirstAndLaterTurns(t *testing.T) {
 // history, which only happens under extended sessions. Replaying that would
 // re-schedule completed work, so it must fail rather than proceed.
 func TestCheckHistoryPresent_RejectsWithheldHistory(t *testing.T) {
-	encoded := scheduleAndEncodeRequest(t, "HelloCities", "")
+	encoded := firstTurnRequest(t, "HelloCities", "")
 
 	_, _, newEvents := decodeRequest(t, encoded)
 
@@ -153,7 +153,7 @@ func TestAssignSubOrchestrationIDs_ToleratesNilResults(t *testing.T) {
 func executeFirstTurn(t *testing.T, registry *task.TaskRegistry, instanceID, name string) *task.ExecutionResults {
 	t.Helper()
 
-	encoded := scheduleAndEncodeRequest(t, name, "")
+	encoded := firstTurnRequest(t, name, "")
 	_, pastEvents, newEvents := decodeRequest(t, encoded)
 
 	executor := task.NewTaskExecutor(registry)
@@ -272,7 +272,7 @@ func TestLoadAndRun_OrchestratorPanicIsFailureResponse(t *testing.T) {
 	d := Middleware(WithOrchestrator("Panicking", func(*task.OrchestrationContext) (any, error) {
 		panic("expected orchestrator panic")
 	}))
-	encoded := scheduleAndEncodeRequest(t, "Panicking", nil)
+	encoded := firstTurnRequest(t, "Panicking", nil)
 	output, err := d.runner.loadAndRun(context.Background(), encoded)
 	if err != nil {
 		t.Fatalf("panic must be encoded in the replay response, not an invocation error: %v", err)
