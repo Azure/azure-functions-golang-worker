@@ -179,6 +179,24 @@ protocol envelope containing history, not just the application's start input.
 Middleware can also inspect the replay return value after `next`, or deliberately
 replace it using `SetReturnValue`.
 
+### Logging
+
+Durable uses the application's default `slog` logger, which the SDK normally
+routes through Functions user logging. A custom `slog.SetDefault` is respected.
+The middleware does not replace the worker's separate System logger.
+
+Inside an orchestrator, use `ctx.Logger()` rather than global `slog` calls.
+Upstream suppresses this logger during replay and attaches Durable identity
+attributes. The middleware binds log delivery to the current replay invocation,
+so invocation metadata and the active span reach the existing worker logging
+pipeline, including the `otelfunc` log bridge when a log provider is configured.
+This does not expose host context values to deterministic orchestrator code.
+Activities can use ordinary `slog.InfoContext(ctx, ...)` calls.
+
+The management client's context-free diagnostic logger also uses `slog`, with
+structured severity instead of text prefixes. Clients are shared across
+invocations, so those diagnostics are not bound to any one invocation or span.
+
 Linking a starter's span to the orchestration it schedules needs the client to
 propagate trace context on the start call, which depends on an upstream
 durabletask-go change and is tracked separately.
