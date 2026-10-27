@@ -107,7 +107,7 @@ func TestDurableMiddlewareOrdering(t *testing.T) {
 				if record.Name == "InputProbe" && record.InputSeen != "42" {
 					t.Errorf("input transformation did not run: %+v", record)
 				}
-				if record.Name != "InputProbe" && record.Name != "Parent" && record.Name != "Counter" && record.Name != "Failing" && record.Name != "Panicking" {
+				if record.Name != "InputProbe" && record.Name != "Parent" && record.Name != "CounterOrchestration" && record.Name != "Failing" && record.Name != "Panicking" {
 					continue
 				}
 				if record.ClientSeen || !record.ReturnSet || record.Error != "" {
@@ -131,7 +131,7 @@ func TestDurableMiddlewareOrdering(t *testing.T) {
 					t.Errorf("%s %s has %d invocation spans, want 1", record.Name, invocationID, found)
 				}
 			}
-			for name, minimum := range map[string]int{"InputProbe": 1, "Parent": 2, "Counter": 6, "ProbeActivity": 3, "Failing": 1, "Panicking": 1, "Blocked": 1, "OrderingStart": 5} {
+			for name, minimum := range map[string]int{"InputProbe": 1, "Parent": 2, "CounterOrchestration": 6, "ProbeActivity": 3, "Failing": 1, "Panicking": 1, "Blocked": 1, "OrderingStart": 5} {
 				if counts[name] < minimum {
 					t.Errorf("observed %d %s invocations, want at least %d", counts[name], name, minimum)
 				}

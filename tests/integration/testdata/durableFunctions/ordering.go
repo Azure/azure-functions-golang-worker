@@ -56,7 +56,7 @@ func configureOrderingProbe(app *sdk.App, durable *durabletask.Durable) bool {
 	if order != "before" && order != "after" {
 		panic("invalid DURABLE_TEST_MIDDLEWARE_ORDER")
 	}
-	durable.Orchestrator("Counter", counterOrchestrator)
+	durable.Orchestrator("CounterOrchestration", counterOrchestrator)
 	durable.Orchestrator("Parent", parentOrchestrator)
 	durable.Orchestrator("InputProbe", func(ctx *task.OrchestrationContext) (any, error) {
 		var input int
@@ -308,7 +308,7 @@ func counterOrchestrator(ctx *task.OrchestrationContext) (any, error) {
 
 func parentOrchestrator(ctx *task.OrchestrationContext) (any, error) {
 	var count int
-	if err := ctx.CallSubOrchestrator("Counter", task.WithSubOrchestratorInput(0)).Await(&count); err != nil {
+	if err := ctx.CallSubOrchestrator("CounterOrchestration", task.WithSubOrchestratorInput(0)).Await(&count); err != nil {
 		return nil, err
 	}
 	if count != 3 {
