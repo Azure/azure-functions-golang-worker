@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 
 	"github.com/microsoft/durabletask-go/api"
 	"github.com/microsoft/durabletask-go/task"
@@ -49,7 +50,8 @@ func (r *orchestrationRunner) loadAndRun(ctx context.Context, encodedRequest str
 		return "", fmt.Errorf("durabletask: parse orchestrator request: %w", err)
 	}
 
-	executor := task.NewTaskExecutor(r.registry)
+	logger := slog.New(&replayLogHandler{Handler: slog.Default().Handler(), invocation: ctx})
+	executor := task.NewTaskExecutor(r.registry, task.WithLogger(logger))
 	results, err := executeOrchestrator(ctx, executor.ExecuteOrchestrator, instanceID, pastEvents, newEvents)
 	if err != nil {
 		return "", fmt.Errorf("durabletask: execute orchestrator: %w", err)
