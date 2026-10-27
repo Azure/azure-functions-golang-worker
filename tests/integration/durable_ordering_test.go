@@ -11,14 +11,12 @@ import (
 // Runs the real registered functions through Core Tools, including FunctionRpc
 // argument/return binding and HTTP streaming. No synthetic next handler is used.
 func TestDurableMiddlewareOrdering(t *testing.T) {
-	requireAzurite(t)
 	for _, order := range []string{"before", "after"} {
 		t.Run(order, func(t *testing.T) {
-			env := withNativeWorkerEnvironment(durableEnv)
-			env["DURABLE_TEST_MIDDLEWARE_ORDER"] = order
-			env["AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED"] = "false"
-			env["AzureFunctionsJobHost__extensions__durableTask__hubName"] = "ReplayOrdering" + order
-			host := startTestDataHost(t, "durableFunctions", env, 120*time.Second)
+			host, _ := startDurableHost(t, map[string]string{
+				"DURABLE_TEST_MIDDLEWARE_ORDER":                 order,
+				"AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED": "false",
+			})
 			app := &durableApp{t: t, baseURL: host.URL()}
 			inputID := app.scheduleOrchestration("/api/ordering/start/InputProbe", nil)
 			inputStatus := app.waitForCompletion(inputID)

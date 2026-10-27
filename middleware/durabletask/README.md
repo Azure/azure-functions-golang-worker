@@ -229,11 +229,16 @@ build resolve the sample against the root module and fail.
 - **Rewind** appears in the management URLs for parity with the other workers,
   but only the Azure Storage backend implements it.
 
-The unit tests use the upstream executor and a limited in-memory protocol
-fixture in place of the removed upstream SQLite backend. They do not establish
-compatibility with a running Functions host or Durable Task Scheduler. The
-black-box tests in `tests/integration` exercise that boundary when a host and
-storage are available.
+Unit tests use small descriptor-based histories and the upstream executor for
+individual replay turns. Fixed gRPC replies check management request encoding,
+binding endpoint selection, client reuse, shutdown, and not-found translation.
+These stubs never execute orchestrators or manufacture scheduling history.
+
+Lifecycle semantics belong to the real host tests in `tests/integration`.
+They exercise the Durable extension with isolated Azurite storage, including
+activities, fan-out, external events, custom status, durable timeouts, the Go
+management wait APIs, and restart/resume. Neither unit nor local host tests
+establish compatibility with the Durable Task Scheduler service.
 
 With beta3, an orchestrator panic is recorded as a failed orchestration with
 failure details by the upstream executor. Like an orchestrator returning an

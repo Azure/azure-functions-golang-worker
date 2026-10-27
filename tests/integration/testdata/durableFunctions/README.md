@@ -3,6 +3,9 @@
 This test-only application validates Durable Functions end to end: the
 `durableClient` binding, the gRPC management client, orchestration replay,
 activity dispatch and input decoding, custom status, and external events.
+`lifecycle.go` adds test-only HTTP probes for the public Go management client's
+schedule, fetch, raise, and blocking wait methods. Its bounded event waits
+exercise real event buffering and timer expiration. It contains no scheduler.
 
 It mirrors `samples/durableFunctions` without an embedded collector.
 `DURABLE_TEST_MIDDLEWARE_ORDER=before` or `after` enables the ordering probe with
@@ -18,5 +21,9 @@ The fixture has its own Go module with local replacements for the worker and the
 durable middleware, so both local runs and CI build the current checkout.
 
 `host.json` pins the experimental extension bundle with DurableTask 3.15.0 or
-later, which recognizes the native worker runtime. It also uses its own task hub
-so fixture runs do not share state with the sample.
+later, which recognizes the native worker runtime. The integration helper
+overrides its default task hub and host ID with unique test-owned values and
+uses the private `durable-azurite` service on ports 17310–17312. It does not delete
+shared host checkpoint containers. Restart coverage preserves the hub and
+storage while replacing only the owned host process. See the integration
+README for local startup, deployed-fixture use, timeout bounds, and log paths.

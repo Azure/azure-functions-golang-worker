@@ -82,8 +82,8 @@ func TestRegisteredAdapter_InputContext(t *testing.T) {
 		}
 		return received, nil
 	}))
-	original := scheduleAndEncodeRequest(t, "Echo", "original")
-	replacement := scheduleAndEncodeRequest(t, "Echo", "replacement")
+	original := firstTurnRequest(t, "Echo", "original")
+	replacement := firstTurnRequest(t, "Echo", "replacement")
 	adapter := d.provided[0].Func.(func(context.Context, string) (string, error))
 	for _, tc := range []struct {
 		name    string
@@ -146,7 +146,7 @@ func TestRegisteredAdapter_InputContext(t *testing.T) {
 
 func TestRegisteredAdapter_InputSource(t *testing.T) {
 	d := Middleware(WithOrchestrator("HelloCities", helloCities))
-	original := scheduleAndEncodeRequest(t, "HelloCities", nil)
+	original := firstTurnRequest(t, "HelloCities", nil)
 	adapter := d.provided[0].Func.(func(context.Context, string) (string, error))
 
 	for _, tc := range []struct {
@@ -252,7 +252,7 @@ func TestRegisteredAdapter_RespectsMiddlewareShortCircuit(t *testing.T) {
 				calls++
 				return "must not execute", nil
 			}))
-			encoded := scheduleAndEncodeRequest(t, "Blocked", nil)
+			encoded := firstTurnRequest(t, "Blocked", nil)
 			app := sdk.FunctionApp()
 			if durableFirst {
 				app.Use(d)
@@ -337,7 +337,7 @@ func TestRegisteredAdapters_UseTheirOwningRegistry(t *testing.T) {
 	app := sdk.FunctionApp()
 	app.Use(a)
 	app.Use(b)
-	encoded := scheduleAndEncodeRequest(t, "Second", "")
+	encoded := firstTurnRequest(t, "Second", "")
 	var f func(context.Context, string) (string, error)
 	app.GetRegisteredFunctions().Range(func(_, value any) bool {
 		r := value.(*sdk.RegisteredFunction)

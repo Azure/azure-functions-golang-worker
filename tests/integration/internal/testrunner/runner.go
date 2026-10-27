@@ -37,6 +37,7 @@ type Emulator struct {
 func DefaultEmulators() []Emulator {
 	return []Emulator{
 		{Name: "azurite", ArtifactFile: "azurite.log", WaitReady: waitForAzurite},
+		{Name: "durable-azurite", ArtifactFile: "durable-azurite.log", WaitReady: waitForDurableAzurite},
 		{Name: "sqlserver", ArtifactFile: "sqlserver.log", WaitReady: waitForSQLServer},
 		{Name: "servicebus-emulator", ArtifactFile: "servicebus-emulator.log", WaitReady: waitForServiceBus},
 		{Name: "eventhub-emulator", ArtifactFile: "eventhub-emulator.log", WaitReady: waitForEventHub},
@@ -380,6 +381,17 @@ func waitForAzurite(ctx context.Context) error {
 		"http://127.0.0.1:10000/devstoreaccount1?comp=list",
 		"http://127.0.0.1:10001/devstoreaccount1?comp=list",
 	} {
+		if err := waitHTTPReady(ctx, client, endpoint, 250*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func waitForDurableAzurite(ctx context.Context) error {
+	client := &http.Client{Timeout: 2 * time.Second}
+	for _, port := range []int{17310, 17311, 17312} {
+		endpoint := fmt.Sprintf("http://127.0.0.1:%d/devstoreaccount1?comp=list", port)
 		if err := waitHTTPReady(ctx, client, endpoint, 250*time.Millisecond); err != nil {
 			return err
 		}

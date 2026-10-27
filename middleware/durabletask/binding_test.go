@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
-	"github.com/microsoft/durabletask-go/task"
+	"github.com/microsoft/durabletask-go/api"
 	"google.golang.org/grpc/connectivity"
 )
 
@@ -80,37 +80,15 @@ func mcWithBinding(json string) *sdk.MiddlewareContext {
 	return mc
 }
 
-// TestDurable_ClientBinding_EndToEnd proves the durable client endpoint is
-// taken from the host-delivered durable client binding: a starter invocation
-// carries the binding (rpcBaseUrl pointing at a real durabletask sidecar), the
-// middleware connects to it, and the client retrieved via ClientFromContext
-// schedules an orchestration that runs to completion. It also verifies the
-// per-endpoint client is reused across invocations and closed on Shutdown.
-func TestDurable_ClientBinding_EndToEnd(t *testing.T) {
+// The binding chooses the RPC endpoint, reuses its client, and gives SDK
+// shutdown ownership of the connection. The RPC reply is fixed, not execution.
+func TestDurable_ClientBinding_ProtocolAndLifetime(t *testing.T) {
 	// Ensure the env fallback is inactive so we exercise only the binding path.
 	t.Setenv(EnvGrpcEndpoint, "")
 
-	r := task.NewTaskRegistry()
-	if err := r.AddOrchestratorN("Hello", func(octx *task.OrchestrationContext) (any, error) {
-		var greeting string
-		if err := octx.CallActivity("Say", task.WithActivityInput("World")).Await(&greeting); err != nil {
-			return nil, err
-		}
-		return greeting, nil
-	}); err != nil {
-		t.Fatalf("add orchestrator: %v", err)
-	}
-	if err := r.AddActivityN("Say", func(actx task.ActivityContext) (any, error) {
-		var name string
-		if err := actx.GetInput(&name); err != nil {
-			return nil, err
-		}
-		return "Hello, " + name + "!", nil
-	}); err != nil {
-		t.Fatalf("add activity: %v", err)
-	}
-
-	addr := startGrpcSidecarTCP(t, r)
+	addr := startManagementStub(t, "StartInstance", map[string]any{
+		"name": "Hello", "instanceId": "binding-instance", "input": `"World"`,
+	}, `{"instanceId":"binding-instance"}`)
 
 	d := Middleware() // no WithClient, no env endpoint
 	if d.client != nil {
@@ -141,20 +119,15 @@ func TestDurable_ClientBinding_EndToEnd(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 
-	// The binding-derived client actually works against the sidecar.
-	ctx := context.Background()
-	id, err := client.ScheduleNewOrchestration(ctx, "Hello")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	id, err := client.ScheduleNewOrchestration(ctx, "Hello",
+		api.WithInstanceID("binding-instance"), api.WithInput("World"))
 	if err != nil {
 		t.Fatalf("schedule: %v", err)
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	final, err := client.WaitForOrchestrationCompletion(waitCtx, id)
-	if err != nil {
-		t.Fatalf("wait: %v", err)
-	}
-	if got := RuntimeStatus(final); got != "Completed" {
-		t.Fatalf("runtime status = %q, want Completed", got)
+	if id != "binding-instance" {
+		t.Fatalf("instance ID = %q, want fixed binding-instance reply", id)
 	}
 
 	// The per-endpoint client is cached and reused across invocations.
