@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/azure/azure-functions-golang-worker/middleware/durabletask"
 	"github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
@@ -27,7 +28,14 @@ import (
 type capturedDurableLogs struct {
 	mu      sync.Mutex
 	records []sdklog.Record
+	rpcLogs []*pb.RpcLog
 }
+
+// The worker observer is process-wide and retains its first OTel logger.
+// Reuse a synchronous provider across tests rather than shutting down a
+// provider the observer will still use on the next test or -count iteration.
+var durableLogCapture capturedDurableLogs
+var durableLogProvider = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(&durableLogCapture)))
 
 func (c *capturedDurableLogs) Export(_ context.Context, records []sdklog.Record) error {
 	c.mu.Lock()
@@ -41,9 +49,14 @@ func (c *capturedDurableLogs) Export(_ context.Context, records []sdklog.Record)
 func (*capturedDurableLogs) Shutdown(context.Context) error   { return nil }
 func (*capturedDurableLogs) ForceFlush(context.Context) error { return nil }
 
-// Exercise the real registered adapter, executor, SDK handler, RpcLog writer and
-// otelfunc observer without requiring a Functions host or a storage backend.
-func TestDurableLogging_InvocationCorrelationAndReplay(t *testing.T) {
+func (c *capturedDurableLogs) snapshot() ([]sdklog.Record, []*pb.RpcLog) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]sdklog.Record(nil), c.records...), append([]*pb.RpcLog(nil), c.rpcLogs...)
+}
+
+func setupDurableLogging(t *testing.T) (*capturedDurableLogs, sdk.Middleware) {
+	t.Helper()
 	originalLogger := slog.Default()
 	originalProvider := global.GetLoggerProvider()
 	t.Cleanup(func() {
@@ -52,24 +65,53 @@ func TestDurableLogging_InvocationCorrelationAndReplay(t *testing.T) {
 		sdk.SetDefaultBaseHandler(nil)
 	})
 	slog.SetDefault(sdk.NewLogger())
-	var rpcLogs []*pb.RpcLog
+	exporter := &durableLogCapture
+	exporter.mu.Lock()
+	exporter.records, exporter.rpcLogs = nil, nil
+	exporter.mu.Unlock()
 	writer := workerlog.NewWriter(func(message *pb.StreamingMessage) error {
-		rpcLogs = append(rpcLogs, message.GetRpcLog())
+		exporter.mu.Lock()
+		defer exporter.mu.Unlock()
+		exporter.rpcLogs = append(exporter.rpcLogs, message.GetRpcLog())
 		return nil
 	}, nil)
 	sdk.SetDefaultBaseHandler(workerlog.NewUser(writer))
-	exporter := &capturedDurableLogs{}
-	lp := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(exporter)))
 	tp := sdktrace.NewTracerProvider()
 	t.Cleanup(func() {
-		if err := lp.Shutdown(context.Background()); err != nil {
-			t.Error(err)
-		}
 		if err := tp.Shutdown(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
-	otel := otelfunc.Middleware(otelfunc.WithTracerProvider(tp), otelfunc.WithLoggerProvider(lp))
+	return exporter, otelfunc.Middleware(otelfunc.WithTracerProvider(tp), otelfunc.WithLoggerProvider(durableLogProvider))
+}
+
+func loggingRequest(t *testing.T, instance string, turn int) string {
+	t.Helper()
+	start := fmt.Sprintf(`{"executionStarted":{"name":"Logged","orchestrationInstance":{"instanceId":%q}}}`, instance)
+	past, next := `[]`, `[{"orchestratorStarted":{}},`+start+`]`
+	if turn == 1 {
+		past = `[{"orchestratorStarted":{}},` + start + `,{"eventId":0,"taskScheduled":{"name":"Echo"}}]`
+		next = `[{"orchestratorStarted":{}},{"taskCompleted":{"taskScheduledId":0,"result":"\"done\""}}]`
+	}
+	messageType, err := protoregistry.GlobalTypes.FindMessageByName("OrchestratorRequest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := messageType.New().Interface()
+	if err := protojson.Unmarshal([]byte(fmt.Sprintf(`{"instanceId":%q,"pastEvents":%s,"newEvents":%s}`, instance, past, next)), request); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := proto.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
+// Exercise the real registered adapter, executor, SDK handler, RpcLog writer and
+// otelfunc observer without requiring a Functions host or a storage backend.
+func TestDurableLogging_InvocationCorrelationAndReplay(t *testing.T) {
+	exporter, otel := setupDurableLogging(t)
 	durable := durabletask.Middleware(durabletask.WithOrchestrator("Logged", func(ctx *task.OrchestrationContext) (any, error) {
 		if _, ok := sdk.FromContext(ctx.Context()); ok || trace.SpanContextFromContext(ctx.Context()).IsValid() {
 			return nil, fmt.Errorf("host invocation context leaked into orchestrator")
@@ -98,30 +140,13 @@ func TestDurableLogging_InvocationCorrelationAndReplay(t *testing.T) {
 	expectedRPC := []pb.RpcLog_Level{pb.RpcLog_Debug, pb.RpcLog_Information, pb.RpcLog_Warning, pb.RpcLog_Error, pb.RpcLog_Information}
 	for _, instance := range []string{"first", "second"} {
 		for turn := 0; turn < 2; turn++ {
-			start := fmt.Sprintf(`{"executionStarted":{"name":"Logged","orchestrationInstance":{"instanceId":%q}}}`, instance)
-			past, next := `[]`, `[{"orchestratorStarted":{}},`+start+`]`
-			if turn == 1 {
-				past = `[{"orchestratorStarted":{}},` + start + `,{"eventId":0,"taskScheduled":{"name":"Echo"}}]`
-				next = `[{"orchestratorStarted":{}},{"taskCompleted":{"taskScheduledId":0,"result":"\"done\""}}]`
-			}
-			messageType, err := protoregistry.GlobalTypes.FindMessageByName("OrchestratorRequest")
-			if err != nil {
-				t.Fatal(err)
-			}
-			request := messageType.New().Interface()
-			if err := protojson.Unmarshal([]byte(fmt.Sprintf(`{"instanceId":%q,"pastEvents":%s,"newEvents":%s}`, instance, past, next)), request); err != nil {
-				t.Fatal(err)
-			}
-			raw, err := proto.Marshal(request)
-			if err != nil {
-				t.Fatal(err)
-			}
 			invocation := fmt.Sprintf("%s-turn-%d", instance, turn)
 			mc := &sdk.MiddlewareContext{InvocationContext: &sdk.InvocationContext{
 				InvocationID: invocation, FunctionName: "Logged", TriggerType: "orchestrationTrigger",
 			}}
-			mc.SetInputString(base64.StdEncoding.EncodeToString(raw))
-			before := len(exporter.records)
+			mc.SetInputString(loggingRequest(t, instance, turn))
+			previous, _ := exporter.snapshot()
+			before := len(previous)
 			if err := handler(sdk.ContextWithMiddleware(context.Background(), mc), mc); err != nil {
 				t.Fatal(err)
 			}
@@ -130,7 +155,8 @@ func TestDurableLogging_InvocationCorrelationAndReplay(t *testing.T) {
 			if turn == 1 {
 				want, offset = 1, 4
 			}
-			logs := exporter.records[before:]
+			records, rpcLogs := exporter.snapshot()
+			logs := records[before:]
 			if len(logs) != want || len(rpcLogs) != before+want {
 				t.Fatalf("%s: got %d OTel logs and %d total RpcLogs, want %d new logs", invocation, len(logs), len(rpcLogs), want)
 			}
@@ -159,6 +185,119 @@ func TestDurableLogging_InvocationCorrelationAndReplay(t *testing.T) {
 					t.Errorf("unexpected RpcLog: %v", rpc)
 				}
 			}
+
+		}
+	}
+}
+
+func TestDurableLogging_ConcurrentInvocationIsolation(t *testing.T) {
+	exporter, otel := setupDurableLogging(t)
+	const count = 4
+	entered := make(chan struct{}, count)
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	deadline, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	var workers sync.WaitGroup
+	defer func() {
+		cancel()
+		unblock()
+		workers.Wait()
+	}()
+	durable := durabletask.Middleware(durabletask.WithOrchestrator("Logged", func(ctx *task.OrchestrationContext) (any, error) {
+		logger := ctx.Logger()
+		logger.Info("before overlap")
+		// Hold every invocation inside its replay so all loggers coexist.
+		entered <- struct{}{}
+		select {
+		case <-release:
+		case <-deadline.Done():
+			return nil, deadline.Err()
+		}
+		logger.InfoContext(ctx.Context(), "after overlap")
+		return nil, nil
+	}))
+	adapter := durable.ProvidedFunctions()[0].Func.(func(context.Context, string) (string, error))
+	type result struct {
+		id   string
+		span trace.SpanContext
+		err  error
+	}
+	results := make(chan result, count)
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("concurrent-%d", i)
+		request := loggingRequest(t, id, 0)
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			var span trace.SpanContext
+			handler := otel.Wrap(func(ctx context.Context, mc *sdk.MiddlewareContext) error {
+				span = trace.SpanContextFromContext(ctx)
+				_, err := adapter(ctx, mc.InputString())
+				return err
+			})
+			mc := &sdk.MiddlewareContext{InvocationContext: &sdk.InvocationContext{
+				InvocationID: id, FunctionName: "Logged", TriggerType: "orchestrationTrigger",
+			}}
+			mc.SetInputString(request)
+			err := handler(sdk.ContextWithMiddleware(deadline, mc), mc)
+			results <- result{id: id, span: span, err: err}
+		}()
+	}
+	// Release only after every replay has logged and is still in flight.
+	for i := 0; i < count; i++ {
+		select {
+		case <-entered:
+		case <-deadline.Done():
+			t.Fatal("concurrent replays did not reach the overlap barrier")
+		}
+	}
+	unblock()
+	spans := make(map[string]trace.SpanContext, count)
+	spanOwners := make(map[trace.SpanID]string, count)
+	for i := 0; i < count; i++ {
+		select {
+		case got := <-results:
+			if got.err != nil || !got.span.IsValid() {
+				t.Fatalf("%s: invocation error %v, span %v", got.id, got.err, got.span)
+			}
+			if owner, ok := spanOwners[got.span.SpanID()]; ok {
+				t.Errorf("%s and %s share an invocation span", owner, got.id)
+			}
+			spanOwners[got.span.SpanID()] = got.id
+			spans[got.id] = got.span
+		case <-deadline.Done():
+			t.Fatal("concurrent replays did not complete")
+		}
+	}
+	records, rpcLogs := exporter.snapshot()
+	if len(records) != 2*count || len(rpcLogs) != 2*count {
+		t.Fatalf("got %d OTel records and %d RpcLogs, want %d each", len(records), len(rpcLogs), 2*count)
+	}
+	otelCounts, rpcCounts := map[string]int{}, map[string]int{}
+	for _, record := range records {
+		attrs := map[string]string{}
+		record.WalkAttributes(func(kv olog.KeyValue) bool {
+			attrs[kv.Key] = kv.Value.AsString()
+			return true
+		})
+		id := attrs["durabletask.instance_id"]
+		span, ok := spans[id]
+		if !ok || attrs["invocation_id"] != id || attrs["function_name"] != "Logged" ||
+			record.TraceID() != span.TraceID() || record.SpanID() != span.SpanID() {
+			t.Errorf("cross-invocation OTel correlation: attrs=%v trace=%s span=%s", attrs, record.TraceID(), record.SpanID())
+		}
+		otelCounts[id+"/"+record.Body().AsString()]++
+	}
+	for _, record := range rpcLogs {
+		if _, ok := spans[record.InvocationId]; !ok || record.Category != "Function.Logged" ||
+			record.PropertiesMap["durabletask.instance_id"].GetString_() != record.InvocationId {
+			t.Errorf("unexpected RpcLog correlation: %v", record)
+		}
+		rpcCounts[record.InvocationId]++
+	}
+	for id := range spans {
+		if otelCounts[id+"/before overlap"] != 1 || otelCounts[id+"/after overlap"] != 1 || rpcCounts[id] != 2 {
+			t.Errorf("%s: expected one log before and after overlap and two RpcLogs, got OTel=%v RpcLog=%d", id, otelCounts, rpcCounts[id])
 		}
 	}
 }

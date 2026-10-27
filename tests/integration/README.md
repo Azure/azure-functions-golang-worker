@@ -177,7 +177,10 @@ explicitly test-owned storage. It must not point at shared development storage.
 `UseDevelopmentStorage=true` is rejected. No persistent machine settings are
 changed.
 
-The helper builds the fixture with `GOWORK=off`, starts Core Tools with
+The helper stages `host.json` and the built `bin/app` in a test-owned temporary
+directory, so concurrent runs do not share an executable or leave build output
+in the fixture checkout. Restart reuses that temporary app until host cleanup
+finishes. It builds the fixture with `GOWORK=off`, starts Core Tools with
 `--no-build`, and supplies the absolute native executable path, including
 `.exe` on Windows. Startup, HTTP requests, management waits, and shutdown are
 bounded. Host logs and process IDs are under `artifacts/<test>/<generation>`.

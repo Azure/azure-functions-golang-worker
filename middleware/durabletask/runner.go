@@ -231,25 +231,6 @@ func decodeOrchestratorRequest(b []byte) (instanceID string, pastEvents, newEven
 	return instanceID, pastEvents, newEvents, nil
 }
 
-// encodeOrchestratorRequest is the inverse of decodeOrchestratorRequest. It
-// is used by tests (and documents the wire format) to build an
-// OrchestratorRequest payload from marshaled history events.
-func encodeOrchestratorRequest(instanceID string, pastEvents, newEvents [][]byte) []byte {
-	var b []byte
-	b = protowire.AppendTag(b, fieldInstanceID, protowire.BytesType)
-	b = protowire.AppendBytes(b, []byte(instanceID))
-
-	for _, raw := range pastEvents {
-		b = protowire.AppendTag(b, fieldPastEvents, protowire.BytesType)
-		b = protowire.AppendBytes(b, raw)
-	}
-	for _, raw := range newEvents {
-		b = protowire.AppendTag(b, fieldNewEvents, protowire.BytesType)
-		b = protowire.AppendBytes(b, raw)
-	}
-	return b
-}
-
 // executeOrchestrator replays the orchestrator over the marshaled events.
 //
 // [task.Executor.ExecuteOrchestrator] takes durabletask-go's internal
