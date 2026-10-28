@@ -39,8 +39,12 @@ func rejectPayloadEnvelope(value string) error {
 	return nil
 }
 
-func wrapPayloadReference(value string) (string, error) {
-	if !api.IsLargePayloadReference(value) {
+func isPayloadReference(value string, store api.LargePayloadTokenStore) bool {
+	return api.IsLargePayloadReference(value) || (store != nil && store.IsLargePayloadToken(value))
+}
+
+func wrapPayloadReference(value string, store api.LargePayloadTokenStore) (string, error) {
+	if !isPayloadReference(value, store) {
 		return value, nil
 	}
 	raw, err := json.Marshal(map[string]functionsPayloadReference{payloadEnvelopeKey: {Version: 1, Reference: value}})
@@ -50,7 +54,7 @@ func wrapPayloadReference(value string) (string, error) {
 	return string(raw), nil
 }
 
-func unwrapPayloadReference(value string) (string, error) {
+func unwrapPayloadReference(value string, store api.LargePayloadTokenStore) (string, error) {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(value), &object); err != nil || object == nil {
 		return value, nil
@@ -63,7 +67,7 @@ func unwrapPayloadReference(value string) (string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if len(object) != 1 || decoder.Decode(&reference) != nil || reference.Version != 1 ||
-		!api.IsLargePayloadReference(reference.Reference) {
+		!isPayloadReference(reference.Reference, store) {
 		return "", fmt.Errorf("%w: malformed Functions payload envelope", api.ErrLargePayloadReference)
 	}
 	return reference.Reference, nil
@@ -85,7 +89,10 @@ func (c functionsPayloadConverter) Serialize(value any) (string, error) {
 // payloadConnection adapts only protobuf application-payload fields. Upstream
 // management methods retain ownership of serialization, offloading, hydration
 // and their errors. The borrowed underlying connection is never closed here.
-type functionsPayloadConnection struct{ grpc.ClientConnInterface }
+type functionsPayloadConnection struct {
+	grpc.ClientConnInterface
+	tokenStore api.LargePayloadTokenStore
+}
 
 func (c functionsPayloadConnection) Invoke(ctx context.Context, method string, args, reply any, opts ...grpc.CallOption) error {
 	request, ok := args.(proto.Message)
@@ -93,7 +100,7 @@ func (c functionsPayloadConnection) Invoke(ctx context.Context, method string, a
 		return fmt.Errorf("durabletask: management request %T is not protobuf", args)
 	}
 	request = proto.Clone(request)
-	if err := transformPayloadWireMessage(request.ProtoReflect(), true); err != nil {
+	if err := transformPayloadWireMessage(request.ProtoReflect(), true, c.tokenStore); err != nil {
 		return err
 	}
 	if err := c.ClientConnInterface.Invoke(ctx, method, request, reply, opts...); err != nil {
@@ -103,7 +110,7 @@ func (c functionsPayloadConnection) Invoke(ctx context.Context, method string, a
 	if !ok {
 		return fmt.Errorf("durabletask: management response %T is not protobuf", reply)
 	}
-	return transformPayloadWireMessage(response.ProtoReflect(), false)
+	return transformPayloadWireMessage(response.ProtoReflect(), false, c.tokenStore)
 }
 
 func (c functionsPayloadConnection) NewStream(ctx context.Context, desc *grpc.StreamDesc, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
@@ -111,10 +118,13 @@ func (c functionsPayloadConnection) NewStream(ctx context.Context, desc *grpc.St
 	if err != nil {
 		return nil, err
 	}
-	return functionsPayloadStream{ClientStream: stream}, nil
+	return functionsPayloadStream{ClientStream: stream, tokenStore: c.tokenStore}, nil
 }
 
-type functionsPayloadStream struct{ grpc.ClientStream }
+type functionsPayloadStream struct {
+	grpc.ClientStream
+	tokenStore api.LargePayloadTokenStore
+}
 
 func (s functionsPayloadStream) SendMsg(message any) error {
 	request, ok := message.(proto.Message)
@@ -122,7 +132,7 @@ func (s functionsPayloadStream) SendMsg(message any) error {
 		return fmt.Errorf("durabletask: streamed management request %T is not protobuf", message)
 	}
 	request = proto.Clone(request)
-	if err := transformPayloadWireMessage(request.ProtoReflect(), true); err != nil {
+	if err := transformPayloadWireMessage(request.ProtoReflect(), true, s.tokenStore); err != nil {
 		return err
 	}
 	return s.ClientStream.SendMsg(request)
@@ -136,13 +146,14 @@ func (s functionsPayloadStream) RecvMsg(message any) error {
 	if !ok {
 		return fmt.Errorf("durabletask: streamed management response %T is not protobuf", message)
 	}
-	return transformPayloadWireMessage(response.ProtoReflect(), false)
+	return transformPayloadWireMessage(response.ProtoReflect(), false, s.tokenStore)
 }
 
-func transformPayloadWireMessage(message protoreflect.Message, outgoing bool) error {
-	transform := unwrapPayloadReference
-	if outgoing {
-		transform = wrapPayloadReference
-	}
-	return visitPayloadFields(message, transform)
+func transformPayloadWireMessage(message protoreflect.Message, outgoing bool, store api.LargePayloadTokenStore) error {
+	return visitPayloadFields(message, func(value string) (string, error) {
+		if outgoing {
+			return wrapPayloadReference(value, store)
+		}
+		return unwrapPayloadReference(value, store)
+	})
 }

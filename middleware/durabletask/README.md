@@ -82,6 +82,10 @@ than accidentally hydrated. Ordinary strings containing tokens or envelope JSON,
 and objects with the key nested beneath an application property, remain unchanged.
 Malformed recognized envelopes and unsupported versions fail explicitly.
 Reserved references fail when a compatible store is unavailable.
+Custom token stores use the same envelope for tokens recognized by their
+`IsLargePayloadToken` method, including opaque absolute URLs. Configure the same
+token store on clients and execution middleware. Quoted application strings are
+not token references.
 
 This envelope is a Go Functions middleware protocol, not the Functions
 extension's built-in `payloadStorageEnabled` feature. All consumers of these

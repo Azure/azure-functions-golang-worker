@@ -298,7 +298,7 @@ func (d *Durable) activityInputDecoder(fn any) func(context.Context, []byte) (an
 			return nil, fmt.Errorf("durabletask: offload activity output: %w", err)
 		}
 		if externalized != string(serialized) {
-			wire, err := wrapPayloadReference(externalized)
+			wire, err := wrapPayloadReference(externalized, d.largePayloads.TokenStore)
 			if err != nil {
 				return nil, err
 			}
