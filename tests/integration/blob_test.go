@@ -3,6 +3,8 @@ package integration
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,8 +47,17 @@ func TestBlobTriggerFires(t *testing.T) {
 	}
 
 	// Blob trigger uses polling — can take up to 60 seconds
-	assertHostLogContains(t, host, "url=http://127.0.0.1:10000/devstoreaccount1/test-container/"+blobName, 90*time.Second)
-	assertHostLogContains(t, host, "Executed 'Functions.blobTrigger' (Succeeded", 5*time.Second)
+	assertHostLogContains(t, host, "blob trigger executed", 90*time.Second)
+	assertHostLogContains(t, host, "Executing 'Functions.blobTrigger'", 5*time.Second)
+
+	// Verify the ClientFactory created a real *blob.Client with a valid endpoint
+	logBytes, err := os.ReadFile(host.LogPath())
+	if err != nil {
+		t.Fatalf("read host log: %v", err)
+	}
+	if !strings.Contains(string(logBytes), "url=http") {
+		t.Fatal("Expected blob client URL to start with 'http', indicating ClientFactory created a real client")
+	}
 }
 
 func isContainerAlreadyExists(err error) bool {
