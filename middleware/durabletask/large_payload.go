@@ -45,9 +45,13 @@ type payloadReference struct {
 // store/token contracts at the Functions transport boundary. Blob validation,
 // credentials, compression and integrity checks remain owned by the store.
 func transformPayload(ctx context.Context, options *api.LargePayloadOptions, value string, externalize bool) (string, error) {
+	var store api.LargePayloadTokenStore
+	if options != nil {
+		store = options.TokenStore
+	}
 	if !externalize {
 		var err error
-		value, err = unwrapPayloadReference(value)
+		value, err = unwrapPayloadReference(value, store)
 		if err != nil {
 			return "", err
 		}
@@ -66,7 +70,6 @@ func transformPayload(ctx context.Context, options *api.LargePayloadOptions, val
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	store := options.TokenStore
 	if store != nil && store.IsLargePayloadToken(value) {
 		if validator, ok := store.(api.LargePayloadTokenValidator); ok {
 			if err := validator.ValidateLargePayloadToken(value); err != nil {
@@ -199,7 +202,11 @@ func transformPayloadMessage(ctx context.Context, options *api.LargePayloadOptio
 		if err != nil || !externalize {
 			return transformed, err
 		}
-		return wrapPayloadReference(transformed)
+		var store api.LargePayloadTokenStore
+		if options != nil {
+			store = options.TokenStore
+		}
+		return wrapPayloadReference(transformed, store)
 	})
 }
 

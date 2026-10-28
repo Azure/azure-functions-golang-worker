@@ -35,7 +35,7 @@ func memoryPayloadOptions(t *testing.T) *api.LargePayloadOptions {
 
 func isFunctionsPayloadReference(t *testing.T, value string) bool {
 	t.Helper()
-	token, err := unwrapPayloadReference(value)
+	token, err := unwrapPayloadReference(value, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -590,11 +590,11 @@ func TestLargePayloadClientConfigurationAndOwnership(t *testing.T) {
 		t.Fatalf("Functions adapter could not read upstream reference: %q %v", decoded, err)
 	}
 	localToken, err := transformPayload(t.Context(), client.largePayloads, `"application payload"`, true)
-	upstreamToken, unwrapErr := unwrapPayloadReference(conn.input)
+	upstreamToken, unwrapErr := unwrapPayloadReference(conn.input, nil)
 	if err != nil || unwrapErr != nil || localToken != upstreamToken {
 		t.Fatalf("Functions reference differs from upstream: local=%q upstream=%q error=%v", localToken, conn.input, err)
 	}
-	conn.input, err = wrapPayloadReference(localToken)
+	conn.input, err = wrapPayloadReference(localToken, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

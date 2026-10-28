@@ -88,10 +88,12 @@ func WithClientLargePayloads(options *api.LargePayloadOptions) ClientOption {
 func (c *Client) configurePayloads(options *api.LargePayloadOptions) {
 	c.largePayloads = options
 	converter := api.DefaultDataConverter()
+	var store api.LargePayloadTokenStore
 	if options != nil {
 		converter = functionsPayloadConverter{converter}
+		store = options.TokenStore
 	}
-	c.TaskHubGrpcClient = dtclient.NewTaskHubGrpcClient(functionsPayloadConnection{c.connection}, api.NewSlogLogger(slog.Default()),
+	c.TaskHubGrpcClient = dtclient.NewTaskHubGrpcClient(functionsPayloadConnection{ClientConnInterface: c.connection, tokenStore: store}, api.NewSlogLogger(slog.Default()),
 		dtclient.WithLargePayloads(options),
 		dtclient.WithDataConverter(converter))
 }

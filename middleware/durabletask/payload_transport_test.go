@@ -8,10 +8,92 @@ import (
 	"testing"
 
 	"github.com/microsoft/durabletask-go/api"
+	"github.com/microsoft/durabletask-go/payload"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
+
+type urlPayloadStore struct {
+	*payload.MemoryStore
+	value []byte
+}
+
+const customPayloadURL = "https://payload.example.test/opaque-token"
+
+func (s *urlPayloadStore) StoreToken(_ context.Context, value []byte) (string, error) {
+	s.value = append([]byte(nil), value...)
+	return customPayloadURL, nil
+}
+
+func (s *urlPayloadStore) ResolveToken(_ context.Context, _ string) ([]byte, error) {
+	return s.value, nil
+}
+
+func (*urlPayloadStore) IsLargePayloadToken(value string) bool { return value == customPayloadURL }
+
+func TestFunctionsCustomPayloadTokens(t *testing.T) {
+	store := &urlPayloadStore{MemoryStore: payload.NewMemoryStore()}
+	options := mustNormalizeLargePayloads(&api.LargePayloadOptions{
+		Store: store, Resolver: store, TokenStore: store, ThresholdBytes: 8, MaxPayloadBytes: 1024,
+	})
+	for _, value := range []string{`"long application string"`, `{"value":"long application object"}`} {
+		connection := &payloadConnection{}
+		client := NewClient(connection, WithClientLargePayloads(options))
+		if _, err := client.ScheduleNewOrchestration(t.Context(), "echo", api.WithRawInput(value)); err != nil {
+			t.Fatal(err)
+		}
+		var wire map[string]functionsPayloadReference
+		if err := json.Unmarshal([]byte(connection.input), &wire); err != nil ||
+			wire[payloadEnvelopeKey].Reference != customPayloadURL || wire[payloadEnvelopeKey].Version != 1 {
+			t.Fatalf("custom management token was not enveloped: %q, %v", connection.input, err)
+		}
+		got, err := transformPayload(t.Context(), options, connection.input, false)
+		if err != nil || got != value {
+			t.Fatalf("execution hydration = %q, %v; want %q", got, err, value)
+		}
+		if _, err := transformPayload(t.Context(), memoryPayloadOptions(t), connection.input, false); !errors.Is(err, api.ErrLargePayloadReference) {
+			t.Fatalf("unrecognized custom envelope = %v", err)
+		}
+		result := newProto(t, "ExecutionCompletedEvent")
+		setStringWrapper(result.ProtoReflect(), "result", value)
+		if err := transformPayloadMessage(t.Context(), options, result.ProtoReflect(), true); err != nil {
+			t.Fatal(err)
+		}
+		resultWire := stringWrapperField(result.ProtoReflect(), "result")
+		if resultWire != connection.input {
+			t.Fatalf("execution envelope %q differs from management %q", resultWire, connection.input)
+		}
+		underlying := &payloadTestStream{received: result}
+		stream := functionsPayloadStream{
+			ClientStream: underlying,
+			tokenStore:   store,
+		}
+		request := newProto(t, "CreateInstanceRequest")
+		setStringWrapper(request.ProtoReflect(), "input", customPayloadURL)
+		if err := stream.SendMsg(request); err != nil {
+			t.Fatal(err)
+		}
+		if got := stringWrapperField(underlying.sent.ProtoReflect(), "input"); got != resultWire {
+			t.Fatalf("streamed outgoing custom token = %q; want %q", got, resultWire)
+		}
+		received := newProto(t, "ExecutionCompletedEvent")
+		if err := stream.RecvMsg(received); err != nil {
+			t.Fatal(err)
+		}
+		if got := stringWrapperField(received.ProtoReflect(), "result"); got != customPayloadURL {
+			t.Fatalf("streamed custom token = %q", got)
+		}
+		metadata, err := client.FetchOrchestrationMetadata(t.Context(), "id", api.WithFetchPayloads(true))
+		if err != nil || metadata.SerializedOutput != value {
+			t.Fatalf("management hydration = %#v, %v", metadata, err)
+		}
+	}
+	literal := `"` + customPayloadURL + `"`
+	if got, err := wrapPayloadReference(literal, store); err != nil || got != literal {
+		t.Fatalf("quoted application URL changed: %q, %v", got, err)
+	}
+}
 
 func TestFunctionsPayloadEnvelopeAndCollisions(t *testing.T) {
 	options := memoryPayloadOptions(t)
@@ -20,7 +102,7 @@ func TestFunctionsPayloadEnvelopeAndCollisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	envelope, err := wrapPayloadReference(token)
+	envelope, err := wrapPayloadReference(token, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +144,7 @@ func TestFunctionsPayloadEnvelopeAndCollisions(t *testing.T) {
 		`"{\"$durabletaskPayload\":\"literal string\"}"`,
 		`{"nested":{"$durabletaskPayload":"ordinary nested object"}}`,
 	} {
-		wire, err := wrapPayloadReference(ordinary)
+		wire, err := wrapPayloadReference(ordinary, nil)
 		if err != nil || wire != ordinary {
 			t.Fatalf("ordinary JSON changed: %q %v", wire, err)
 		}
@@ -106,7 +188,7 @@ func TestFunctionsPayloadStreamingManagement(t *testing.T) {
 	token := "blob:v2:https://account.blob.core.windows.net/durabletask-payloads/payload"
 	request := newProto(t, "CreateInstanceRequest")
 	setStringWrapper(request.ProtoReflect(), "input", token)
-	envelope, err := wrapPayloadReference(token)
+	envelope, err := wrapPayloadReference(token, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +227,7 @@ func (rejectedPayloadConnection) Invoke(context.Context, string, any, any, ...gr
 }
 
 func TestFunctionsPayloadConnectionPreservesRPCFailure(t *testing.T) {
-	connection := functionsPayloadConnection{rejectedPayloadConnection{}}
+	connection := functionsPayloadConnection{ClientConnInterface: rejectedPayloadConnection{}}
 	if err := connection.Invoke(t.Context(), "test", newProto(t, "CreateInstanceRequest"),
 		newProto(t, "CreateInstanceResponse")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("RPC failure=%v", err)
