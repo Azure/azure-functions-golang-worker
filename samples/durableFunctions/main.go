@@ -11,6 +11,8 @@
 //     human-in-the-loop (HITL) approval gated by a durable timeout.
 //   - How orchestration endpoints are exposed: start, status/progress, and
 //     raising an external event (the HITL response).
+//   - Durable entities with state, immediate/scheduled signals, calls, and
+//     an orchestration lock.
 //
 // The whole feature is wired with a single app.Use(durabletask.Middleware(...)).
 package main
@@ -72,6 +74,68 @@ func HelloCities(ctx *task.OrchestrationContext) (any, error) {
 // deterministic code is fine here.
 func SayHello(_ context.Context, city string) (string, error) {
 	return fmt.Sprintf("Hello, %s!", city), nil
+}
+
+// Counter is a stateful entity whose state is an integer.
+func Counter(ctx *durabletask.EntityContext) (any, error) {
+	count := 0
+	if ctx.HasState() {
+		if err := ctx.GetState(&count); err != nil {
+			return nil, err
+		}
+	}
+
+	switch ctx.OperationName {
+	case "add":
+		var increment int
+		if err := ctx.GetInput(&increment); err != nil {
+			return nil, err
+		}
+		count += increment
+		if err := ctx.SetState(count); err != nil {
+			return nil, err
+		}
+		return count, nil
+	case "get":
+		return count, nil
+	default:
+		return nil, fmt.Errorf("unknown counter operation %q", ctx.OperationName)
+	}
+}
+
+// EntitySignals demonstrates entity state, immediate and scheduled signals,
+// an orchestration lock, and an awaited entity call.
+func EntitySignals(ctx *task.OrchestrationContext) (any, error) {
+	id := api.NewEntityID("counter", string(ctx.ID))
+	if err := ctx.SignalEntity(id, "add", task.WithSignalEntityInput(2)); err != nil {
+		return nil, err
+	}
+	due := ctx.CurrentTimeUtc.Add(2 * time.Second)
+	if err := ctx.SignalEntity(id, "add",
+		task.WithSignalEntityInput(3),
+		task.WithSignalEntityScheduledTime(due)); err != nil {
+		return nil, err
+	}
+	if err := ctx.CreateTimer(due.Add(time.Second).Sub(ctx.CurrentTimeUtc)).Await(nil); err != nil {
+		return nil, err
+	}
+
+	release, err := ctx.LockEntities(id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	var count int
+	if err := ctx.CallEntity(id, "get").Await(&count); err != nil {
+		return nil, err
+	}
+	return count, nil
+}
+
+// EntityFailure demonstrates that a failed entity call fails its orchestration.
+func EntityFailure(ctx *task.OrchestrationContext) (any, error) {
+	return nil, ctx.CallEntity(api.NewEntityID("counter", string(ctx.ID)), "unknown").Await(nil)
 }
 
 // =============================================================================
@@ -212,6 +276,32 @@ func StartHelloCities(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"id": string(id)})
 }
 
+// StartEntitySignals starts the entity state/signals/calls example.
+func StartEntitySignals(w http.ResponseWriter, r *http.Request) {
+	startOrchestration(w, r, "EntitySignals")
+}
+
+// StartEntityFailure starts the entity operation failure example.
+func StartEntityFailure(w http.ResponseWriter, r *http.Request) {
+	startOrchestration(w, r, "EntityFailure")
+}
+
+func startOrchestration(w http.ResponseWriter, r *http.Request, name string) {
+	client, ok := durabletask.ClientFromContext(r.Context())
+	if !ok {
+		http.Error(w, "durable client unavailable", http.StatusInternalServerError)
+		return
+	}
+	id, err := client.ScheduleNewOrchestration(r.Context(), name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]string{"id": string(id)})
+}
+
 // SubmitExpense (POST /api/expenses) starts the expense orchestration and
 // returns the standard "check status" payload: a 202 with the host's
 // management URLs (status query, raise event, terminate, …) so the caller can
@@ -326,6 +416,8 @@ func main() {
 	// Orchestrators.
 	durable.Orchestrator("HelloCities", HelloCities)
 	durable.Orchestrator("ProcessExpense", ProcessExpense)
+	durable.Orchestrator("EntitySignals", EntitySignals)
+	durable.Orchestrator("EntityFailure", EntityFailure)
 
 	// Activities.
 	durable.Activity("SayHello", SayHello)
@@ -333,6 +425,7 @@ func main() {
 	durable.Activity("CheckPolicy", CheckPolicy)
 	durable.Activity("CheckBudget", CheckBudget)
 	durable.Activity("RecordDecision", RecordDecision)
+	durable.Entity("counter", Counter)
 
 	app.Use(durable)
 
@@ -343,6 +436,12 @@ func main() {
 	// the client via durabletask.ClientFromContext.
 	app.HTTP("StartHelloCities", StartHelloCities,
 		sdk.WithMethods("post"), sdk.WithRoute("hello"), sdk.WithAuth("anonymous"),
+		durabletask.ClientInput())
+	app.HTTP("StartEntitySignals", StartEntitySignals,
+		sdk.WithMethods("post"), sdk.WithRoute("entities"), sdk.WithAuth("anonymous"),
+		durabletask.ClientInput())
+	app.HTTP("StartEntityFailure", StartEntityFailure,
+		sdk.WithMethods("post"), sdk.WithRoute("entity-failure"), sdk.WithAuth("anonymous"),
 		durabletask.ClientInput())
 	app.HTTP("SubmitExpense", SubmitExpense,
 		sdk.WithMethods("post"), sdk.WithRoute("expenses"), sdk.WithAuth("anonymous"),

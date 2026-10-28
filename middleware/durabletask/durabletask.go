@@ -14,12 +14,12 @@ import (
 // Durable is the Durable Functions middleware. It implements
 // [sdk.Middleware] and [sdk.FunctionProvider]: Wrap supplies management clients
 // to non-orchestration invocations, while ProvidedFunctions contributes replay
-// adapters and activities to the App. Replay runs as the registered function,
-// inside the ordinary middleware chain.
+// adapters, activities, and entities to the App. Replay runs as the registered
+// function, inside the ordinary middleware chain.
 //
 // Construct it with [Middleware] and register work via options or the
-// chainable [Durable.Orchestrator] / [Durable.Activity] methods, then enable
-// it with App.Use.
+// chainable [Durable.Orchestrator], [Durable.Activity], or [Durable.Entity]
+// methods, then enable it with App.Use.
 type Durable struct {
 	registry *task.TaskRegistry
 	runner   *orchestrationRunner
@@ -59,6 +59,18 @@ func WithOrchestrator(name string, o task.Orchestrator) Option {
 // calling [Durable.Activity] after construction.
 func WithActivity(name string, fn any) Option {
 	return func(d *Durable) { d.Activity(name, fn) }
+}
+
+// WithEntity registers a Functions-compatible entity operation handler under
+// name. Equivalent to calling [Durable.Entity] after construction.
+func WithEntity(name string, handler EntityOperationHandler) Option {
+	return func(d *Durable) { d.Entity(name, handler) }
+}
+
+// WithEntityFactory registers a factory that creates an entity handler for
+// each batch. Equivalent to calling [Durable.EntityFactory] after construction.
+func WithEntityFactory(name string, factory EntityFactory) Option {
+	return func(d *Durable) { d.EntityFactory(name, factory) }
 }
 
 // WithClient sets the [Client] the middleware attaches to the context of
@@ -155,6 +167,54 @@ func (d *Durable) Activity(name string, fn any) *Durable {
 		Name:    name,
 		Func:    activityInputDecoder(fn),
 		Trigger: activityTriggerBinding{},
+	})
+	return d
+}
+
+// Entity registers a Functions-compatible entity operation handler under
+// name. The handler is called once for each operation in a host-delivered
+// batch, in order. State changes and emitted actions are committed by the
+// durabletask-go executor and returned to the Functions host.
+//
+// The Functions entity-trigger protocol does not include whether an operation
+// was sent as a call or a signal. Accordingly, EntityContext deliberately
+// exposes no IsSignal property, unlike durabletask-go's native EntityContext.
+// Handler results are returned to the host, which uses them only for calls.
+//
+// Panics if name is already registered, handler is nil, or registration has
+// been sealed by app.Use.
+func (d *Durable) Entity(name string, handler EntityOperationHandler) *Durable {
+	if handler == nil {
+		panic(fmt.Sprintf("durabletask: entity %q handler must not be nil", name))
+	}
+	return d.EntityFactory(name, func(EntityFactoryContext) (EntityBatch, error) {
+		return EntityBatch{Handler: handler}, nil
+	})
+}
+
+// EntityFactory registers a factory that creates a handler and optional batch
+// cleanup callback for each invocation. Factories may run concurrently for
+// distinct entity instances.
+//
+// Panics if name is already registered, factory is nil, or registration has
+// been sealed by app.Use.
+func (d *Durable) EntityFactory(name string, factory EntityFactory) *Durable {
+	d.mustBeOpen("EntityFactory", name)
+	if factory == nil {
+		panic(fmt.Sprintf("durabletask: entity factory %q must not be nil", name))
+	}
+	if err := d.registry.AddEntityFactoryN(name, wrapEntityFactory(factory)); err != nil {
+		panic(fmt.Sprintf("durabletask: register entity factory %q: %v", name, err))
+	}
+	d.provided = append(d.provided, sdk.FunctionRegistration{
+		Name: name,
+		Func: func(ctx context.Context, encoded string) (string, error) {
+			if mc, ok := sdk.MiddlewareContextFrom(ctx); ok {
+				encoded = mc.InputString()
+			}
+			return runEntityBatch(ctx, d.registry, encoded)
+		},
+		Trigger: entityTriggerBinding{},
 	})
 	return d
 }
@@ -275,7 +335,7 @@ func (d *Durable) cachedClient(rpcBaseURL, httpBaseURL, queryParams string) *Cli
 }
 
 // ProvidedFunctions implements [sdk.FunctionProvider]. It returns the
-// orchestrator and activity functions registered on this middleware so
+// orchestrator, activity, and entity functions registered on this middleware so
 // App.Use registers them with the App.
 //
 // It is side-effect-free, as the interface requires, so it is safe to call for
@@ -287,7 +347,7 @@ func (d *Durable) ProvidedFunctions() []sdk.FunctionRegistration {
 
 // SealRegistration implements [sdk.RegistrationSealer]. App.Use calls it after
 // collecting this middleware's functions; afterwards, registering another
-// orchestrator or activity panics rather than landing in a registry the app
+// orchestrator, activity, or entity panics rather than landing in a registry the app
 // will never read again.
 func (d *Durable) SealRegistration() {
 	d.closed = true
@@ -305,7 +365,7 @@ func (d *Durable) mustBeOpen(method, name string) {
 		return
 	}
 	panic(fmt.Sprintf("durabletask: %s(%q) was called after app.Use; register orchestrations "+
-		"and activities before passing the middleware to app.Use, or supply them as options "+
+		"activities, and entities before passing the middleware to app.Use, or supply them as options "+
 		"(durabletask.Middleware(durabletask.With%s(...)))", method, name, method))
 }
 

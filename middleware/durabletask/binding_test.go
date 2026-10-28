@@ -50,6 +50,19 @@ func TestClientInput_AddsBinding(t *testing.T) {
 	}
 }
 
+func TestEntityTriggerBinding(t *testing.T) {
+	binding := entityTriggerBinding{}.ToBinding()
+	if binding.Type != string(EntityTriggerType) {
+		t.Fatalf("entity trigger type = %q, want %q", binding.Type, EntityTriggerType)
+	}
+	if binding.Name != entityParamName {
+		t.Fatalf("entity trigger parameter = %q, want %q", binding.Name, entityParamName)
+	}
+	if binding.Direction != "in" {
+		t.Fatalf("entity trigger direction = %q, want in", binding.Direction)
+	}
+}
+
 // TestClientFromBinding_NilCases verifies the binding-derived client is absent
 // when no usable durable client binding payload is present.
 func TestClientFromBinding_NilCases(t *testing.T) {

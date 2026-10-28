@@ -12,15 +12,17 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // Field numbers of the durabletask OrchestratorRequest message
 // (orchestrator_service.proto). Only the fields needed to drive a replay are
 // listed; everything else is skipped during decode.
 const (
-	fieldInstanceID = 1 // string instanceId
-	fieldPastEvents = 3 // repeated HistoryEvent pastEvents
-	fieldNewEvents  = 4 // repeated HistoryEvent newEvents
+	fieldInstanceID       = 1 // string instanceId
+	fieldPastEvents       = 3 // repeated HistoryEvent pastEvents
+	fieldNewEvents        = 4 // repeated HistoryEvent newEvents
+	fieldEntityParameters = 5 // OrchestratorEntityParameters entityParameters
 )
 
 // orchestrationRunner replays an orchestrator from a base64-encoded
@@ -45,14 +47,21 @@ func (r *orchestrationRunner) loadAndRun(ctx context.Context, encodedRequest str
 		return "", fmt.Errorf("durabletask: decode base64 request: %w", err)
 	}
 
-	instanceID, pastEvents, newEvents, err := decodeOrchestratorRequest(reqBytes)
+	instanceID, pastEvents, newEvents, entityParameters, err := decodeOrchestratorRequest(reqBytes)
 	if err != nil {
 		return "", fmt.Errorf("durabletask: parse orchestrator request: %w", err)
 	}
 
 	logger := slog.New(&replayLogHandler{Handler: slog.Default().Handler(), invocation: ctx})
 	executor := task.NewTaskExecutor(r.registry, task.WithLogger(logger))
-	results, err := executeOrchestrator(ctx, executor.ExecuteOrchestrator, instanceID, pastEvents, newEvents)
+	results, err := executeOrchestratorWithEntityParameters(
+		ctx,
+		executor.ExecuteOrchestrator,
+		instanceID,
+		pastEvents,
+		newEvents,
+		entityParameters,
+	)
 	if err != nil {
 		return "", fmt.Errorf("durabletask: execute orchestrator: %w", err)
 	}
@@ -187,11 +196,11 @@ func annotateTurnSpan(ctx context.Context, instanceID string, pastEvents, newEve
 // same wire encoding (length-delimited, field-tagged), so consuming fields 3
 // and 4 as byte chunks is wire-correct. Events are validated when they are
 // unmarshaled for the executor.
-func decodeOrchestratorRequest(b []byte) (instanceID string, pastEvents, newEvents [][]byte, err error) {
+func decodeOrchestratorRequest(b []byte) (instanceID string, pastEvents, newEvents [][]byte, entityParameters []byte, err error) {
 	for len(b) > 0 {
 		num, typ, n := protowire.ConsumeTag(b)
 		if n < 0 {
-			return "", nil, nil, protowire.ParseError(n)
+			return "", nil, nil, nil, protowire.ParseError(n)
 		}
 		b = b[n:]
 
@@ -199,7 +208,7 @@ func decodeOrchestratorRequest(b []byte) (instanceID string, pastEvents, newEven
 		case num == fieldInstanceID && typ == protowire.BytesType:
 			v, m := protowire.ConsumeBytes(b)
 			if m < 0 {
-				return "", nil, nil, protowire.ParseError(m)
+				return "", nil, nil, nil, protowire.ParseError(m)
 			}
 			instanceID = string(v)
 			b = b[m:]
@@ -207,7 +216,7 @@ func decodeOrchestratorRequest(b []byte) (instanceID string, pastEvents, newEven
 		case num == fieldPastEvents && typ == protowire.BytesType:
 			v, m := protowire.ConsumeBytes(b)
 			if m < 0 {
-				return "", nil, nil, protowire.ParseError(m)
+				return "", nil, nil, nil, protowire.ParseError(m)
 			}
 			pastEvents = append(pastEvents, append([]byte(nil), v...))
 			b = b[m:]
@@ -215,20 +224,28 @@ func decodeOrchestratorRequest(b []byte) (instanceID string, pastEvents, newEven
 		case num == fieldNewEvents && typ == protowire.BytesType:
 			v, m := protowire.ConsumeBytes(b)
 			if m < 0 {
-				return "", nil, nil, protowire.ParseError(m)
+				return "", nil, nil, nil, protowire.ParseError(m)
 			}
 			newEvents = append(newEvents, append([]byte(nil), v...))
+			b = b[m:]
+
+		case num == fieldEntityParameters && typ == protowire.BytesType:
+			v, m := protowire.ConsumeBytes(b)
+			if m < 0 {
+				return "", nil, nil, nil, protowire.ParseError(m)
+			}
+			entityParameters = append([]byte(nil), v...)
 			b = b[m:]
 
 		default:
 			m := protowire.ConsumeFieldValue(num, typ, b)
 			if m < 0 {
-				return "", nil, nil, protowire.ParseError(m)
+				return "", nil, nil, nil, protowire.ParseError(m)
 			}
 			b = b[m:]
 		}
 	}
-	return instanceID, pastEvents, newEvents, nil
+	return instanceID, pastEvents, newEvents, entityParameters, nil
 }
 
 // executeOrchestrator replays the orchestrator over the marshaled events.
@@ -237,8 +254,9 @@ func decodeOrchestratorRequest(b []byte) (instanceID string, pastEvents, newEven
 // protobuf types, which this module cannot import or name. The signature of
 // the method value passed as execute lets the compiler infer them: PE is the
 // event pointer type and E its element type. Each raw event is unmarshaled
-// into a new E, so no reflection or copy of the upstream proto is needed. The
-// entity parameters are left nil, which keeps entities unsupported.
+// into a new E, so no reflection or copy of the upstream proto is needed.
+// Functions entity parameters and its legacy history are normalized before
+// the executor replays them.
 func executeOrchestrator[E, EP, ES any, PE interface {
 	*E
 	proto.Message
@@ -248,6 +266,22 @@ func executeOrchestrator[E, EP, ES any, PE interface {
 	execute func(context.Context, api.InstanceID, []PE, []PE, *EP) (*task.ExecutionResults, error),
 	instanceID string,
 	pastEvents, newEvents [][]byte,
+) (*task.ExecutionResults, error) {
+	return executeOrchestratorWithEntityParameters(
+		ctx, execute, instanceID, pastEvents, newEvents, nil,
+	)
+}
+
+func executeOrchestratorWithEntityParameters[E, EP, ES any, PE interface {
+	*E
+	proto.Message
+	GetExecutionStarted() *ES
+}](
+	ctx context.Context,
+	execute func(context.Context, api.InstanceID, []PE, []PE, *EP) (*task.ExecutionResults, error),
+	instanceID string,
+	pastEvents, newEvents [][]byte,
+	entityParameters []byte,
 ) (*task.ExecutionResults, error) {
 	past, err := unmarshalEvents[E, PE](pastEvents)
 	if err != nil {
@@ -260,7 +294,50 @@ func executeOrchestrator[E, EP, ES any, PE interface {
 	if err := checkHistoryPresent(instanceID, past, next); err != nil {
 		return nil, err
 	}
-	return execute(ctx, api.InstanceID(instanceID), past, next, nil)
+	legacyEntities, err := normalizeFunctionsEntityHistory(
+		reflectedEvents(past),
+		reflectedEvents(next),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("normalize Functions entity history: %w", err)
+	}
+
+	var parameters *EP
+	nonzeroReorderWindow := false
+	if len(entityParameters) != 0 {
+		parameters = new(EP)
+		message, ok := any(parameters).(proto.Message)
+		if !ok {
+			return nil, fmt.Errorf("upstream orchestration entity parameters are not a protobuf message")
+		}
+		if err := proto.Unmarshal(entityParameters, message); err != nil {
+			return nil, fmt.Errorf("unmarshal orchestration entity parameters: %w", err)
+		}
+		nonzeroReorderWindow, err = normalizeEntityParameters(message)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if nonzeroReorderWindow && legacyEntities {
+		return nil, fmt.Errorf("durabletask: Functions entity replay requires EntityMessageReorderWindow=0; the configured nonzero reorder window cannot be honored by durabletask-go")
+	}
+
+	results, err := execute(ctx, api.InstanceID(instanceID), past, next, parameters)
+	if err != nil {
+		return nil, err
+	}
+	if nonzeroReorderWindow && orchestrationHasEntityActions(results) {
+		return nil, fmt.Errorf("durabletask: Functions entity operations require EntityMessageReorderWindow=0; the configured nonzero reorder window cannot be honored by durabletask-go")
+	}
+	return results, nil
+}
+
+func reflectedEvents[PE proto.Message](events []PE) []protoreflect.Message {
+	reflected := make([]protoreflect.Message, len(events))
+	for i, event := range events {
+		reflected[i] = event.ProtoReflect()
+	}
+	return reflected
 }
 
 func unmarshalEvents[E any, PE interface {
