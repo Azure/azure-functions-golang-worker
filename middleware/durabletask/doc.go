@@ -112,6 +112,22 @@
 // runner (e.g. OrchestrationRunner.LoadAndRun), runner.go can be reduced to
 // a one-line delegation with no change to this package's public API.
 //
+// # Large payloads
+//
+// [WithLargePayloads] opts execution and management clients into the upstream
+// api.LargePayloadOptions configuration. payload.AzureBlobStore supplies blob
+// tokens, validation, compression and integrity checks. No storage configuration
+// is inferred from AzureWebJobsStorage. The Functions transport adapter hydrates
+// application payloads before execution and externalizes results afterwards,
+// because upstream's internal transport codec is available only to its polling
+// worker, not its task executor. Independently created clients can use
+// [WithClientLargePayloads] with the same options.
+// Functions transports tokens in a reserved, versioned JSON envelope rather
+// than raw token strings. This avoids host JSON-binding and Azure Storage URI
+// interpretation, but requires envelope-aware consumers rather than raw DTS
+// token consumers. See the README for the reserved key and interoperability
+// boundaries.
+//
 // # Further reading
 //
 // The package README covers the operational side: the extension bundle

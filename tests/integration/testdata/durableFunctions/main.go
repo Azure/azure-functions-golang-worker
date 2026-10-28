@@ -392,6 +392,14 @@ func main() {
 	app := sdk.FunctionApp()
 
 	durable := durabletask.Middleware()
+	payloadStore, err := newBlobPayloadStore()
+	if err != nil {
+		panic(err)
+	}
+	if payloadStore != nil {
+		durable = durabletask.Middleware(durabletask.WithLargePayloads(payloadStore.options))
+		registerBlobOffloading(app, durable, payloadStore)
+	}
 
 	durable.Orchestrator("HelloCities", HelloCities)
 	durable.Orchestrator("ProcessExpense", ProcessExpense)
