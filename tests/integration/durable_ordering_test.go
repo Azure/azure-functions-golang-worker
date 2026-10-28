@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 )
@@ -12,14 +11,12 @@ import (
 // Runs the real registered functions through Core Tools, including FunctionRpc
 // argument/return binding and HTTP streaming. No synthetic next handler is used.
 func TestDurableMiddlewareOrdering(t *testing.T) {
-	requireAzurite(t)
 	for _, order := range []string{"before", "after"} {
 		t.Run(order, func(t *testing.T) {
-			env := withNativeWorkerEnvironment(durableEnv)
-			env["DURABLE_TEST_MIDDLEWARE_ORDER"] = order
-			env["AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED"] = "false"
-			env["AzureFunctionsJobHost__extensions__durableTask__hubName"] = "ReplayOrdering" + order
-			host := startTestDataHost(t, "durableFunctions", env, 120*time.Second)
+			host, _ := startDurableHost(t, map[string]string{
+				"DURABLE_TEST_MIDDLEWARE_ORDER":                 order,
+				"AZURE_FUNCTIONS_WORKER_OPENTELEMETRY_DISABLED": "false",
+			})
 			app := &durableApp{t: t, baseURL: host.URL()}
 			inputID := app.scheduleOrchestration("/api/ordering/start/InputProbe", nil)
 			inputStatus := app.waitForCompletion(inputID)
@@ -113,24 +110,20 @@ func TestDurableMiddlewareOrdering(t *testing.T) {
 				if record.Name != "InputProbe" && record.Name != "Parent" && record.Name != "Counter" && record.Name != "Failing" && record.Name != "Panicking" {
 					continue
 				}
-				if record.Name == "Panicking" {
-					if record.ClientSeen || record.ReturnSet || !strings.Contains(record.Error, "recovered by middleware: expected orchestrator panic") {
-						t.Errorf("panic was not propagated through recovery: %+v", record)
-					}
-				} else if record.ClientSeen || !record.ReturnSet || record.Error != "" {
+				if record.ClientSeen || !record.ReturnSet || record.Error != "" {
 					t.Errorf("replay outcome/client isolation: %+v", record)
 				}
-				// A failed orchestration is a successfully processed replay turn,
-				// with its failure encoded in the returned protocol response.
+				// beta3 encodes both errors and orchestrator panics as failed
+				// orchestration responses, not middleware invocation errors.
 				found := 0
 				for _, span := range snapshot.Spans {
 					if span.InvocationID == invocationID {
 						found++
-						if (span.InstanceID == "" && record.Name != "Panicking") || span.TraceID != "11111111111111111111111111111111" || span.ParentID != "2222222222222222" {
+						if span.InstanceID == "" || span.TraceID != "11111111111111111111111111111111" || span.ParentID != "2222222222222222" {
 							t.Errorf("missing replay annotations or injected parent context: %+v", span)
 						}
-						if record.Name == "Panicking" && span.Status != "Error" {
-							t.Errorf("recovered panic was not recorded on the invocation span: %+v", span)
+						if span.Status == "Error" {
+							t.Errorf("successfully processed replay was marked as an invocation error: %+v", span)
 						}
 					}
 				}

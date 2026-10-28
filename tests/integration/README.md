@@ -5,8 +5,9 @@ that Azure Functions Core Tools can start the Functions host, establish the
 worker channel, index Go functions, invoke them, and return or process the
 expected output.
 
-The tests use local Docker emulators only. They do not require Azure credentials
-or deployed Azure resources.
+The default runner uses local Docker emulators and does not require Azure
+credentials. Durable-only runs can also use private local Azurite or a deployed
+test fixture.
 
 ```text
 Azure DevOps Pipeline / Local Developer
@@ -92,6 +93,7 @@ the suite.
 |---|---|---|
 | `blobTrigger` | Partial | A test-only polling fixture validates Blob invocation and client creation. Event Grid delivery requires deployed Azure test resources. |
 | `cosmosDBTrigger` | Full | Runs against the local Cosmos DB emulator. |
+| `durableFunctions` | Full | Uses isolated Azurite storage for replay, lifecycle, management, restart, and middleware ordering checks. |
 | `eventGridTrigger` | Partial | Verifies build, registration, and host loading; there is no local Event Grid emulator. |
 | `eventHubTrigger` | Full | Tests single-event and batch delivery. |
 | `httpTrigger` | Full | Tests GET and POST invocation. |
@@ -118,8 +120,9 @@ The runner executes these steps in order:
 
 1. Validates Core Tools 4.12.0 or later and Docker Compose.
 2. Creates the `artifacts` directory.
-3. Inspects the Azurite, SQL Server, Service Bus, Event Hubs, and Cosmos DB
-   emulator containers to determine ownership and running state.
+3. Inspects the shared and Durable-only Azurite, SQL Server, Service Bus,
+   Event Hubs, and Cosmos DB emulator containers to determine ownership and
+   running state.
 4. Starts missing or stopped emulator services and waits for each required
    endpoint to become ready.
 5. Runs every black-box scenario via one explicit `go test` pattern.
@@ -136,18 +139,56 @@ delivering the management endpoint to the worker, the gRPC management client,
 orchestration replay through the trigger pipeline, activity dispatch and input
 decoding, custom status, and external events.
 
-The subtests share one host and cover a sequential orchestration, fan-out/fan-in
-with automatic approval, human approval and rejection through an external event,
-rejection on failed validation, and an unknown instance lookup.
+The subtests share one host and cover sequential activities, fan-out/fan-in,
+automatic and human approval, rejection, failed validation, and missing instances.
+Lifecycle probes additionally check custom status while waiting, external event
+buffering, a short durable event timeout, and direct Go client schedule, fetch,
+raise, wait-for-start, and wait-for-completion operations. A local-only test stops
+the suite-owned host while an expense awaits approval, restarts it against the
+same task hub and storage, and completes that same instance.
+
+`TestDurableMiddlewareOrdering` starts a separate host for each middleware order.
+It preserves the registered adapter, input replacement, child/ContinueAsNew,
+timer, failure, panic, short-circuit, and trace-context assertions.
+
+### Isolated local storage
+
+Durable tests do not call the general trigger helper that deletes shared
+`azure-webjobs-hosts` and `azure-webjobs-eventhub` containers. The runner starts
+the dedicated `durable-azurite` Compose service on loopback ports 17310–17312.
+Each host gets a fresh task hub and host ID. Restart preserves those IDs and
+changes only the owned Core Tools process. No shared emulator is reconfigured,
+restarted, or cleaned. Test storage is volatile and discarded when its private
+emulator stops. A reused emulator can retain old test hubs until it is discarded.
+
+For just the Durable suites:
 
 ```bash
+docker compose -f tests/emulators/docker-compose.yml up -d durable-azurite
 cd tests/integration
-go test -run TestDurableOrchestrations -v .
+GOWORK=off go test -count=1 -timeout 12m \
+  -run '^(TestDurableOrchestrations|TestDurableMiddlewareOrdering)$' -v .
 ```
 
-Azurite is the only emulator required. Every assertion goes through the sample's
-own anonymous HTTP endpoints rather than the host's management API, so the same
-subtests run unchanged against a deployed app:
+Alternatively run a private local Azurite process with `--inMemoryPersistence
+--skipApiVersionCheck --disableTelemetry --blobPort 17310 --queuePort 17311
+--tablePort 17312`. `DURABLE_E2E_STORAGE_CONNECTION_STRING` can point at other
+explicitly test-owned storage. It must not point at shared development storage.
+`UseDevelopmentStorage=true` is rejected. No persistent machine settings are
+changed.
+
+The helper stages `host.json` and the built `bin/app` in a test-owned temporary
+directory, so concurrent runs do not share an executable or leave build output
+in the fixture checkout. Restart reuses that temporary app until host cleanup
+finishes. It builds the fixture with `GOWORK=off`, starts Core Tools with
+`--no-build`, and supplies the absolute native executable path, including
+`.exe` on Windows. Startup, HTTP requests, management waits, and shutdown are
+bounded. Host logs and process IDs are under `artifacts/<test>/<generation>`.
+
+Azurite is the only emulator required. Assertions go through the fixture's
+anonymous endpoints, not the host's HTTP management API. The lifecycle endpoints
+call the public Go management client directly. To test a deployed **fixture**
+(not the unmodified sample):
 
 ```bash
 DURABLE_E2E_BASE_URL=https://myapp.azurewebsites.net \
@@ -155,7 +196,36 @@ DURABLE_E2E_BASE_URL=https://myapp.azurewebsites.net \
 ```
 
 When `DURABLE_E2E_BASE_URL` is set the suite skips the local host and the Azurite
-check and drives the given app instead.
+startup path and drives the given fixture instead. Restart coverage is explicitly
+skipped because the suite does not own that host. Ordering tests always use local,
+suite-owned hosts.
+
+### Replacements for the removed scheduler fake
+
+- `TestEndToEnd_Emulator` greeting and completion assertions now live in
+  `SequentialOrchestrationCompletes`, with real activity dispatch and replay.
+- `TestEndToEnd_FanOutAndExternalEvent` and
+  `TestClient_EndToEnd_GrpcSidecar` are covered by the expense scenarios and
+  `DirectGoManagementOperations`. These preserve nonempty/explicit instance IDs,
+  fan-out/fan-in results, start/completion waits, waiting custom status, event
+  payloads, and completed approved output.
+- Their early-event behavior is checked by `EarlyExternalEventIsNotLost`.
+  `BufferedEvent` waits for `Release` before consuming the previously delivered
+  `Continue` event. `ExternalEventTimeoutUsesDurableTimer` verifies the opposite
+  path without fabricating a timer-fired history.
+- Binding endpoint selection, schedule request encoding, fixed reply decoding,
+  cached client identity, and SDK shutdown remain in
+  `TestDurable_ClientBinding_ProtocolAndLifetime`. Lifecycle completion belongs
+  to the real host suites, not that stub.
+- `TestClient_FetchMetadata_NotFound` retains deterministic sentinel translation
+  from a fixed `exists=false` reply. Both the HTTP missing-instance test and the
+  direct Go client probe verify it against the actual extension.
+
+Descriptor-based unit histories still test individual replay turns and schema
+compatibility through the real upstream executor. Fixed gRPC stubs have no
+registry, executor, scheduling loop, or mutable instance history. The composed
+fixture logging tests remain unchanged and continue to test the registered
+adapter, executor, SDK RpcLog writer, and OTel bridge.
 
 ### Host extension requirement
 
@@ -228,6 +298,7 @@ files for the same test run are replaced.
 ```text
 artifacts/
 ├── azurite.log
+├── durable-azurite.log
 ├── cosmosdb-emulator.log
 ├── eventhub-emulator.log
 ├── go-test.log

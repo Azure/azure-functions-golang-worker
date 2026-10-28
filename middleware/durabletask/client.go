@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
 
 	"github.com/microsoft/durabletask-go/api"
-	"github.com/microsoft/durabletask-go/backend"
 	dtclient "github.com/microsoft/durabletask-go/client"
 	"github.com/microsoft/durabletask-go/task"
 	"google.golang.org/grpc"
@@ -66,7 +66,7 @@ type Client struct {
 // connection yourself (or in tests, with an in-memory listener). The caller
 // owns the connection's lifecycle.
 func NewClient(conn grpc.ClientConnInterface) *Client {
-	return &Client{TaskHubGrpcClient: dtclient.NewTaskHubGrpcClient(conn, backend.DefaultLogger())}
+	return &Client{TaskHubGrpcClient: dtclient.NewTaskHubGrpcClient(conn, api.NewSlogLogger(slog.Default()))}
 }
 
 // Dial connects to a Durable Task gRPC endpoint and returns a [Client] that
@@ -79,7 +79,7 @@ func Dial(endpoint string) (*Client, error) {
 		return nil, fmt.Errorf("durabletask: dial %q: %w", endpoint, err)
 	}
 	return &Client{
-		TaskHubGrpcClient: dtclient.NewTaskHubGrpcClient(conn, backend.DefaultLogger()),
+		TaskHubGrpcClient: dtclient.NewTaskHubGrpcClient(conn, api.NewSlogLogger(slog.Default())),
 		conn:              conn,
 	}, nil
 }
