@@ -122,6 +122,11 @@ var (
 //     it's used as the endpoint with DefaultAzureCredential.
 func createServiceClient(connectionSetting string) (*azblob.Client, error) {
 	value := os.Getenv(connectionSetting)
+	if strings.EqualFold(strings.Trim(strings.TrimSpace(value), ";"), "UseDevelopmentStorage=true") {
+		value = "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;" +
+			"AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;" +
+			"BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+	}
 
 	// 1. Connection string auth
 	if value != "" && isConnectionString(value) {

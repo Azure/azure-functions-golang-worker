@@ -82,6 +82,31 @@ func TestCreateBlobClient_InvalidPath(t *testing.T) {
 	}
 }
 
+func TestCreateBlobClient_DevelopmentStorage(t *testing.T) {
+	tests := []struct {
+		name       string
+		connection string
+	}{
+		{"shorthand", "UseDevelopmentStorage=true"},
+		{"trailing semicolon", "UseDevelopmentStorage=true;"},
+		{"case insensitive", "usedevelopmentstorage=TRUE"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			connectionSetting := "DevelopmentStorage_" + t.Name()
+			t.Setenv(connectionSetting, tt.connection)
+			client, err := CreateBlobClient(connectionSetting, "mycontainer/myblob.txt")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			const wantURL = "http://127.0.0.1:10000/devstoreaccount1/mycontainer/myblob.txt"
+			if got := client.URL(); got != wantURL {
+				t.Errorf("URL = %q, want %q", got, wantURL)
+			}
+		})
+	}
+}
+
 func newTestApp() *sdk.App {
 	return sdk.FunctionApp()
 }

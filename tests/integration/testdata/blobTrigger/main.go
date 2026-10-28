@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"log/slog"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
@@ -11,6 +12,14 @@ import (
 )
 
 func blobHandler(ctx context.Context, client *blob.Client) error {
+	response, err := client.DownloadStream(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
+		return err
+	}
 	slog.InfoContext(ctx, "blob trigger executed", "url", client.URL())
 	return nil
 }
