@@ -9,14 +9,10 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/azure/azure-functions-golang-worker/triggers/blob"
 )
 
-const azuriteConnStr = "DefaultEndpointsProtocol=http;" +
-	"AccountName=devstoreaccount1;" +
-	"AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;" +
-	"BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;" +
-	"QueueEndpoint=http://127.0.0.1:10001/devstoreaccount1;" +
-	"TableEndpoint=http://127.0.0.1:10002/devstoreaccount1;"
+const azuriteConnStr = blobtrigger.DevelopmentStorageConnectionString
 
 var blobEnv = map[string]string{
 	"AzureWebJobsStorage": "UseDevelopmentStorage=true",
