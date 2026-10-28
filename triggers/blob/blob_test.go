@@ -21,7 +21,7 @@ func TestInit_RegistersFactory(t *testing.T) {
 }
 
 func TestCreateServiceClient_ConnectionString(t *testing.T) {
-	os.Setenv("TestStorage", "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;")
+	os.Setenv("TestStorage", DevelopmentStorageConnectionString)
 	defer os.Unsetenv("TestStorage")
 
 	client, err := createServiceClient("TestStorage")
@@ -41,7 +41,7 @@ func TestCreateServiceClient_MissingEnvVar(t *testing.T) {
 }
 
 func TestGetOrCreateServiceClient_Caching(t *testing.T) {
-	os.Setenv("CacheTestStorage", "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;")
+	os.Setenv("CacheTestStorage", DevelopmentStorageConnectionString)
 	defer os.Unsetenv("CacheTestStorage")
 
 	client1, err := GetOrCreateServiceClient("CacheTestStorage")
@@ -60,7 +60,7 @@ func TestGetOrCreateServiceClient_Caching(t *testing.T) {
 }
 
 func TestCreateBlobClient_ValidPath(t *testing.T) {
-	os.Setenv("BlobTestStorage", "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;")
+	os.Setenv("BlobTestStorage", DevelopmentStorageConnectionString)
 	defer os.Unsetenv("BlobTestStorage")
 
 	client, err := CreateBlobClient("BlobTestStorage", "mycontainer/myblob.txt")
@@ -73,12 +73,37 @@ func TestCreateBlobClient_ValidPath(t *testing.T) {
 }
 
 func TestCreateBlobClient_InvalidPath(t *testing.T) {
-	os.Setenv("BlobTestStorage2", "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;")
+	os.Setenv("BlobTestStorage2", DevelopmentStorageConnectionString)
 	defer os.Unsetenv("BlobTestStorage2")
 
 	_, err := CreateBlobClient("BlobTestStorage2", "nocontainer")
 	if err == nil {
 		t.Fatal("expected error for invalid blob path")
+	}
+}
+
+func TestCreateBlobClient_DevelopmentStorage(t *testing.T) {
+	tests := []struct {
+		name       string
+		connection string
+	}{
+		{"shorthand", "UseDevelopmentStorage=true"},
+		{"trailing semicolon", "UseDevelopmentStorage=true;"},
+		{"case insensitive", "usedevelopmentstorage=TRUE"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			connectionSetting := "DevelopmentStorage_" + t.Name()
+			t.Setenv(connectionSetting, tt.connection)
+			client, err := CreateBlobClient(connectionSetting, "mycontainer/myblob.txt")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			const wantURL = "http://127.0.0.1:10000/devstoreaccount1/mycontainer/myblob.txt"
+			if got := client.URL(); got != wantURL {
+				t.Errorf("URL = %q, want %q", got, wantURL)
+			}
+		})
 	}
 }
 
