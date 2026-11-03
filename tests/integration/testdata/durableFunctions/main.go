@@ -246,6 +246,7 @@ func main() {
 	durable.Activity("CheckBudget", CheckBudget)
 	durable.Activity("RecordDecision", RecordDecision)
 
+	configureLifecycleProbe(app, durable)
 	if !configureOrderingProbe(app, durable) {
 		app.Use(durable)
 	}

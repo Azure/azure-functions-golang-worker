@@ -98,6 +98,13 @@ func createBlobClientFromTrigger(config map[string]any, triggerMeta map[string]s
 
 // --- Client creation with caching and auto-detect auth ---
 
+// DevelopmentStorageConnectionString is the standard Azurite emulator connection string.
+const DevelopmentStorageConnectionString = "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;" +
+	"AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;" +
+	"BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;" +
+	"QueueEndpoint=http://127.0.0.1:10001/devstoreaccount1;" +
+	"TableEndpoint=http://127.0.0.1:10002/devstoreaccount1;"
+
 var (
 	serviceClients   = make(map[string]*azblob.Client)
 	serviceClientsMu sync.RWMutex
@@ -122,6 +129,9 @@ var (
 //     it's used as the endpoint with DefaultAzureCredential.
 func createServiceClient(connectionSetting string) (*azblob.Client, error) {
 	value := os.Getenv(connectionSetting)
+	if strings.EqualFold(strings.Trim(strings.TrimSpace(value), ";"), "UseDevelopmentStorage=true") {
+		value = DevelopmentStorageConnectionString
+	}
 
 	// 1. Connection string auth
 	if value != "" && isConnectionString(value) {

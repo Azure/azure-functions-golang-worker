@@ -35,7 +35,7 @@ Go applications must target Linux x64 with CGO disabled
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Deferred bindings | On the roadmap | SDK-typed trigger and input bindings |
-| Durable Functions | Supported | Orchestrations, activities, and management clients; entities are not supported |
+| Durable Functions | Supported | Orchestrations, activities, and management clients; requires an extension bundle with DurableTask 3.15.0 or later; entities are not supported |
 
 !!! tip "Help shape the roadmap"
     Don't see the hosting plan, trigger, binding, or feature you need?

@@ -8,10 +8,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/azure/azure-functions-golang-worker/sdk/bindings"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func newTestApp() *sdk.App {
@@ -45,6 +48,86 @@ func TestHandleFunctionsMetadataRequest_WithFunction(t *testing.T) {
 	meta := metaResp.FunctionMetadataResults[0]
 	if meta.Language != "go" {
 		t.Errorf("expected language %q, got %q", "go", meta.Language)
+	}
+}
+
+func TestHandleFunctionsMetadataRequest_RetryOptions(t *testing.T) {
+	delay := 5 * time.Second
+	minimum := 250 * time.Millisecond
+	maximum := 30*time.Second + 750*time.Millisecond
+	zero := time.Duration(0)
+	tests := []struct {
+		name  string
+		retry *sdk.RetryOptions
+		want  *pb.RpcRetryOptions
+	}{
+		{name: "no policy"},
+		{
+			name: "fixed delay",
+			retry: &sdk.RetryOptions{
+				Strategy: sdk.FixedDelay, MaxRetryCount: 3, DelayInterval: &delay,
+			},
+			want: &pb.RpcRetryOptions{
+				RetryStrategy: pb.RpcRetryOptions_fixed_delay, MaxRetryCount: 3,
+				DelayInterval: durationpb.New(delay),
+			},
+		},
+		{
+			name: "exponential backoff with unlimited retries",
+			retry: &sdk.RetryOptions{
+				Strategy: sdk.ExponentialBackoff, MaxRetryCount: -1,
+				MinimumInterval: &minimum, MaximumInterval: &maximum,
+			},
+			want: &pb.RpcRetryOptions{
+				RetryStrategy: pb.RpcRetryOptions_exponential_backoff, MaxRetryCount: -1,
+				MinimumInterval: durationpb.New(minimum), MaximumInterval: durationpb.New(maximum),
+			},
+		},
+		{
+			name: "explicit zero delay",
+			retry: &sdk.RetryOptions{
+				Strategy: sdk.FixedDelay, MaxRetryCount: 0, DelayInterval: &zero,
+			},
+			want: &pb.RpcRetryOptions{
+				RetryStrategy: pb.RpcRetryOptions_fixed_delay,
+				DelayInterval: durationpb.New(zero),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := newTestApp()
+			app.EventHub("events", func(context.Context, bindings.EventHubMessage) error {
+				return nil
+			}, sdk.WithEventHubName("events"), sdk.WithConnection("EventHubConnection"),
+				sdk.WithRetry(tt.retry))
+			app.CosmosDB("changes", func(context.Context, []bindings.CosmosDocument) error {
+				return nil
+			}, sdk.WithDatabase("db"), sdk.WithContainer("items"),
+				sdk.WithConnection("CosmosDBConnection"), sdk.WithRetry(tt.retry))
+
+			resp := handleFunctionsMetadataRequest(&pb.FunctionsMetadataRequest{}, app, "req-retry")
+			data, err := proto.Marshal(resp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var received pb.StreamingMessage
+			if err := proto.Unmarshal(data, &received); err != nil {
+				t.Fatal(err)
+			}
+			metadata := received.GetFunctionMetadataResponse()
+			if metadata.GetResult().GetStatus() != pb.StatusResult_Success {
+				t.Fatalf("metadata request failed: %v", metadata.GetResult())
+			}
+			if len(metadata.FunctionMetadataResults) != 2 {
+				t.Fatalf("expected 2 functions, got %d", len(metadata.FunctionMetadataResults))
+			}
+			for _, fn := range metadata.FunctionMetadataResults {
+				if !proto.Equal(fn.RetryOptions, tt.want) {
+					t.Errorf("function %q retry options = %v, want %v", fn.Name, fn.RetryOptions, tt.want)
+				}
+			}
+		})
 	}
 }
 

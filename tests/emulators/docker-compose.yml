@@ -3,6 +3,7 @@
 #
 # Services:
 #   - azurite:             Azure Storage Emulator (blob, queue, table)
+#   - durable-azurite:     Test-owned Durable host storage, separate from trigger checkpoints
 #   - servicebus-emulator: Azure Service Bus Emulator (queues, topics, subscriptions)
 #   - eventhub-emulator:   Azure Event Hub Emulator (hubs, consumer groups)
 #   - sqlserver:           SQL Server backing store for the SB and EH emulators
@@ -15,6 +16,14 @@ services:
       - "10001:10001"   # Queue
       - "10002:10002"   # Table
     command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --skipApiVersionCheck --silent"
+
+  durable-azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest@sha256:76b8127d608fab8287a14a4bfeb9a5502cdcffb4bf1e86f09f324ebb0e70edba
+    ports:
+      - "127.0.0.1:17310:10000"
+      - "127.0.0.1:17311:10001"
+      - "127.0.0.1:17312:10002"
+    command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --skipApiVersionCheck --silent --inMemoryPersistence --disableTelemetry"
 
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest@sha256:ba4c8329f48fb8f02e1416be6a930ebfd71268caee78aa985f3af4315e457c89

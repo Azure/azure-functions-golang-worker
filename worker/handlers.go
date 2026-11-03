@@ -10,6 +10,7 @@ import (
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 type LoadedFunction struct {
@@ -119,14 +120,32 @@ func handleFunctionsMetadataRequest(req *pb.FunctionsMetadataRequest, app *sdk.A
 			rawBindings = append(rawBindings, string(bData))
 		}
 
+		var retryOptions *pb.RpcRetryOptions
+		if retry := rf.Retry; retry != nil {
+			retryOptions = &pb.RpcRetryOptions{
+				MaxRetryCount: int32(retry.MaxRetryCount),
+				RetryStrategy: pb.RpcRetryOptions_RetryStrategy(retry.Strategy),
+			}
+			if retry.DelayInterval != nil {
+				retryOptions.DelayInterval = durationpb.New(*retry.DelayInterval)
+			}
+			if retry.MinimumInterval != nil {
+				retryOptions.MinimumInterval = durationpb.New(*retry.MinimumInterval)
+			}
+			if retry.MaximumInterval != nil {
+				retryOptions.MaximumInterval = durationpb.New(*retry.MaximumInterval)
+			}
+		}
+
 		functions = append(functions, &pb.RpcFunctionMetadata{
-			FunctionId:  rf.FuncId,
-			Name:        rf.FuncName,
-			Bindings:    bindingsMap,
-			RawBindings: rawBindings,
-			Language:    "go",
-			ScriptFile:  rf.ScriptFile,
-			EntryPoint:  rf.FuncName,
+			FunctionId:   rf.FuncId,
+			Name:         rf.FuncName,
+			Bindings:     bindingsMap,
+			RawBindings:  rawBindings,
+			Language:     "go",
+			ScriptFile:   rf.ScriptFile,
+			EntryPoint:   rf.FuncName,
+			RetryOptions: retryOptions,
 		})
 		return true
 	})
