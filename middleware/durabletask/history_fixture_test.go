@@ -106,7 +106,7 @@ func decodeRequest(t testing.TB, encoded string) (string, [][]byte, [][]byte) {
 	if err != nil {
 		t.Fatalf("decode base64 request: %v", err)
 	}
-	instanceID, pastEvents, newEvents, err := decodeOrchestratorRequest(raw)
+	instanceID, pastEvents, newEvents, _, err := decodeOrchestratorRequest(raw)
 	if err != nil {
 		t.Fatalf("parse orchestrator request: %v", err)
 	}

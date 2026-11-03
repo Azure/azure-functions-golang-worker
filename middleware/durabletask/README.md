@@ -14,6 +14,7 @@ func main() {
 	durable := durabletask.Middleware()
 	durable.Orchestrator("HelloCities", HelloCities)
 	durable.Activity("SayHello", SayHello)
+	durable.Entity("counter", Counter)
 	app.Use(durable)
 
 	app.HTTP("start", StartHelloCities,
@@ -97,8 +98,71 @@ avoids the ordering question entirely:
 app.Use(durabletask.Middleware(
 	durabletask.WithOrchestrator("HelloCities", HelloCities),
 	durabletask.WithActivity("SayHello", SayHello),
+	durabletask.WithEntity("counter", Counter),
 ))
 ```
+
+## Entities
+
+Register a Functions entity with an operation handler. The host delivers each
+serialized operation batch to the upstream durabletask-go executor, which
+applies operations in order and returns state changes, results, and emitted
+actions to the host:
+
+```go
+func Counter(ctx *durabletask.EntityContext) (any, error) {
+	count := 0
+	if ctx.HasState() {
+		if err := ctx.GetState(&count); err != nil {
+			return nil, err
+		}
+	}
+	switch ctx.OperationName {
+	case "add":
+		var increment int
+		if err := ctx.GetInput(&increment); err != nil {
+			return nil, err
+		}
+		count += increment
+		if err := ctx.SetState(count); err != nil {
+			return nil, err
+		}
+		return count, nil
+	case "get":
+		return count, nil
+	default:
+		return nil, fmt.Errorf("unknown operation %q", ctx.OperationName)
+	}
+}
+```
+
+`EntityContext` exposes the entity ID, operation name, request ID, batch
+position and size, state and input helpers, outgoing immediate or scheduled
+signals, and orchestration starts. `EntityFactory` can create a handler and
+cleanup callback per batch. There is intentionally no reflected entity-method
+API; the Functions host invokes named operations through the explicit handler.
+
+Orchestrations can use durabletask-go's entity calls, signals, and locks. The
+adapter translates the Functions host's legacy event history during replay.
+Configure the host's `entityMessageReorderWindowInMinutes` to `0` for
+orchestrations that use entities. durabletask-go does not implement a positive
+reorder window, so entity history or emitted entity actions with a nonzero
+window fail explicitly rather than silently changing the ordering guarantee.
+The host's default rollback behavior is supported; setting
+`rollbackEntityOperationsOnExceptions` to `false` is rejected.
+
+The Functions entity batch does not identify whether an operation arrived as a
+call or a signal. Accordingly, `EntityContext` does not expose
+durabletask-go's `IsSignal`; entity handlers must not rely on distinguishing
+those request types. The host still routes calls and signals, and uses results
+only for calls. In orchestration history, the adapter uses the upstream
+operation-sent event only as an action acknowledgement; it does not infer
+call-versus-signal metadata for entity handlers.
+
+The inherited management client exposes `SignalEntity`, `GetEntity`, and
+`QueryEntities` unchanged. These are exercised against the Functions host's
+Azure Storage provider in the integration suite. Other providers must support
+the corresponding Durable Task gRPC methods.
 
 ## Sub-orchestrations
 
@@ -216,13 +280,15 @@ GOWORK=off func start
 `GOWORK=off` matters: a Go workspace at the repository root makes Core Tools'
 build resolve the sample against the root module and fail.
 
-## Known gaps
+## Known limitations
 
 - This module uses **durabletask-go v1.0.0-beta3** and requires Go 1.25 or later.
   Upstream's protobuf messages are now internal. Replay still uses its task
   executor, with a wire-level request envelope and inferred history event types.
-- **Entities** are not supported by this middleware yet, even though the upstream
-  SDK now supports them.
+- The Functions host entity protocol does not preserve upstream's
+  call-versus-signal `IsSignal` metadata. The entity API deliberately omits it.
+- Positive entity reorder windows and disabling entity-operation rollback are
+  rejected because the pinned upstream executor cannot honor those settings.
 - **Extended sessions** are rejected by the host for non-.NET workers, so the
   worker does not implement session caching. It fails loudly rather than
   replaying a withheld history.
