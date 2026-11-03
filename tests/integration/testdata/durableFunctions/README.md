@@ -27,3 +27,14 @@ uses the private `durable-azurite` service on ports 17310–17312. It does not d
 shared host checkpoint containers. Restart coverage preserves the hub and
 storage while replacing only the owned host process. See the integration
 README for local startup, deployed-fixture use, timeout bounds, and log paths.
+
+Set `DURABLE_TEST_BLOB_CONNECTION_STRING` to opt into the Azure Blob payload
+store. The fixture then registers a large-payload orchestration that round-trips
+large inputs and outputs through activities, sub-orchestrations, external events,
+custom status, entity state, and a `ContinueAsNew` input. Small string and object
+activity values remain inline controls. The corresponding integration test
+starts an isolated task hub and verifies application values and native blob
+tokens. The test host explicitly uses the supplied connection string for its
+durable state store as well.
+Without the variable, payload offloading and its test-only endpoints are not
+registered.

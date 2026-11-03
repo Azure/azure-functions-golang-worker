@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
+	"github.com/microsoft/durabletask-go/api"
 	"github.com/microsoft/durabletask-go/task"
 )
 
@@ -43,7 +44,9 @@ type Durable struct {
 	// bindingClients caches the [Client] created for each durable gRPC
 	// endpoint the host delivers via the durable client binding, keyed by gRPC
 	// target. Reused across invocations and closed on Shutdown.
-	bindingClients map[string]*Client
+	bindingClients     map[string]*Client
+	largePayloads      *api.LargePayloadOptions
+	payloadsConfigured bool
 }
 
 // Option configures a [Durable] at construction time.
@@ -97,8 +100,19 @@ func Middleware(opts ...Option) *Durable {
 	for _, opt := range opts {
 		opt(d)
 	}
+	if !d.payloadsConfigured && d.client != nil {
+		d.largePayloads = d.client.largePayloads
+	}
+	if d.client != nil && d.payloadsConfigured {
+		// A separate view preserves caller ownership and configuration without
+		// mutating a client potentially shared with another middleware.
+		view := *d.client
+		view.configurePayloads(d.largePayloads)
+		d.client = &view
+	}
+	d.runner.largePayloads = d.largePayloads
 	if d.client == nil {
-		d.client = defaultClientFromEnv()
+		d.client = defaultClientFromEnv(WithClientLargePayloads(d.largePayloads))
 		d.ownsClient = d.client != nil
 	}
 	return d
@@ -165,7 +179,7 @@ func (d *Durable) Activity(name string, fn any) *Durable {
 	validateActivity(name, fn)
 	d.provided = append(d.provided, sdk.FunctionRegistration{
 		Name:    name,
-		Func:    activityInputDecoder(fn),
+		Func:    d.activityInputDecoder(fn),
 		Trigger: activityTriggerBinding{},
 	})
 	return d
@@ -212,7 +226,7 @@ func (d *Durable) EntityFactory(name string, factory EntityFactory) *Durable {
 			if mc, ok := sdk.MiddlewareContextFrom(ctx); ok {
 				encoded = mc.InputString()
 			}
-			return runEntityBatch(ctx, d.registry, encoded)
+			return runEntityBatch(ctx, d.registry, encoded, d.largePayloads)
 		},
 		Trigger: entityTriggerBinding{},
 	})
@@ -228,9 +242,14 @@ func (d *Durable) EntityFactory(name string, factory EntityFactory) *Durable {
 // surrounding quotes rather than Tokyo. The returned function has a fixed
 // func(context.Context, []byte) (any, error) shape that the worker maps the
 // activity trigger's input binding onto; it JSON-decodes the raw input into the
-// user function's input type and forwards the call. The user's return value
-// flows back unchanged (the host serializes it for the orchestration history).
+// user function's input type and forwards the call. With offloading disabled,
+// the user's return value flows back unchanged for host serialization.
+// With offloading enabled, large serialized results become store tokens.
 func activityInputDecoder(fn any) func(context.Context, []byte) (any, error) {
+	return (&Durable{}).activityInputDecoder(fn)
+}
+
+func (d *Durable) activityInputDecoder(fn any) func(context.Context, []byte) (any, error) {
 	fnVal := reflect.ValueOf(fn)
 	fnType := fnVal.Type()
 	hasInput := fnType.NumIn() == 2
@@ -240,6 +259,14 @@ func activityInputDecoder(fn any) func(context.Context, []byte) (any, error) {
 		inType = fnType.In(1)
 	}
 	return func(ctx context.Context, raw []byte) (any, error) {
+		if mc, ok := sdk.MiddlewareContextFrom(ctx); ok {
+			raw = []byte(mc.InputString())
+		}
+		input, err := transformPayload(ctx, d.largePayloads, string(raw), false)
+		if err != nil {
+			return nil, fmt.Errorf("durabletask: hydrate activity input: %w", err)
+		}
+		raw = []byte(input)
 		callArgs := []reflect.Value{reflect.ValueOf(ctx)}
 		if hasInput {
 			inPtr := reflect.New(inType)
@@ -251,14 +278,35 @@ func activityInputDecoder(fn any) func(context.Context, []byte) (any, error) {
 			callArgs = append(callArgs, inPtr.Elem())
 		}
 		results := fnVal.Call(callArgs)
-		var err error
+		err = nil
 		if last := results[len(results)-1]; !last.IsNil() {
 			err = last.Interface().(error)
 		}
 		if !hasOutput {
 			return nil, err
 		}
-		return results[0].Interface(), err
+		output := results[0].Interface()
+		if err != nil || d.largePayloads == nil {
+			return output, err
+		}
+		serialized, err := json.Marshal(output)
+		if err != nil {
+			return nil, fmt.Errorf("durabletask: serialize activity output: %w", err)
+		}
+		externalized, err := transformPayload(ctx, d.largePayloads, string(serialized), true)
+		if err != nil {
+			return nil, fmt.Errorf("durabletask: offload activity output: %w", err)
+		}
+		if externalized != string(serialized) {
+			wire, err := wrapPayloadReference(externalized, d.largePayloads.TokenStore)
+			if err != nil {
+				return nil, err
+			}
+			return json.RawMessage(wire), nil
+		}
+		// Reuse this serialization so custom marshalers run only once, even
+		// when the payload stays inline.
+		return json.RawMessage(serialized), nil
 	}
 }
 
@@ -321,7 +369,7 @@ func (d *Durable) cachedClient(rpcBaseURL, httpBaseURL, queryParams string) *Cli
 	if c, ok := d.bindingClients[target]; ok {
 		return c
 	}
-	c, err := Dial(target)
+	c, err := Dial(target, WithClientLargePayloads(d.largePayloads))
 	if err != nil {
 		return nil
 	}
