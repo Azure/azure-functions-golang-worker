@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 
 	"github.com/microsoft/durabletask-go/api"
-	"github.com/microsoft/durabletask-go/backend"
 	"github.com/microsoft/durabletask-go/task"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -29,10 +29,10 @@ const (
 // out-of-process orchestrator function's return value.
 //
 // It delegates the actual replay to durabletask-go's in-process task
-// executor. The only reason this file does any protobuf work itself is that
-// the upstream OrchestratorRequest type is not currently exported; once it
-// (or a public LoadAndRun helper) is available, loadAndRun collapses to a
-// single delegation.
+// executor. Neither the OrchestratorRequest nor the HistoryEvent message type
+// is exported upstream (they live in an internal package), so this file works
+// on the raw wire bytes of the events and only materializes the upstream types
+// at the executor call, through type inference (see [executeOrchestrator]).
 type orchestrationRunner struct {
 	registry *task.TaskRegistry
 }
@@ -50,12 +50,9 @@ func (r *orchestrationRunner) loadAndRun(ctx context.Context, encodedRequest str
 		return "", fmt.Errorf("durabletask: parse orchestrator request: %w", err)
 	}
 
-	if err := checkHistoryPresent(instanceID, pastEvents, newEvents); err != nil {
-		return "", err
-	}
-
-	executor := task.NewTaskExecutor(r.registry)
-	results, err := executor.ExecuteOrchestrator(ctx, api.InstanceID(instanceID), pastEvents, newEvents)
+	logger := slog.New(&replayLogHandler{Handler: slog.Default().Handler(), invocation: ctx})
+	executor := task.NewTaskExecutor(r.registry, task.WithLogger(logger))
+	results, err := executeOrchestrator(ctx, executor.ExecuteOrchestrator, instanceID, pastEvents, newEvents)
 	if err != nil {
 		return "", fmt.Errorf("durabletask: execute orchestrator: %w", err)
 	}
@@ -77,8 +74,8 @@ func (r *orchestrationRunner) loadAndRun(ctx context.Context, encodedRequest str
 // the orchestrator scheduled without naming one explicitly.
 //
 // Responsibility for this is split differently in each Durable Task stack. In
-// standalone durabletask-go the *backend* fills the gap: runtimestate.go
-// assigns "<parent>:<action id in hex>" when CreateSubOrchestration carries an
+// durabletask-go's former standalone backend, runtimestate.go filled the gap:
+// it assigned "<parent>:<action id in hex>" when CreateSubOrchestration carried an
 // empty instance ID. The .NET SDK instead does it in the *worker*, where
 // TaskOrchestrationContextWrapper.CallSubOrchestratorAsync falls back to a
 // replay-safe generated ID.
@@ -89,11 +86,10 @@ func (r *orchestrationRunner) loadAndRun(ctx context.Context, encodedRequest str
 // parent waits forever with no error anywhere. Filling the ID in the worker,
 // as .NET does, closes that gap.
 //
-// The format deliberately matches durabletask-go's backend so an orchestrator
-// produces the same child instance IDs under the Functions host as it does
-// standalone. It is derived from the parent instance ID and the action's
+// The format preserves compatibility with that backend. It is derived from
+// the parent instance ID and the action's
 // sequence number, both of which are stable across replays.
-func assignSubOrchestrationIDs(instanceID string, results *backend.ExecutionResults) {
+func assignSubOrchestrationIDs(instanceID string, results *task.ExecutionResults) {
 	if results == nil || results.Response == nil {
 		return
 	}
@@ -128,7 +124,7 @@ func assignSubOrchestrationIDs(instanceID string, results *backend.ExecutionResu
 // the Functions Go image as "native". Replaying an empty history would
 // re-schedule work that already completed, so if that guarantee ever changes
 // upstream this fails loudly instead of silently duplicating activities.
-func checkHistoryPresent(instanceID string, pastEvents, newEvents []*backend.HistoryEvent) error {
+func checkHistoryPresent[ES any, PE interface{ GetExecutionStarted() *ES }](instanceID string, pastEvents, newEvents []PE) error {
 	if len(pastEvents) > 0 {
 		return nil
 	}
@@ -155,7 +151,7 @@ func checkHistoryPresent(instanceID string, pastEvents, newEvents []*backend.His
 // function returns before touching the span, so apps that don't opt into
 // tracing pay nothing. Attribute names follow durabletask-go's durabletask.*
 // convention so they sit alongside the engine's own span attributes.
-func annotateTurnSpan(ctx context.Context, instanceID string, pastEvents, newEvents []*backend.HistoryEvent, results *backend.ExecutionResults) {
+func annotateTurnSpan(ctx context.Context, instanceID string, pastEvents, newEvents [][]byte, results *task.ExecutionResults) {
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return
@@ -183,16 +179,15 @@ func annotateTurnSpan(ctx context.Context, instanceID string, pastEvents, newEve
 	)
 }
 
-// decodeOrchestratorRequest extracts the instance ID and the past / new
+// decodeOrchestratorRequest extracts the instance ID and the raw past / new
 // history events from a marshaled OrchestratorRequest without depending on
-// the upstream (currently unexported) message type. Each history-event
-// sub-message is handed to backend.UnmarshalHistoryEvent, which yields the
-// exported backend.HistoryEvent type the executor accepts.
+// the upstream (unexported) message type.
 //
 // A repeated embedded message and the raw bytes of each element share the
 // same wire encoding (length-delimited, field-tagged), so consuming fields 3
-// and 4 as byte chunks and unmarshaling each chunk is wire-correct.
-func decodeOrchestratorRequest(b []byte) (instanceID string, pastEvents, newEvents []*backend.HistoryEvent, err error) {
+// and 4 as byte chunks is wire-correct. Events are validated when they are
+// unmarshaled for the executor.
+func decodeOrchestratorRequest(b []byte) (instanceID string, pastEvents, newEvents [][]byte, err error) {
 	for len(b) > 0 {
 		num, typ, n := protowire.ConsumeTag(b)
 		if n < 0 {
@@ -214,11 +209,7 @@ func decodeOrchestratorRequest(b []byte) (instanceID string, pastEvents, newEven
 			if m < 0 {
 				return "", nil, nil, protowire.ParseError(m)
 			}
-			ev, e := backend.UnmarshalHistoryEvent(v)
-			if e != nil {
-				return "", nil, nil, e
-			}
-			pastEvents = append(pastEvents, ev)
+			pastEvents = append(pastEvents, append([]byte(nil), v...))
 			b = b[m:]
 
 		case num == fieldNewEvents && typ == protowire.BytesType:
@@ -226,11 +217,7 @@ func decodeOrchestratorRequest(b []byte) (instanceID string, pastEvents, newEven
 			if m < 0 {
 				return "", nil, nil, protowire.ParseError(m)
 			}
-			ev, e := backend.UnmarshalHistoryEvent(v)
-			if e != nil {
-				return "", nil, nil, e
-			}
-			newEvents = append(newEvents, ev)
+			newEvents = append(newEvents, append([]byte(nil), v...))
 			b = b[m:]
 
 		default:
@@ -244,30 +231,49 @@ func decodeOrchestratorRequest(b []byte) (instanceID string, pastEvents, newEven
 	return instanceID, pastEvents, newEvents, nil
 }
 
-// encodeOrchestratorRequest is the inverse of decodeOrchestratorRequest. It
-// is used by tests (and documents the wire format) to build an
-// OrchestratorRequest payload from history events produced by a durabletask
-// backend, without depending on the upstream message type.
-func encodeOrchestratorRequest(instanceID string, pastEvents, newEvents []*backend.HistoryEvent) ([]byte, error) {
-	var b []byte
-	b = protowire.AppendTag(b, fieldInstanceID, protowire.BytesType)
-	b = protowire.AppendBytes(b, []byte(instanceID))
+// executeOrchestrator replays the orchestrator over the marshaled events.
+//
+// [task.Executor.ExecuteOrchestrator] takes durabletask-go's internal
+// protobuf types, which this module cannot import or name. The signature of
+// the method value passed as execute lets the compiler infer them: PE is the
+// event pointer type and E its element type. Each raw event is unmarshaled
+// into a new E, so no reflection or copy of the upstream proto is needed. The
+// entity parameters are left nil, which keeps entities unsupported.
+func executeOrchestrator[E, EP, ES any, PE interface {
+	*E
+	proto.Message
+	GetExecutionStarted() *ES
+}](
+	ctx context.Context,
+	execute func(context.Context, api.InstanceID, []PE, []PE, *EP) (*task.ExecutionResults, error),
+	instanceID string,
+	pastEvents, newEvents [][]byte,
+) (*task.ExecutionResults, error) {
+	past, err := unmarshalEvents[E, PE](pastEvents)
+	if err != nil {
+		return nil, err
+	}
+	next, err := unmarshalEvents[E, PE](newEvents)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkHistoryPresent(instanceID, past, next); err != nil {
+		return nil, err
+	}
+	return execute(ctx, api.InstanceID(instanceID), past, next, nil)
+}
 
-	for _, e := range pastEvents {
-		raw, err := backend.MarshalHistoryEvent(e)
-		if err != nil {
-			return nil, err
+func unmarshalEvents[E any, PE interface {
+	*E
+	proto.Message
+}](raw [][]byte) ([]PE, error) {
+	events := make([]PE, 0, len(raw))
+	for _, r := range raw {
+		ev := PE(new(E))
+		if err := proto.Unmarshal(r, ev); err != nil {
+			return nil, fmt.Errorf("unmarshal history event: %w", err)
 		}
-		b = protowire.AppendTag(b, fieldPastEvents, protowire.BytesType)
-		b = protowire.AppendBytes(b, raw)
+		events = append(events, ev)
 	}
-	for _, e := range newEvents {
-		raw, err := backend.MarshalHistoryEvent(e)
-		if err != nil {
-			return nil, err
-		}
-		b = protowire.AppendTag(b, fieldNewEvents, protowire.BytesType)
-		b = protowire.AppendBytes(b, raw)
-	}
-	return b, nil
+	return events, nil
 }

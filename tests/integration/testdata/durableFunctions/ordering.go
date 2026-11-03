@@ -16,7 +16,6 @@ import (
 	"github.com/azure/azure-functions-golang-worker/middleware/otelfunc"
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	"github.com/microsoft/durabletask-go/api"
-	"github.com/microsoft/durabletask-go/backend"
 	"github.com/microsoft/durabletask-go/task"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -228,47 +227,32 @@ func configureOrderingProbe(app *sdk.App, durable *durabletask.Durable) bool {
 
 // replaceProbeInput edits only the first-turn test orchestration's input. The
 // surrounding request fields, instance ID, and event metadata are preserved.
-// This is a protocol probe, not a recommended application history transformation.
+// The protobuf types are internal to durabletask-go, so the edit is made on the
+// wire format. This is a protocol probe, not a recommended application history
+// transformation.
 func replaceProbeInput(encoded, want, replacement string) (string, error) {
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return "", err
 	}
-	var out []byte
 	changed := 0
-	for len(raw) > 0 {
-		num, typ, n := protowire.ConsumeTag(raw)
-		if n < 0 {
-			return "", protowire.ParseError(n)
-		}
-		m := protowire.ConsumeFieldValue(num, typ, raw[n:])
-		if m < 0 {
-			return "", protowire.ParseError(m)
-		}
-		if num == 4 && typ == protowire.BytesType { // OrchestratorRequest.newEvents
-			value, _ := protowire.ConsumeBytes(raw[n:])
-			event, err := backend.UnmarshalHistoryEvent(value)
-			if err != nil {
-				return "", err
-			}
-			if started := event.GetExecutionStarted(); started != nil {
-				if started.Input == nil || started.Input.Value != want {
-					return "", fmt.Errorf("probe input = %q, want %q", started.GetInput().GetValue(), want)
-				}
-				started.Input.Value = replacement
-				value, err = backend.MarshalHistoryEvent(event)
-				if err != nil {
-					return "", err
-				}
-				out = protowire.AppendTag(out, num, typ)
-				out = protowire.AppendBytes(out, value)
-				changed++
-				raw = raw[n+m:]
-				continue
-			}
-		}
-		out = append(out, raw[:n+m]...)
-		raw = raw[n+m:]
+	// OrchestratorRequest.newEvents -> HistoryEvent.executionStarted ->
+	// ExecutionStartedEvent.input -> StringValue.value
+	out, err := mapBytesField(raw, 4, func(event []byte) ([]byte, error) {
+		return mapBytesField(event, 3, func(started []byte) ([]byte, error) {
+			return mapBytesField(started, 3, func(input []byte) ([]byte, error) {
+				return mapBytesField(input, 1, func(value []byte) ([]byte, error) {
+					if string(value) != want {
+						return nil, fmt.Errorf("probe input = %q, want %q", value, want)
+					}
+					changed++
+					return []byte(replacement), nil
+				})
+			})
+		})
+	})
+	if err != nil {
+		return "", err
 	}
 	if changed != 1 {
 		return "", fmt.Errorf("expected one first-turn execution input, changed %d", changed)
@@ -276,6 +260,34 @@ func replaceProbeInput(encoded, want, replacement string) (string, error) {
 	return base64.StdEncoding.EncodeToString(out), nil
 }
 
+// mapBytesField rewrites every length-delimited field num in the message raw
+// with fn, copying all other fields unchanged.
+func mapBytesField(raw []byte, num protowire.Number, fn func([]byte) ([]byte, error)) ([]byte, error) {
+	var out []byte
+	for len(raw) > 0 {
+		fieldNum, typ, n := protowire.ConsumeTag(raw)
+		if n < 0 {
+			return nil, protowire.ParseError(n)
+		}
+		m := protowire.ConsumeFieldValue(fieldNum, typ, raw[n:])
+		if m < 0 {
+			return nil, protowire.ParseError(m)
+		}
+		if fieldNum == num && typ == protowire.BytesType {
+			value, _ := protowire.ConsumeBytes(raw[n:])
+			replaced, err := fn(value)
+			if err != nil {
+				return nil, err
+			}
+			out = protowire.AppendTag(out, fieldNum, typ)
+			out = protowire.AppendBytes(out, replaced)
+		} else {
+			out = append(out, raw[:n+m]...)
+		}
+		raw = raw[n+m:]
+	}
+	return out, nil
+}
 func counterOrchestrator(ctx *task.OrchestrationContext) (any, error) {
 	var count int
 	if err := ctx.GetInput(&count); err != nil {

@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,19 +18,9 @@ import (
 //
 //	DURABLE_E2E_BASE_URL=https://myapp.azurewebsites.net go test -run TestDurable ./...
 //
-// Every assertion below goes through the sample's own anonymous HTTP
-// endpoints, so nothing here depends on the host's management API or on
-// function keys.
+// Assertions go through the fixture's anonymous HTTP endpoints, including its
+// test-only lifecycle probes, not the host's HTTP management API.
 const durableBaseURLEnv = "DURABLE_E2E_BASE_URL"
-
-var durableEnv = map[string]string{
-	"AzureWebJobsStorage": "UseDevelopmentStorage=true",
-	// The durable sample is its own Go module because it depends on the
-	// durabletask middleware submodule. A go.work file at the repo root
-	// captures the sample directory and makes Core Tools build the root
-	// module instead, so keep the sample build out of workspace mode.
-	"GOWORK": "off",
-}
 
 // Durable orchestrations round-trip through storage, so they need noticeably
 // more time than a single HTTP invocation.
@@ -76,13 +67,15 @@ type orchestrationStatus struct {
 	CustomStatus  json.RawMessage `json:"customStatus"`
 }
 
-// durableApp drives the durableFunctions sample over HTTP. It holds no host
-// state, so the same checks run against a local Core Tools host or a deployed
-// app depending on how baseURL is set.
+// durableApp drives the durableFunctions fixture over HTTP. Only suite-owned
+// local hosts can be restarted.
 type durableApp struct {
 	t       *testing.T
 	baseURL string
+	restart func(*testing.T) string
 }
+
+var durableHTTPClient = &http.Client{Timeout: 70 * time.Second}
 
 // startDurableApp returns a driver for the durable app. It reuses an
 // already-running app when durableBaseURLEnv is set, and otherwise starts the
@@ -95,12 +88,10 @@ func startDurableApp(t *testing.T) *durableApp {
 		return &durableApp{t: t, baseURL: strings.TrimSuffix(baseURL, "/")}
 	}
 
-	requireAzurite(t)
-	// The fixture is used rather than samples/durableFunctions because the
-	// sample depends on modules outside the root module and its go.mod is not
-	// committed, so a fresh checkout cannot build it.
-	host := startTestDataHost(t, "durableFunctions", durableEnv, durableStartTimeout)
-	return &durableApp{t: t, baseURL: host.URL()}
+	host, restart := startDurableHost(t, nil)
+	return &durableApp{t: t, baseURL: host.URL(), restart: func(t *testing.T) string {
+		return restart(t).URL()
+	}}
 }
 
 // post sends a JSON request and returns the status code and body. A nil
@@ -119,7 +110,7 @@ func (a *durableApp) post(path string, payload any) (int, []byte) {
 		body = bytes.NewReader(encoded)
 	}
 
-	resp, err := http.Post(a.baseURL+path, "application/json", body)
+	resp, err := durableHTTPClient.Post(a.baseURL+path, "application/json", body)
 	if err != nil {
 		a.t.Fatalf("POST %s: %v", path, err)
 	}
@@ -181,7 +172,7 @@ func (a *durableApp) scheduleOrchestration(path string, payload any) string {
 func (a *durableApp) status(instanceID string) orchestrationStatus {
 	a.t.Helper()
 
-	resp, err := http.Get(a.baseURL + "/api/expenses/" + instanceID)
+	resp, err := durableHTTPClient.Get(a.baseURL + "/api/expenses/" + instanceID)
 	if err != nil {
 		a.t.Fatalf("GET status for %s: %v", instanceID, err)
 	}
@@ -242,6 +233,22 @@ func (a *durableApp) waitForCompletion(instanceID string) orchestrationStatus {
 	})
 }
 
+func (a *durableApp) managementStatus(operation, instanceID string) orchestrationStatus {
+	a.t.Helper()
+	code, body := a.post("/api/lifecycle/"+operation, map[string]string{"id": instanceID})
+	if code != http.StatusOK {
+		a.t.Fatalf("%s %s: status=%d body=%s", operation, instanceID, code, body)
+	}
+	var status orchestrationStatus
+	if err := json.Unmarshal(body, &status); err != nil {
+		a.t.Fatalf("decode management status: %v", err)
+	}
+	if status.InstanceID != instanceID {
+		a.t.Fatalf("%s returned instance %q, want %q", operation, status.InstanceID, instanceID)
+	}
+	return status
+}
+
 // decodeExpenseResult unwraps the orchestration output, which the status
 // payload embeds as raw JSON.
 func decodeExpenseResult(t *testing.T, output json.RawMessage) expenseResult {
@@ -296,8 +303,8 @@ func TestDurableOrchestrations(t *testing.T) {
 		}
 
 		var greetings []string
-	if err := json.Unmarshal(status.Output, &greetings); err != nil {
-		t.Fatalf("decode greetings %s: %v", status.Output, err)
+		if err := json.Unmarshal(status.Output, &greetings); err != nil {
+			t.Fatalf("decode greetings %s: %v", status.Output, err)
 		}
 		// Activity inputs arrive JSON-encoded; the worker decodes them before
 		// binding, so the city must not carry its quotes into the greeting.
@@ -395,7 +402,7 @@ func TestDurableOrchestrations(t *testing.T) {
 	})
 
 	t.Run("UnknownInstanceReturnsNotFound", func(t *testing.T) {
-		resp, err := http.Get(app.baseURL + "/api/expenses/does-not-exist")
+		resp, err := durableHTTPClient.Get(app.baseURL + "/api/expenses/does-not-exist")
 		if err != nil {
 			t.Fatalf("GET status for an unknown instance: %v", err)
 		}
@@ -404,6 +411,106 @@ func TestDurableOrchestrations(t *testing.T) {
 
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("expected status 404, got %d: %s", resp.StatusCode, body)
+		}
+	})
+
+	t.Run("DirectGoManagementOperations", func(t *testing.T) {
+		app := &durableApp{t: t, baseURL: app.baseURL}
+		wantID := "management-" + rand.Text()
+		id := app.scheduleOrchestration("/api/lifecycle/schedule", map[string]any{
+			"id": wantID, "name": "LifecycleWait", "input": 60,
+		})
+		if id != wantID {
+			t.Fatalf("scheduled ID = %q, want explicit %q", id, wantID)
+		}
+		started := app.managementStatus("wait-start", id)
+		if started.RuntimeStatus != "Running" || started.Name != "LifecycleWait" {
+			t.Fatalf("unexpected start metadata: %+v", started)
+		}
+		app.waitForStatus(id, "custom status while waiting", durableCompleteTimeout, func(s orchestrationStatus) bool {
+			return s.RuntimeStatus == "Running" && customStatusText(s.CustomStatus) == "waiting for Continue"
+		})
+		fetched := app.managementStatus("fetch", id)
+		if string(fetched.Input) != "60" || customStatusText(fetched.CustomStatus) != "waiting for Continue" {
+			t.Fatalf("unexpected fetched metadata: %+v", fetched)
+		}
+		code, body := app.post("/api/lifecycle/raise", map[string]any{
+			"id": id, "event": "Continue", "payload": "approved",
+		})
+		if code != http.StatusAccepted {
+			t.Fatalf("raise: status=%d body=%s", code, body)
+		}
+		final := app.managementStatus("wait-completion", id)
+		if final.RuntimeStatus != "Completed" || string(final.Output) != `"approved"` ||
+			customStatusText(final.CustomStatus) != "event received" {
+			t.Fatalf("unexpected completion metadata: %+v", final)
+		}
+		code, body = app.post("/api/lifecycle/fetch", map[string]string{"id": "missing-" + rand.Text()})
+		if code != http.StatusNotFound || !strings.Contains(string(body), "api.ErrInstanceNotFound") {
+			t.Fatalf("missing instance: status=%d body=%s", code, body)
+		}
+	})
+
+	t.Run("ExternalEventTimeoutUsesDurableTimer", func(t *testing.T) {
+		app := &durableApp{t: t, baseURL: app.baseURL}
+		start := time.Now()
+		id := app.scheduleOrchestration("/api/lifecycle/schedule", map[string]any{
+			"id": "timeout-" + rand.Text(), "name": "LifecycleWait", "input": 3,
+		})
+		final := app.managementStatus("wait-completion", id)
+		if final.RuntimeStatus != "Completed" || string(final.Output) != `"timed out"` ||
+			customStatusText(final.CustomStatus) != "timed out" {
+			t.Fatalf("unexpected timeout metadata: %+v", final)
+		}
+		if elapsed := time.Since(start); elapsed < 3*time.Second {
+			t.Fatalf("external event timed out before its durable timer: %s", elapsed)
+		}
+	})
+
+	t.Run("EarlyExternalEventIsNotLost", func(t *testing.T) {
+		app := &durableApp{t: t, baseURL: app.baseURL}
+		id := app.scheduleOrchestration("/api/lifecycle/schedule", map[string]any{
+			"id": "early-" + rand.Text(), "name": "BufferedEvent",
+		})
+		code, body := app.post("/api/lifecycle/raise", map[string]any{
+			"id": id, "event": "Continue", "payload": "early event",
+		})
+		if code != http.StatusAccepted {
+			t.Fatalf("early event: status=%d body=%s", code, body)
+		}
+		app.waitForStatus(id, "Release gate before consuming Continue", durableCompleteTimeout, func(s orchestrationStatus) bool {
+			return s.RuntimeStatus == "Running" && customStatusText(s.CustomStatus) == "waiting for Release"
+		})
+		code, body = app.post("/api/lifecycle/raise", map[string]any{
+			"id": id, "event": "Release", "payload": nil,
+		})
+		if code != http.StatusAccepted {
+			t.Fatalf("release gate: status=%d body=%s", code, body)
+		}
+		final := app.managementStatus("wait-completion", id)
+		if final.RuntimeStatus != "Completed" || string(final.Output) != `"early event"` {
+			t.Fatalf("unexpected early event result: %+v", final)
+		}
+	})
+
+	t.Run("WaitingInstanceResumesAfterHostRestart", func(t *testing.T) {
+		if app.restart == nil {
+			t.Skip("restart requires a suite-owned local host, not DURABLE_E2E_BASE_URL")
+		}
+		driver := &durableApp{t: t, baseURL: app.baseURL}
+		id := driver.scheduleOrchestration("/api/expenses", newExpense(t, autoApproveLimit+500))
+		waiting := func(s orchestrationStatus) bool {
+			return s.RuntimeStatus == "Running" && customStatusText(s.CustomStatus) == "awaiting manager approval"
+		}
+		driver.waitForStatus(id, "persisted approval wait", durableCompleteTimeout, waiting)
+		app.baseURL = app.restart(t)
+		driver.baseURL = app.baseURL
+		driver.waitForStatus(id, "approval wait after restart", durableCompleteTimeout, waiting)
+		driver.approve(id, decision{Approved: true, By: "after-restart"})
+		final := driver.managementStatus("wait-completion", id)
+		result := decodeExpenseResult(t, final.Output)
+		if final.RuntimeStatus != "Completed" || result.Status != "approved" || result.Note != "decided by after-restart" {
+			t.Fatalf("unexpected resumed result: %+v, status=%s", result, final.RuntimeStatus)
 		}
 	})
 }
