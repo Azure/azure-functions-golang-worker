@@ -61,6 +61,11 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *
 		)
 	}
 
+	hostConfiguration := disp.hostConfigurationProvider
+	if hostConfiguration == nil {
+		hostConfiguration = processHostConfiguration
+	}
+
 	return &pb.StreamingMessage{
 		RequestId: requestId,
 		Content: &pb.StreamingMessage_WorkerInitResponse{
@@ -69,9 +74,10 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *
 					Status: pb.StatusResult_Success,
 					Result: "Success",
 				},
-				WorkerVersion:  "1.0.0",
-				Capabilities:   capabilities,
-				WorkerMetadata: buildWorkerMetadata(),
+				WorkerVersion:     "1.0.0",
+				Capabilities:      capabilities,
+				WorkerMetadata:    buildWorkerMetadata(),
+				HostConfiguration: hostConfiguration(req),
 			},
 		},
 	}
