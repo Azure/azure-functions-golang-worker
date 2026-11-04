@@ -18,30 +18,28 @@ import (
 
 	"github.com/azure/azure-functions-golang-worker/sdk"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestNormalizeHostConfiguration(t *testing.T) {
 	for _, tt := range []struct {
 		name, input, want string
 	}{
-		{"empty", "", ""},
+		{"empty object", "{}", "{}"},
 		{"comments and commas", "// header\n{ \"version\": \"2.0\", /* inline */ \"logging\": { \"a\": [1, 2,], }, }", `{"version":"2.0","logging":{"a":[1,2]}}`},
 		{"raw tokens", `{ "a": "x\u0041\n", "n": [1e5, -0.50, true, false, null, {}, [],], "e": {}, }`, `{"a":"x\u0041\n","n":[1e5,-0.50,true,false,null,{},[]],"e":{}}`},
-		{"number precision", `[ -0, 1E+2, 1e999, 123456789012345678901234567890, 0.123456789012345678901234567890, -1.234567890123456789e-1234 ]`, `[-0,1E+2,1e999,123456789012345678901234567890,0.123456789012345678901234567890,-1.234567890123456789e-1234]`},
+		{"number precision", `{"numbers": [ -0, 1E+2, 1e999, 123456789012345678901234567890, 0.123456789012345678901234567890, -1.234567890123456789e-1234 ]}`, `{"numbers":[-0,1E+2,1e999,123456789012345678901234567890,0.123456789012345678901234567890,-1.234567890123456789e-1234]}`},
 		{"duplicate keys", `{ "a": 1, "\u0061": 2, "a": 3, }`, `{"a":1,"\u0061":2,"a":3}`},
 		{"raw surrogate escapes", `{"\uD800":"\udc00", "pair": "\uD83D\uDE00", "slash": "\/", "quote": "\"", "backslash": "\\"}`, `{"\uD800":"\udc00","pair":"\uD83D\uDE00","slash":"\/","quote":"\"","backslash":"\\"}`},
 		{"comment markers in strings", `{"//":"/*not a comment*/", "url": "https://example.test/a//b", "punctuation": "[,]{,}",}`, `{"//":"/*not a comment*/","url":"https://example.test/a//b","punctuation":"[,]{,}"}`},
 		{"comments around punctuation", `{/*a*/"b"/*c*/:/*d*/[/*e*/1/*f*/,/*g*/]/*h*/,/*i*/}`, `{"b":[1]}`},
-		{"root number", " 1.2300e+999 /* trailing */", "1.2300e+999"},
-		{"root string", ` "scalar" // trailing`, `"scalar"`},
-		{"root bool", "true\r\n/* comment */", "true"},
-		{"root null", "null", "null"},
-		{"empty containers", `[{},[],{/*a*/},[/*b*/],]`, `[{},[],{},[]]`},
+		{"nested scalars", `{ "number": 1.2300e+999, "string": "scalar", "boolean": true, "null": null, }`, `{"number":1.2300e+999,"string":"scalar","boolean":true,"null":null}`},
+		{"empty containers", `{"containers":[{},[],{/*a*/},[/*b*/],]}`, `{"containers":[{},[],{},[]]}`},
 		{"comment line endings", "// header\r{\r\n\"x\":1,// field\r\n}", `{"x":1}`},
 		{"Unicode", "{\"x\":\"\u00e9\u20ac\U0001f600\ufffd\u2028\u2029\"}", "{\"x\":\"\u00e9\u20ac\U0001f600\ufffd\u2028\u2029\"}"},
 		{"Unicode block comments", "/*\u2028\u2029*/ {\"x\": 1} /*\u2029\u2028*/", `{"x":1}`},
 		{"reversed surrogate escapes", `{"\uDC00\uD800":"\uDC00\uD800"}`, `{"\uDC00\uD800":"\uDC00\uD800"}`},
-		{"depth 64", strings.Repeat("[", 64) + "0" + strings.Repeat("]", 64), strings.Repeat("[", 64) + "0" + strings.Repeat("]", 64)},
+		{"depth 64", `{"a":` + strings.Repeat("[", 63) + "0" + strings.Repeat("]", 63) + "}", `{"a":` + strings.Repeat("[", 63) + "0" + strings.Repeat("]", 63) + "}"},
 		{"object depth 64", strings.Repeat(`{"a":`, 64) + "0" + strings.Repeat("}", 64), strings.Repeat(`{"a":`, 64) + "0" + strings.Repeat("}", 64)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -49,8 +47,8 @@ func TestNormalizeHostConfiguration(t *testing.T) {
 			if err != nil || string(got) != tt.want {
 				t.Fatalf("got %q, err = %v; want %q", got, err, tt.want)
 			}
-			if len(got) > 0 && !json.Valid(got) {
-				t.Fatal("normalized output is not strict JSON")
+			if len(got) == 0 || got[0] != '{' || !json.Valid(got) {
+				t.Fatal("normalized output is not a strict JSON object")
 			}
 		})
 	}
@@ -58,6 +56,7 @@ func TestNormalizeHostConfiguration(t *testing.T) {
 
 func TestNormalizeHostConfigurationInvalid(t *testing.T) {
 	for _, input := range []string{
+		"", "[]", "[7]", `"s"`, "1", "null", "true", "false", "// c\n[1]", "/* c */ true",
 		" ", "\t\r\n", "// comment", "/* comment */", "not json", "{", "[", `{"x":}`,
 		"{,}", "[,]", "[1,,]", `{"a":,}`, `{"a":1,,}`, "[1, ,]", `{"a",}`, "[1,}",
 		"{} {}", "1 true", "1,2", "{} garbage", "{} /* unterminated", "/*", "/", "[/* ]",
@@ -67,7 +66,7 @@ func TestNormalizeHostConfigurationInvalid(t *testing.T) {
 		"{\u00a0\"x\":1}", "// comment\u2028\n{}", "// comment\u2029\n{}",
 		"// comment\u2028", "// comment\u2029", "{}// comment\u2028", "{}// comment\u2029",
 		"[\u2028]", "{\u2029}", "true\u2028", "\u2029null",
-		strings.Repeat("[", 65) + strings.Repeat("]", 65),
+		`{"a":` + strings.Repeat("[", 64) + "0" + strings.Repeat("]", 64) + "}",
 		strings.Repeat(`{"a":`, 65) + "0" + strings.Repeat("}", 65),
 	} {
 		t.Run(input, func(t *testing.T) {
@@ -84,15 +83,15 @@ func TestHostConfigurationNormalizationAcrossEncodings(t *testing.T) {
 	const want = "{\"unicode\":\"\ufffd\u00e9\U0001f600\",\"number\":1e999,\"escape\":\"\\uD800\"}"
 	for _, encoding := range hostConfigurationEncodings {
 		t.Run(encoding, func(t *testing.T) {
-			for _, text := range []string{"", input} {
+			for _, text := range []string{"{}", input} {
 				var stream *hostConfigurationTestStream
 				content, err := readHostConfiguration("relative-root", func(string) (io.ReadCloser, error) {
 					stream = &hostConfigurationTestStream{Reader: iotest.OneByteReader(bytes.NewReader(encodeHostConfigurationTest(text, encoding)))}
 					return stream, nil
 				})
 				expected := want
-				if text == "" {
-					expected = ""
+				if text == "{}" {
+					expected = "{}"
 				}
 				if err != nil || string(content) != expected || !stream.closed {
 					t.Fatalf("got %q, err = %v, closed = %v", content, err, stream.closed)
@@ -103,13 +102,15 @@ func TestHostConfigurationNormalizationAcrossEncodings(t *testing.T) {
 }
 
 func TestHostConfigurationNormalizedLimits(t *testing.T) {
+	const prefix, suffix = `{"v":"`, `"}`
+	const payloadBytes = maxHostConfigurationBytes - len(prefix) - len(suffix)
 	for _, encoding := range hostConfigurationEncodings {
 		t.Run(encoding, func(t *testing.T) {
 			for _, scalar := range []string{"a", "\u20ac", "\U0001f600"} {
-				payload := strings.Repeat(scalar, (maxHostConfigurationBytes-2)/len(scalar))
-				payload += strings.Repeat("a", maxHostConfigurationBytes-2-len(payload))
-				exact := `"` + payload + `"`
-				for _, input := range []string{exact, " " + exact, "//" + strings.Repeat(" ", maxHostConfigurationBytes) + "\n{}"} {
+				payload := strings.Repeat(scalar, payloadBytes/len(scalar))
+				payload += strings.Repeat("a", payloadBytes-len(payload))
+				exact := prefix + payload + suffix
+				for _, input := range []string{exact, prefix + payload + "a" + suffix, " " + exact, "//" + strings.Repeat(" ", maxHostConfigurationBytes) + "\n{}"} {
 					content, err := readHostConfiguration("relative-root", func(string) (io.ReadCloser, error) {
 						return io.NopCloser(bytes.NewReader(encodeHostConfigurationTest(input, encoding))), nil
 					})
@@ -124,9 +125,82 @@ func TestHostConfigurationNormalizedLimits(t *testing.T) {
 			}
 		})
 	}
-	for _, input := range []string{strings.Repeat("x", maxHostConfigurationBytes+1), `"` + strings.Repeat("a", maxHostConfigurationBytes-1) + `"`} {
+	for _, input := range []string{strings.Repeat("x", maxHostConfigurationBytes+1), prefix + strings.Repeat("a", payloadBytes+1) + suffix} {
 		if content, err := normalizeHostConfiguration([]byte(input)); !errors.Is(err, errHostConfigurationTooLarge) || content != nil {
 			t.Fatalf("normalizer accepted oversized input: length %d, err = %v", len(content), err)
+		}
+	}
+}
+
+func TestHostConfigurationObjectRootDelivery(t *testing.T) {
+	for _, tt := range []struct {
+		name, input, want string
+	}{
+		{"empty or BOM-only", "", ""},
+		{"array", "[]", ""},
+		{"nonempty array", "[7]", ""},
+		{"string", `"private-configuration"`, ""},
+		{"number", "1", ""},
+		{"null", "null", ""},
+		{"true", "true", ""},
+		{"false", "false", ""},
+		{"commented array", "// private-configuration\n[1]", ""},
+		{"commented scalar", "/* private-configuration */ true", ""},
+		{"empty object", "{}", "{}"},
+		{"commented object", "// comment\n{ \"values\": [1, \"text\", null, true, {},], }", `{"values":[1,"text",null,true,{}]}`},
+	} {
+		for _, encoding := range hostConfigurationEncodings {
+			t.Run(tt.name+"/"+encoding, func(t *testing.T) {
+				source := encodeHostConfigurationTest(tt.input, encoding)
+				var logs bytes.Buffer
+				var reads int
+				disp := newTestDispatcher("object-root")
+				disp.systemLogger = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+				disp.hostConfigurationProvider = newHostConfigurationProvider(func() ([]byte, error) {
+					reads++
+					return readHostConfiguration("private-root", func(string) (io.ReadCloser, error) {
+						return io.NopCloser(iotest.OneByteReader(bytes.NewReader(source))), nil
+					})
+				})
+				baseline := handleWorkerInitRequest(&pb.WorkerInitRequest{}, "object-root", disp).GetWorkerInitResponse()
+				if baseline.HostConfiguration != nil || reads != 0 || logs.Len() != 0 {
+					t.Fatal("disabled request captured or logged configuration")
+				}
+				response := handleWorkerInitRequest(hostConfigurationRequest(), "object-root", disp).GetWorkerInitResponse()
+				first := response.HostConfiguration
+				wantStatus := pb.HostConfiguration_Available
+				if tt.want == "" {
+					wantStatus = pb.HostConfiguration_Error
+				}
+				if first == nil || first.Status != wantStatus || string(first.Content) != tt.want || reads != 1 {
+					t.Fatalf("status/content/read count mismatch: %v, reads=%d", first, reads)
+				}
+				response.HostConfiguration = nil
+				if !proto.Equal(response, baseline) || response.Result.Status != pb.StatusResult_Success {
+					t.Fatal("document acceptance changed initialization results or capabilities")
+				}
+				if tt.want == "" {
+					var record map[string]string
+					if strings.Count(logs.String(), "\n") != 1 || strings.Contains(logs.String(), "private-") {
+						t.Fatalf("expected one content-free warning, got %q", logs.String())
+					}
+					if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+						t.Fatal(err)
+					}
+					if record["level"] != "WARN" || record["reason"] != "InvalidJson" ||
+						record["msg"] != "Host configuration could not be delivered to the host. Reason: InvalidJson. The failure is retained until the worker process restarts." {
+						t.Fatalf("unexpected failure warning: %v", record)
+					}
+				} else if logs.Len() != 0 {
+					t.Fatal("valid object emitted a failure warning")
+				}
+				before := logs.String()
+				source = []byte(`{"later":true}`)
+				replay := handleWorkerInitRequest(hostConfigurationRequest(), "object-root", disp).GetWorkerInitResponse().HostConfiguration
+				if replay == first || !proto.Equal(replay, first) || reads != 1 || logs.String() != before {
+					t.Fatal("replay recaptured, relogged or changed the cached outcome")
+				}
+			})
 		}
 	}
 }

@@ -12,7 +12,7 @@ func normalizeHostConfiguration(content []byte) ([]byte, error) {
 		return nil, errHostConfigurationTooLarge
 	}
 	if len(content) == 0 {
-		return content, nil
+		return nil, errHostConfigurationJSON
 	}
 
 	stripped := make([]byte, 0, len(content))
@@ -88,6 +88,9 @@ func normalizeHostConfiguration(content []byte) ([]byte, error) {
 	}
 	if output.Len() > maxHostConfigurationBytes {
 		return nil, errHostConfigurationTooLarge
+	}
+	if output.Len() == 0 || output.Bytes()[0] != '{' {
+		return nil, errHostConfigurationJSON
 	}
 	return output.Bytes(), nil
 }

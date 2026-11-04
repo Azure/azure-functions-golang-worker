@@ -27,7 +27,7 @@ or retry of a cached failure; restart the worker to capture changed content.
 
 | Status | Meaning |
 | --- | --- |
-| `Available` | The file was read, converted, and normalized successfully, including the empty-file special case. |
+| `Available` | The file was read, converted, and normalized to a nonempty JSON object document; `{}` is valid. |
 | `Missing` | Opening `host.json` reported a missing file in an accessible application directory. |
 | `Error` | The root or parent directory was unavailable, or opening, reading, closing, decoding, or JSON normalization failed. |
 | `TooLarge` | The converted or normalized UTF-8 output exceeded 65,536 bytes. |
@@ -51,19 +51,22 @@ responses never contain partial content.
 
 ## JSON normalization and diagnostics
 
-The worker validates JSON syntax and emits compact, strict JSON. It accepts
+The worker validates JSON syntax and emits a compact, strict JSON object. It accepts
 `//` and `/* */` comments and trailing commas, removing them along with
-insignificant whitespace. Exactly one root value of any JSON type is allowed,
-with at most 64 nested containers. Property order, duplicate keys, raw string
+insignificant whitespace. Exactly one object root is required, with at most
+64 nested containers including the root. Nested arrays and scalar values remain
+valid. Property order, duplicate keys, raw string
 and property escape spellings (including escaped lone surrogates), and raw
 number spellings and precision are preserved without conversion to Go values.
 Only ASCII space, tab, CR, and LF count as JSON whitespace. Single-line
 comments end at CR, LF, or EOF and reject U+2028/U+2029; those characters are
 allowed inside block comments and JSON strings.
 
-An empty decoded document, including a BOM-only file, remains `Available`
-with empty content for independent Host acceptance. Non-empty whitespace-only,
-comment-only, or malformed JSON is `Error`. The worker does not apply defaults
+An empty decoded document, including a BOM-only file, is `Error` with reason
+`InvalidJson` and no content. Whitespace-only, comment-only, malformed JSON,
+and non-object roots (including after comments) have the same outcome. The
+empty object `{}` and objects containing nested arrays or scalars remain valid.
+The worker does not apply defaults
 or merge environment settings into JSON. Host-specific semantic validation,
 defaults, and app-setting override precedence remain owned by the Host.
 
@@ -94,7 +97,7 @@ option when updating the schema.
 
 Normalization and diagnostics follow
 [azure-functions-dotnet-worker#3522](https://github.com/Azure/azure-functions-dotnet-worker/pull/3522)
-at commit `4c440d8d38526a16eb549ac6fba1082fe5ad4450`, without changing the wire
+at commit `e7765e7201008340e4cc407486bbd31649abf162`, without changing the wire
 schema. The Go implementation uses strict decoders rather than the reference's
 StreamReader replacement-character workaround.
 
