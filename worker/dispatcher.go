@@ -42,7 +42,7 @@ type Dispatcher struct {
 	send streamSender
 
 	// Tests may supply an isolated snapshot; production uses the process cache.
-	hostConfigurationProvider func(*pb.WorkerInitRequest) *pb.HostConfiguration
+	hostConfigurationProvider func(*pb.WorkerInitRequest, *slog.Logger) *pb.HostConfiguration
 }
 
 // NewDispatcher constructs a Dispatcher. The caller is expected to set

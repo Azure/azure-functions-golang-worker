@@ -77,7 +77,7 @@ func handleWorkerInitRequest(req *pb.WorkerInitRequest, requestId string, disp *
 				WorkerVersion:     "1.0.0",
 				Capabilities:      capabilities,
 				WorkerMetadata:    buildWorkerMetadata(),
-				HostConfiguration: hostConfiguration(req),
+				HostConfiguration: hostConfiguration(req, logger),
 			},
 		},
 	}

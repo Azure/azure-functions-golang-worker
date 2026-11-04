@@ -3,13 +3,16 @@ package worker
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -18,12 +21,22 @@ import (
 
 const maxHostConfigurationBytes = 65_536
 
-var (
-	errHostConfigurationMissing  = errors.New("host configuration is missing")
-	errHostConfigurationTooLarge = errors.New("host configuration exceeds the delivery limit")
-	errHostConfigurationInvalid  = errors.New("host configuration encoding is invalid")
-	errHostConfigurationRoot     = errors.New("host configuration root is unavailable")
+type hostConfigurationFailure string
+
+func (failure hostConfigurationFailure) Error() string { return string(failure) }
+
+const (
+	errHostConfigurationTooLarge hostConfigurationFailure = "Oversized"
+	errHostConfigurationInvalid  hostConfigurationFailure = "InvalidEncoding"
+	errHostConfigurationJSON     hostConfigurationFailure = "InvalidJson"
+	errHostConfigurationRoot     hostConfigurationFailure = "AppDirectoryNotSet"
+	errHostConfigurationParent   hostConfigurationFailure = "AppDirectoryNotFound"
+	errHostConfigurationAccess   hostConfigurationFailure = "AccessDenied"
+	errHostConfigurationOpen     hostConfigurationFailure = "OpenFailed"
+	errHostConfigurationRead     hostConfigurationFailure = "ReadFailed"
 )
+
+var errHostConfigurationMissing = errors.New("host configuration is missing")
 
 // A new dispatcher (including a reconnected Start) must not recapture the
 // application's snapshot. App content is immutable for this process lifetime.
@@ -34,27 +47,45 @@ var processHostConfiguration = newHostConfigurationProvider(func() ([]byte, erro
 type hostConfigurationSnapshot struct {
 	status  pb.HostConfiguration_Status
 	content string
+	reason  hostConfigurationFailure
 }
 
-func newHostConfigurationProvider(read func() ([]byte, error)) func(*pb.WorkerInitRequest) *pb.HostConfiguration {
+func newHostConfigurationProvider(read func() ([]byte, error)) func(*pb.WorkerInitRequest, *slog.Logger) *pb.HostConfiguration {
 	snapshot := sync.OnceValue(func() hostConfigurationSnapshot {
 		content, err := read()
+		captured := hostConfigurationSnapshot{}
 		switch {
 		case errors.Is(err, errHostConfigurationMissing):
-			return hostConfigurationSnapshot{status: pb.HostConfiguration_Missing}
+			captured.status = pb.HostConfiguration_Missing
 		case errors.Is(err, errHostConfigurationTooLarge):
-			return hostConfigurationSnapshot{status: pb.HostConfiguration_TooLarge}
+			captured.status = pb.HostConfiguration_TooLarge
 		case err != nil:
-			return hostConfigurationSnapshot{status: pb.HostConfiguration_Error}
+			captured.status = pb.HostConfiguration_Error
 		default:
-			return hostConfigurationSnapshot{status: pb.HostConfiguration_Available, content: string(content)}
+			captured = hostConfigurationSnapshot{status: pb.HostConfiguration_Available, content: string(content)}
 		}
+		if captured.status == pb.HostConfiguration_Error || captured.status == pb.HostConfiguration_TooLarge {
+			captured.reason = errHostConfigurationRead
+			var failure hostConfigurationFailure
+			if errors.As(err, &failure) {
+				captured.reason = failure
+			}
+		}
+		return captured
 	})
-	return func(req *pb.WorkerInitRequest) *pb.HostConfiguration {
+	var warning sync.Once
+	return func(req *pb.WorkerInitRequest, logger *slog.Logger) *pb.HostConfiguration {
 		if req.GetCapabilities()["HostConfiguration"] != "1" {
 			return nil
 		}
 		captured := snapshot()
+		warning.Do(func() {
+			if logger != nil && captured.reason != "" {
+				logger.LogAttrs(context.Background(), slog.LevelWarn,
+					"Host configuration could not be delivered to the host. Reason: "+string(captured.reason)+". The failure is retained until the worker process restarts.",
+					slog.String("reason", string(captured.reason)))
+			}
+		})
 		response := &pb.HostConfiguration{Status: captured.status}
 		if captured.status == pb.HostConfiguration_Available {
 			response.Content = []byte(captured.content)
@@ -76,23 +107,39 @@ func readHostConfiguration(root string, open func(string) (io.ReadCloser, error)
 	if err != nil {
 		// ENOENT can name either the file or an unavailable parent. Only a
 		// missing file in an accessible directory is a Missing outcome.
-		if os.IsNotExist(err) {
-			if dir, statErr := os.Stat(root); statErr == nil && dir.IsDir() {
-				return nil, errHostConfigurationMissing
+		if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
+			dir, statErr := os.Stat(root)
+			if statErr == nil && dir.IsDir() {
+				if os.IsNotExist(err) && !errors.Is(err, syscall.ENOTDIR) {
+					return nil, errHostConfigurationMissing
+				}
+				return nil, errHostConfigurationOpen
+			}
+			if os.IsPermission(statErr) {
+				return nil, errHostConfigurationAccess
+			}
+			if os.IsNotExist(statErr) || errors.Is(statErr, syscall.ENOTDIR) || (statErr == nil && !dir.IsDir()) {
+				return nil, errHostConfigurationParent
 			}
 		}
-		return nil, err
+		if os.IsPermission(err) {
+			return nil, errHostConfigurationAccess
+		}
+		return nil, errHostConfigurationOpen
 	}
 
 	content, readErr := decodeHostConfiguration(file)
 	closeErr := file.Close()
-	if readErr != nil {
-		return nil, readErr
-	}
 	if closeErr != nil {
-		return nil, closeErr
+		return nil, errHostConfigurationRead
 	}
-	return content, nil
+	if readErr != nil {
+		if errors.Is(readErr, errHostConfigurationInvalid) || errors.Is(readErr, errHostConfigurationTooLarge) {
+			return nil, readErr
+		}
+		return nil, errHostConfigurationRead
+	}
+	return normalizeHostConfiguration(content)
 }
 
 // Decode incrementally, bounding both buffered input and the final UTF-8 output.
@@ -150,6 +197,9 @@ func decodeHostConfiguration(source io.Reader) ([]byte, error) {
 func readHostConfigurationScalar(reader io.Reader, order binary.ByteOrder, width int) (rune, error) {
 	var unit [4]byte
 	if _, err := io.ReadFull(reader, unit[:width]); err != nil {
+		if err == io.ErrUnexpectedEOF {
+			err = errHostConfigurationInvalid
+		}
 		return 0, err
 	}
 	if width == 4 {
@@ -169,8 +219,8 @@ func readHostConfigurationScalar(reader io.Reader, order binary.ByteOrder, width
 	}
 	if _, err := io.ReadFull(reader, unit[:2]); err != nil {
 		// EOF after a high surrogate is not a complete document.
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			err = errHostConfigurationInvalid
 		}
 		return 0, err
 	}

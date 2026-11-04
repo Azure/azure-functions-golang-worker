@@ -42,18 +42,18 @@ func TestHostConfigurationGate(t *testing.T) {
 		requests = append(requests, &pb.WorkerInitRequest{Capabilities: map[string]string{"HostConfiguration": value}})
 	}
 	for _, req := range requests {
-		if got := provider(req); got != nil {
+		if got := provider(req, nil); got != nil {
 			t.Fatalf("disabled request returned %v", got)
 		}
 	}
 	if reads != 0 {
 		t.Fatalf("disabled requests captured the snapshot %d times", reads)
 	}
-	if got := provider(hostConfigurationRequest()); got.Status != pb.HostConfiguration_Available {
+	if got := provider(hostConfigurationRequest(), nil); got.Status != pb.HostConfiguration_Available {
 		t.Fatalf("enabled request status = %v", got.Status)
 	}
 	for _, req := range requests {
-		if got := provider(req); got != nil {
+		if got := provider(req, nil); got != nil {
 			t.Fatalf("disabled request returned cached snapshot %v", got)
 		}
 	}
@@ -88,7 +88,7 @@ func TestHostConfigurationSnapshot(t *testing.T) {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					results[i] = provider(hostConfigurationRequest())
+					results[i] = provider(hostConfigurationRequest(), nil)
 				}()
 			}
 			wg.Wait()
@@ -113,7 +113,7 @@ func TestHostConfigurationSnapshot(t *testing.T) {
 				}
 				result.Status = pb.HostConfiguration_Unspecified
 			}
-			again := provider(hostConfigurationRequest())
+			again := provider(hostConfigurationRequest(), nil)
 			if again.Status != tt.status {
 				t.Fatal("response mutation changed cached status")
 			}
@@ -169,7 +169,7 @@ func TestHostConfigurationRead(t *testing.T) {
 		_, err := readHostConfiguration(t.TempDir(), func(path string) (io.ReadCloser, error) {
 			return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrPermission}
 		})
-		if !errors.Is(err, os.ErrPermission) {
+		if !errors.Is(err, errHostConfigurationAccess) {
 			t.Fatalf("error = %v, want permission failure", err)
 		}
 	})
@@ -182,9 +182,9 @@ func TestHostConfigurationRead(t *testing.T) {
 	t.Run("native relative root", func(t *testing.T) {
 		root := t.TempDir()
 		t.Chdir(filepath.Dir(root))
-		writeHostConfigurationTestFile(t, filepath.Join(root, "host.json"), []byte("{malformed json"))
+		writeHostConfigurationTestFile(t, filepath.Join(root, "host.json"), []byte(`{ "relative": true, }`))
 		content, err := readHostConfiguration(filepath.Base(root), openHostConfiguration)
-		if err != nil || string(content) != "{malformed json" {
+		if err != nil || string(content) != `{"relative":true}` {
 			t.Fatalf("relative root: content = %q, err = %v", content, err)
 		}
 	})
@@ -297,7 +297,7 @@ func TestHostConfigurationMalformedEncoding(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, reader := range []io.Reader{bytes.NewReader(source), iotest.OneByteReader(bytes.NewReader(source))} {
-				if content, err := decodeHostConfiguration(reader); err == nil || content != nil {
+				if content, err := decodeHostConfiguration(reader); !errors.Is(err, errHostConfigurationInvalid) || content != nil {
 					t.Fatalf("malformed source returned %q, %v", content, err)
 				}
 			}
@@ -360,7 +360,7 @@ func (r *hostConfigurationCountingReader) Read(p []byte) (int, error) {
 }
 
 func TestHostConfigurationCachedFileOutcomes(t *testing.T) {
-	for _, initial := range []string{"available", "missing", "error", "too large"} {
+	for _, initial := range []string{"available", "missing", "error", "invalid JSON", "too large"} {
 		t.Run(initial, func(t *testing.T) {
 			root := t.TempDir()
 			path := filepath.Join(root, "host.json")
@@ -369,15 +369,17 @@ func TestHostConfigurationCachedFileOutcomes(t *testing.T) {
 				writeHostConfigurationTestFile(t, path, []byte("{}"))
 			case "error":
 				writeHostConfigurationTestFile(t, path, []byte{0xff})
+			case "invalid JSON":
+				writeHostConfigurationTestFile(t, path, []byte("{"))
 			case "too large":
 				writeHostConfigurationTestFile(t, path, bytes.Repeat([]byte("a"), maxHostConfigurationBytes+1))
 			}
 			provider := newHostConfigurationProvider(func() ([]byte, error) {
 				return readHostConfiguration(root, openHostConfiguration)
 			})
-			first := provider(hostConfigurationRequest())
+			first := provider(hostConfigurationRequest(), nil)
 			writeHostConfigurationTestFile(t, path, []byte(`{"changed":true}`))
-			if again := provider(hostConfigurationRequest()); !proto.Equal(first, again) {
+			if again := provider(hostConfigurationRequest(), nil); !proto.Equal(first, again) {
 				t.Fatal("file mutation changed the cached outcome")
 			}
 		})
@@ -385,7 +387,7 @@ func TestHostConfigurationCachedFileOutcomes(t *testing.T) {
 }
 
 func TestHostConfigurationInitialization(t *testing.T) {
-	for _, readErr := range []error{nil, errHostConfigurationMissing, errHostConfigurationTooLarge, errors.New("private-path: private-configuration")} {
+	for _, readErr := range []error{nil, errHostConfigurationMissing, errHostConfigurationTooLarge, errHostConfigurationJSON, errors.New("private-path: private-configuration")} {
 		disp := newTestDispatcher("host-config-request")
 		disp.App.Use(&capProviderMW{caps: map[string]string{
 			"WorkerOpenTelemetryEnabled": "true",
