@@ -7,7 +7,7 @@ image.
 You don't need a `Dockerfile` or container registry.
 
 !!! note
-    Go support is currently in preview on the
+    Native Go hosting is generally available on the
     [Flex Consumption plan](https://learn.microsoft.com/azure/azure-functions/flex-consumption-plan).
 
 ## Platform image

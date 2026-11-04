@@ -11,7 +11,7 @@ An Azure Function that triggers when a blob is created or updated in Azure Stora
 
 ## Prerequisites
 
-- [Go 1.24+](https://go.dev/dl/)
+- [Go 1.25+](https://go.dev/dl/), required by the `triggers/blob` extension module
 - [Azure Functions Core Tools](https://www.npmjs.com/package/azure-functions-core-tools/v/4.12.0) 4.12.0 or later (includes Go worker support):
   ```bash
   npm i -g azure-functions-core-tools@4 --unsafe-perm true
@@ -36,6 +36,8 @@ Update `local.settings.json` with your storage connection string:
   }
 }
 ```
+
+With Azurite, set `AzureWebJobsStorage` to `UseDevelopmentStorage=true`. The blob client factory expands it to the standard emulator connection string.
 
 ## Run
 

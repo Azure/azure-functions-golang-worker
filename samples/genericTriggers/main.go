@@ -63,11 +63,11 @@ func newApp(scenario string) (*sdk.App, error) {
 	}))
 	switch scenario {
 	case "queues":
-		// B: raw binary or text arrives unchanged; JSON is not unquoted.
+		// Option 1: register raw text or bytes directly; JSON is not unquoted.
 		app.GenericTrigger("RawQueue", rawOrder, queueTrigger("%GenericRawQueue%"))
-		// B: use the same registration with a JSON model instead of []byte.
+		// Option 1: register a JSON model directly with the same API.
 		app.GenericTrigger("JSONQueue", handleOrder, queueTrigger("%GenericJSONQueue%"))
-		// C: typed package translates configuration and passes the SAME handler.
+		// Option 2: a typed helper calls GenericTrigger with the same handler.
 		queue.Register(app, "TypedQueue", handleOrder, queue.Config{
 			QueueName: "%GenericTypedQueue%", Connection: "AzureWebJobsStorage",
 		})
@@ -83,7 +83,7 @@ func newApp(scenario string) (*sdk.App, error) {
 			},
 		})
 	case "mcp":
-		// No mcpToolTrigger type or dispatch case is added to the core SDK.
+		// Option 1 also works for MCP without a dedicated Go trigger package.
 		// The MCP host extension consumes this trigger's return value directly.
 		app.GenericTrigger("EchoTool", echoTool, &bindings.GenericTrigger{
 			Type: "mcpToolTrigger", Name: "call", DataType: "string",

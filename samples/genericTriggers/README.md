@@ -1,10 +1,15 @@
 # Generic triggers
 
-This sample compares direct `App.GenericTrigger` registrations with a small
-typed package built on the same API. Use the local checkout until a worker
-release containing `GenericTrigger` is available.
+This sample shows two ways to register a generic trigger:
 
-## No custom package required
+1. Call `App.GenericTrigger` directly with a binding descriptor.
+2. Use an optional typed helper package that calls `App.GenericTrigger`.
+
+Both options use the same registration API and invocation pipeline. The typed
+helper only changes how you supply and validate configuration. Generic trigger
+registration is available in v1.0.0 and later.
+
+## Option 1 - Direct registration
 
 Applications can register directly using only the worker's SDK and binding
 descriptor. There is no user-authored trigger type, package, or blank import.
@@ -25,6 +30,36 @@ For JSON decoding, replace `[]byte` with your application's struct type. The
 host extension still needs to be installed, normally through the extension
 bundle. That is separate from a Go trigger package.
 
+The sample also registers its `handleOrder` JSON handler directly:
+
+```go
+app.GenericTrigger("JSONQueue", handleOrder, &bindings.GenericTrigger{
+  Type: "queueTrigger", Name: "message", DataType: "string",
+  Properties: map[string]any{
+    "queueName": "%GenericJSONQueue%", "connection": "AzureWebJobsStorage",
+  },
+})
+```
+
+## Option 2 - Typed helper package
+
+The sample's `queue` package offers typed configuration and validation, then
+delegates to `App.GenericTrigger` with the original handler:
+
+```go
+queue.Register(app, "TypedQueue", handleOrder, queue.Config{
+  QueueName: "%GenericTypedQueue%", Connection: "AzureWebJobsStorage",
+})
+```
+
+`JSONQueue` and `TypedQueue` use the same `handleOrder` function. They listen on
+different queues so this sample can run both options together. In your app,
+choose whichever configuration style suits each registration.
+
+The `queue` package is optional sample code, not a required dependency or a
+second worker registration API. It does not install middleware, create a
+client, or replace the handler. The compiler infers `T` from the handler.
+
 ## Scenarios
 
 Set `GENERIC_SCENARIO` before starting the application.
@@ -34,11 +69,6 @@ Set `GENERIC_SCENARIO` before starting the application.
 | `queues` (default) | RawQueue, JSONQueue, TypedQueue, MetadataQueue | Raw bytes, JSON models, a typed registration package, invocation metadata |
 | `eventhub` | BatchOrders | An explicit host batch decoded into `[]Order` |
 | `mcp` | EchoTool | An unfamiliar trigger type and a return value consumed by the host extension |
-
-`JSONQueue` and `TypedQueue` use the same `handleOrder` function. The sample's
-`queue` package adds configuration types and validation, then delegates to
-`GenericTrigger`. It does not install middleware, create a client, or replace
-the handler. The compiler infers `T` from the handler.
 
 The example middleware is shared by all functions. Normal middleware, tracing,
 and invocation error handling still apply.

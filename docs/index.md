@@ -3,8 +3,9 @@
 The Azure Functions Go Worker provides the SDK and worker implementation for
 running Go applications natively on Azure Functions.
 
-> The Go worker is currently in public preview. APIs and behavior may change
-> before general availability.
+> Version 1.0.0 is the first generally available release. The public Go APIs
+> remain backward compatible across v1.x releases. Native Go hosting is
+> generally available on Flex Consumption.
 
 ## Documentation
 

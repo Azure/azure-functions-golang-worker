@@ -162,11 +162,17 @@ curl http://localhost:7071/api/expenses/<instanceId>
 
 ## Tests
 
-The orchestration patterns are covered by emulator-backed tests in
-[`middleware/durabletask`](../../middleware/durabletask):
+The unit tests in [`middleware/durabletask`](../../middleware/durabletask) cover:
 
-- replay equivalence (decode → replay → encode matches the engine directly),
+- replay equivalence (decode → replay → encode matches the upstream executor),
 - registered replay adapters and activity execution inside the middleware chain,
-- a full end-to-end run of the sequential orchestrator, and
-- a full end-to-end run of fan-out/fan-in **plus the external-event (HITL)
-  approval**, driven to completion on the in-memory durabletask backend.
+- the management client protocol and status payloads.
+
+They use deterministic histories and do not run an orchestration to completion.
+Lifecycle behavior runs against a real Functions host with isolated Azurite
+storage in the [`durableFunctions` integration fixture](../../tests/integration/testdata/durableFunctions),
+which mirrors this sample. It covers sequential and fan-out/fan-in
+orchestrations, the external-event (HITL) approval, custom status, durable
+timeouts, and restart recovery. See
+[Durable Functions coverage](../../tests/integration/README.md#durable-functions-coverage)
+for how to run it.
