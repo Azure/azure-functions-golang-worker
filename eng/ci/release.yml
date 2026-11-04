@@ -420,10 +420,6 @@ extends:
                   export GOMODCACHE="$SCRATCH/modcache"
                   export GOPATH="$SCRATCH/gopath"
                   export GOFLAGS="-mod=mod"
-                  # Resolve straight from the GitHub VCS, bypassing any module
-                  # proxy/sumdb cache, so we validate exactly the tags we just
-                  # pushed (no proxy-propagation delay, no stale cache).
-                  export GOPROXY=direct
                   export GOSUMDB=off
                   export GONOSUMCHECK=1
                   export GOPRIVATE="$MODULE_ROOT"
