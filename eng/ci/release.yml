@@ -420,10 +420,14 @@ extends:
                   export GOMODCACHE="$SCRATCH/modcache"
                   export GOPATH="$SCRATCH/gopath"
                   export GOFLAGS="-mod=mod"
-                  # Resolve straight from the GitHub VCS, bypassing any module
-                  # proxy/sumdb cache, so we validate exactly the tags we just
-                  # pushed (no proxy-propagation delay, no stale cache).
-                  export GOPROXY=direct
+                  # Resolve our own modules straight from the GitHub VCS,
+                  # bypassing any module proxy/sumdb cache, so we validate
+                  # exactly the tags we just pushed (no proxy-propagation
+                  # delay, no stale cache). GOPRIVATE does this for every
+                  # module under $MODULE_ROOT. Do not set GOPROXY=direct:
+                  # third-party dependencies must keep using the job's
+                  # GOPROXY (the 1ES internal module proxy), because network
+                  # isolation blocks direct fetches such as go.googlesource.com.
                   export GOSUMDB=off
                   export GONOSUMCHECK=1
                   export GOPRIVATE="$MODULE_ROOT"
