@@ -13,6 +13,8 @@ func registrationTestOrchestrator(*task.OrchestrationContext) (any, error) { ret
 
 func registrationTestActivity(_ context.Context, name string) (string, error) { return name, nil }
 
+func registrationTestEntity(*EntityContext) (any, error) { return nil, nil }
+
 // appHasFunction reports whether the app indexed a function under name.
 func appHasFunction(app *sdk.App, name string) bool {
 	found := false
@@ -34,9 +36,10 @@ func TestRegisterBeforeUse_ReachesTheApp(t *testing.T) {
 	d := Middleware()
 	d.Orchestrator("BeforeUseOrchestration", registrationTestOrchestrator)
 	d.Activity("BeforeUseActivity", registrationTestActivity)
+	d.Entity("BeforeUseEntity", registrationTestEntity)
 	app.Use(d)
 
-	for _, name := range []string{"BeforeUseOrchestration", "BeforeUseActivity"} {
+	for _, name := range []string{"BeforeUseOrchestration", "BeforeUseActivity", "BeforeUseEntity"} {
 		if !appHasFunction(app, name) {
 			t.Errorf("expected %q to be registered with the app", name)
 		}
@@ -50,9 +53,10 @@ func TestRegisterViaOptions_ReachesTheApp(t *testing.T) {
 	app.Use(Middleware(
 		WithOrchestrator("OptionOrchestration", registrationTestOrchestrator),
 		WithActivity("OptionActivity", registrationTestActivity),
+		WithEntity("OptionEntity", registrationTestEntity),
 	))
 
-	for _, name := range []string{"OptionOrchestration", "OptionActivity"} {
+	for _, name := range []string{"OptionOrchestration", "OptionActivity", "OptionEntity"} {
 		if !appHasFunction(app, name) {
 			t.Errorf("expected %q to be registered with the app", name)
 		}
@@ -68,6 +72,7 @@ func TestRegisterAfterUse_Panics(t *testing.T) {
 	}{
 		{"Orchestrator", func(d *Durable) { d.Orchestrator("TooLate", registrationTestOrchestrator) }},
 		{"Activity", func(d *Durable) { d.Activity("TooLate", registrationTestActivity) }},
+		{"Entity", func(d *Durable) { d.Entity("TooLate", registrationTestEntity) }},
 	}
 
 	for _, tc := range cases {
@@ -105,9 +110,10 @@ func TestRegisterWithoutUse_StaysOpen(t *testing.T) {
 	d := Middleware()
 	d.Orchestrator("First", registrationTestOrchestrator)
 	d.Activity("Second", registrationTestActivity)
+	d.Entity("Third", registrationTestEntity)
 
-	if got := len(d.ProvidedFunctions()); got != 2 {
-		t.Fatalf("expected 2 provided functions, got %d", got)
+	if got := len(d.ProvidedFunctions()); got != 3 {
+		t.Fatalf("expected 3 provided functions, got %d", got)
 	}
 }
 
@@ -125,8 +131,9 @@ func TestProvidedFunctions_DoesNotCloseRegistration(t *testing.T) {
 	_ = d.ProvidedFunctions()
 
 	d.Activity("Second", registrationTestActivity)
+	d.Entity("Third", registrationTestEntity)
 
-	if got := len(d.ProvidedFunctions()); got != 2 {
+	if got := len(d.ProvidedFunctions()); got != 3 {
 		t.Fatalf("expected the later registration to be kept, got %d provided functions", got)
 	}
 }

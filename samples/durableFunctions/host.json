@@ -15,6 +15,7 @@
   "extensions": {
     "durableTask": {
       "hubName": "GoDurableHub",
+      "entityMessageReorderWindowInMinutes": 0,
       "tracing": {
         "distributedTracingEnabled": false,
         "version": "None"

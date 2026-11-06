@@ -17,6 +17,7 @@
 //	    durable := durabletask.Middleware()
 //	    durable.Orchestrator("HelloCities", HelloCities)
 //	    durable.Activity("SayHello", SayHello)
+//	    durable.Entity("counter", Counter)
 //	    app.Use(durable)
 //
 //	    app.HTTP("start", StartHelloCities,
@@ -24,14 +25,15 @@
 //	    worker.Start(app)
 //	}
 //
-// Register orchestrators and activities before app.Use, which is when the app
-// collects them. Registering afterwards panics rather than leaving a function
-// that is never indexed. They can also be supplied as construction options,
-// which suits an app small enough to fit in one expression:
+// Register orchestrators, activities, and entities before app.Use, which is
+// when the app collects them. Registering afterwards panics rather than
+// leaving a function that is never indexed. They can also be supplied as
+// construction options, which suits an app small enough to fit in one expression:
 //
 //	app.Use(durabletask.Middleware(
 //	    durabletask.WithOrchestrator("HelloCities", HelloCities),
 //	    durabletask.WithActivity("SayHello", SayHello),
+//	    durabletask.WithEntity("counter", Counter),
 //	))
 //
 // # Execution model
@@ -51,7 +53,7 @@
 //
 // # How it maps onto the worker
 //
-// The package implements [sdk.Middleware] plus three optional contracts:
+// The package implements [sdk.Middleware] plus optional worker contracts:
 //
 //   - [sdk.Middleware] (Wrap): supplies management clients to non-orchestration
 //     invocations and delegates all invocations to the remaining middleware.
@@ -61,6 +63,8 @@
 //     When an invocation carrier is present, the adapter reads its current
 //     InputString at execution time rather than using the pre-bound argument.
 //     Middleware wraps replay just as it wraps an ordinary function.
+//     Entity registrations use the entityTrigger binding and adapt the host's
+//     base64 entity-batch protocol to durabletask-go's executor.
 //   - [sdk.RegistrationSealer]: learns when App.Use has taken those
 //     registrations, so a later one fails loudly instead of landing in a
 //     registry the app will never read again.
@@ -112,5 +116,5 @@
 //
 // The package README covers the operational side: the extension bundle
 // requirement, Azure Storage versus Durable Task Scheduler, running locally
-// with Core Tools and Azurite, and the current gaps.
+// with Core Tools and Azurite, and entity compatibility limitations.
 package durabletask
