@@ -40,6 +40,9 @@ type Dispatcher struct {
 	// concurrent paths (e.g. the future HTTP-streaming bridge) can push
 	// responses without bypassing the sender goroutine.
 	send streamSender
+
+	// Tests may supply an isolated snapshot; production uses the process cache.
+	hostConfigurationProvider func(*pb.WorkerInitRequest, *slog.Logger) *pb.HostConfiguration
 }
 
 // NewDispatcher constructs a Dispatcher. The caller is expected to set
