@@ -3,7 +3,7 @@ module github.com/azure/azure-functions-golang-worker/middleware/durabletask
 go 1.25.0
 
 require (
-	github.com/azure/azure-functions-golang-worker v1.0.0
+	github.com/azure/azure-functions-golang-worker v1.0.1
 	github.com/microsoft/durabletask-go v1.0.0-beta3
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
