@@ -325,7 +325,7 @@ func TestHostConfigurationProcessFailureWarning(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "host.json")
 	writeHostConfigurationTestFile(t, path, []byte("{private-configuration"))
-	t.Setenv("FUNCTIONS_APPLICATION_DIRECTORY", root)
+	t.Setenv("AzureWebJobsScriptRoot", root)
 	for _, capability := range []map[string]string{nil, {"HostConfiguration": "true"}, {"hostconfiguration": "1"}} {
 		request := &pb.WorkerInitRequest{Capabilities: capability}
 		response := handleWorkerInitRequest(request, "disabled", first).GetWorkerInitResponse()
