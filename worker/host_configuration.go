@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -41,8 +42,16 @@ var errHostConfigurationMissing = errors.New("host configuration is missing")
 // A new dispatcher (including a reconnected Start) must not recapture the
 // application's snapshot. App content is immutable for this process lifetime.
 var processHostConfiguration = newHostConfigurationProvider(func() ([]byte, error) {
-	return readHostConfiguration(os.Getenv("FUNCTIONS_APPLICATION_DIRECTORY"), openHostConfiguration)
+	return readHostConfiguration(hostConfigurationAppDirectory(), openHostConfiguration)
 })
+
+func hostConfigurationAppDirectory() string {
+	root := os.Getenv("AzureWebJobsScriptRoot")
+	if strings.TrimSpace(root) == "" && runtime.GOOS == "linux" {
+		return "/home/site/wwwroot"
+	}
+	return root
+}
 
 type hostConfigurationSnapshot struct {
 	status  pb.HostConfiguration_Status

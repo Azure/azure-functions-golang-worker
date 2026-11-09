@@ -66,11 +66,14 @@ Existing initialization results and worker/middleware capabilities are unchanged
 
 #### Application directory and lifetime
 
-The launcher must set `FUNCTIONS_APPLICATION_DIRECTORY` in the worker process.
-The worker reads `host.json` under that directory, not the Host-supplied
+The worker uses `AzureWebJobsScriptRoot` as the application directory. On Linux,
+an unset, empty, or whitespace-only value defaults to `/home/site/wwwroot`.
+On other platforms, an unset, empty, or whitespace-only root remains an error.
+The worker reads `host.json` under the selected directory, not the Host-supplied
 `function_app_directory`, the worker installation directory, or an implicit
 current-directory fallback. Explicit relative roots retain native platform
-resolution. An unset, empty, or whitespace-only root is an error.
+resolution. Configured roots are preserved without trimming, and a failure to
+read the selected directory does not trigger a fallback to another directory.
 
 The first enabled initialization captures one immutable snapshot for the
 process lifetime, including unsuccessful outcomes. Repeated or concurrent

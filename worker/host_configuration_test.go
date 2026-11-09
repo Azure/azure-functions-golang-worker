@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -119,6 +120,51 @@ func TestHostConfigurationSnapshot(t *testing.T) {
 			}
 			if tt.status == pb.HostConfiguration_Available && string(again.Content) != "private-configuration" {
 				t.Fatal("response mutation changed cached content")
+			}
+		})
+	}
+}
+
+func TestHostConfigurationApplicationDirectory(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		root  string
+		unset bool
+	}{
+		{name: "unset", unset: true},
+		{name: "empty"},
+		{name: "whitespace", root: " \t\r\n\u2003"},
+		{name: "explicit", root: "/configured-root"},
+		{name: "relative", root: "relative-root"},
+		{name: "untrimmed", root: " /configured-root "},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("FUNCTIONS_APPLICATION_DIRECTORY", "/ignored-internal-root")
+			t.Setenv("AzureWebJobsScriptRoot", tt.root)
+			if tt.unset {
+				if err := os.Unsetenv("AzureWebJobsScriptRoot"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wantRoot := tt.root
+			if strings.TrimSpace(wantRoot) == "" && runtime.GOOS == "linux" {
+				wantRoot = "/home/site/wwwroot"
+			}
+			content, err := readHostConfiguration(hostConfigurationAppDirectory(), func(path string) (io.ReadCloser, error) {
+				if strings.TrimSpace(wantRoot) == "" {
+					t.Fatal("unset root reached open on a non-Linux platform")
+				}
+				if want := filepath.Join(wantRoot, "host.json"); path != want {
+					t.Fatalf("path = %q, want %q", path, want)
+				}
+				return io.NopCloser(strings.NewReader(`{"root":"selected"}`)), nil
+			})
+			if strings.TrimSpace(wantRoot) == "" {
+				if !errors.Is(err, errHostConfigurationRoot) {
+					t.Fatalf("error = %v, want AppDirectoryNotSet", err)
+				}
+			} else if err != nil || string(content) != `{"root":"selected"}` {
+				t.Fatalf("content = %q, err = %v", content, err)
 			}
 		})
 	}
@@ -479,20 +525,20 @@ func TestHostConfigurationProcessSnapshot(t *testing.T) {
 	other := t.TempDir()
 	writeHostConfigurationTestFile(t, filepath.Join(root, "host.json"), []byte(`{"root":"worker"}`))
 	writeHostConfigurationTestFile(t, filepath.Join(other, "host.json"), []byte(`{"root":"host"}`))
-	t.Setenv("FUNCTIONS_APPLICATION_DIRECTORY", "")
+	t.Setenv("AzureWebJobsScriptRoot", "")
 	app := sdk.FunctionApp()
 	firstDispatcher := NewDispatcher(&WorkerStartupConfig{}, app)
 	if got := handleWorkerInitRequest(&pb.WorkerInitRequest{}, "off", firstDispatcher).GetWorkerInitResponse(); got.HostConfiguration != nil {
 		t.Fatal("unrequested init returned a snapshot")
 	}
-	t.Setenv("FUNCTIONS_APPLICATION_DIRECTORY", root)
+	t.Setenv("AzureWebJobsScriptRoot", root)
 	req := hostConfigurationRequest()
 	req.FunctionAppDirectory, req.WorkerDirectory = other, other
 	first := handleWorkerInitRequest(req, "first", firstDispatcher).GetWorkerInitResponse().HostConfiguration
 	if first.Status != pb.HostConfiguration_Available || string(first.Content) != `{"root":"worker"}` {
 		t.Fatalf("did not use the worker-local environment root: %v", first.Status)
 	}
-	t.Setenv("FUNCTIONS_APPLICATION_DIRECTORY", other)
+	t.Setenv("AzureWebJobsScriptRoot", other)
 	writeHostConfigurationTestFile(t, filepath.Join(root, "host.json"), []byte(`{"changed":true}`))
 	reconnected := NewDispatcher(&WorkerStartupConfig{}, app)
 	second := handleWorkerInitRequest(req, "second", reconnected).GetWorkerInitResponse().HostConfiguration
