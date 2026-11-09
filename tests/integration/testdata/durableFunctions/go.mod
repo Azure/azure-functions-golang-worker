@@ -11,9 +11,9 @@ replace github.com/azure/azure-functions-golang-worker/middleware/otelfunc => ..
 replace google.golang.org/genproto => google.golang.org/genproto v0.0.0-20250528174236-200df99c418a
 
 require (
-	github.com/azure/azure-functions-golang-worker v1.0.1
-	github.com/azure/azure-functions-golang-worker/middleware/durabletask v1.0.1
-	github.com/azure/azure-functions-golang-worker/middleware/otelfunc v1.0.1
+	github.com/azure/azure-functions-golang-worker v1.0.2
+	github.com/azure/azure-functions-golang-worker/middleware/durabletask v1.0.2
+	github.com/azure/azure-functions-golang-worker/middleware/otelfunc v1.0.2
 	github.com/microsoft/durabletask-go v1.0.0-beta3
 	go.opentelemetry.io/otel/log v0.20.0
 	go.opentelemetry.io/otel/sdk v1.46.0
