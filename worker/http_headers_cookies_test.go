@@ -198,9 +198,14 @@ func TestEncodeResponseHeaders_JoinsRepeatedValues(t *testing.T) {
 	h.Add("Link", `</a>; rel="preload"`)
 	h.Add("Link", `</b>; rel="preload"`)
 	h.Set("Content-Type", "text/plain")
+	h.Set("X-Empty", "")
 	h["Empty"] = nil
 
 	got := encodeResponseHeaders(h)
+
+	if v, ok := got["X-Empty"]; !ok || v != "" {
+		t.Errorf("X-Empty = %q, present=%v, want present and empty", v, ok)
+	}
 
 	if want := `</a>; rel="preload", </b>; rel="preload"`; got["Link"] != want {
 		t.Errorf("Link = %q, want %q", got["Link"], want)
