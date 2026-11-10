@@ -65,59 +65,75 @@ func TestConnectToHostWith_UsesSharedStreamAndSendsProxyStartMessage(t *testing.
 	}
 }
 
-func TestStartLocalServer_ChildMessageLimitFollowsHostMaxMessageLength(t *testing.T) {
-	const grpcDefaultLimit = 4 << 20
+// connectChild starts the proxy's local server with the given message limit and
+// connects a fake app to it. The fake app's own limits are unrestricted so only
+// the proxy's limits are exercised.
+func connectChild(t *testing.T, limit int) (*Proxy, grpc.BidiStreamingClient[pb.StreamingMessage, pb.StreamingMessage]) {
+	t.Helper()
 
-	tests := []struct {
-		name      string
-		limit     int
-		size      int
-		wantError bool
-	}{
-		{name: "above the grpc default when the host allows it", limit: math.MaxInt32, size: grpcDefaultLimit + 1<<20},
-		{name: "above the announced limit", limit: 1 << 20, size: 2 << 20, wantError: true},
+	p := &Proxy{
+		config:         &worker.WorkerStartupConfig{FunctionsGrpcMaxMessageLength: limit},
+		childConnected: make(chan struct{}),
 	}
+	if err := p.startLocalServer(); err != nil {
+		t.Fatalf("startLocalServer() error = %v", err)
+	}
+	t.Cleanup(p.server.Stop)
 
-	for _, tt := range tests {
+	conn, err := grpc.NewClient(
+		p.listener.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(math.MaxInt32),
+			grpc.MaxCallSendMsgSize(math.MaxInt32),
+		),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient() error = %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	stream, err := pb.NewFunctionRpcClient(conn).EventStream(ctx)
+	if err != nil {
+		t.Fatalf("EventStream() error = %v", err)
+	}
+	select {
+	case <-p.childConnected:
+	case <-ctx.Done():
+		t.Fatal("the child never connected to the proxy")
+	}
+	return p, stream
+}
+
+func largeMessage(size int) *pb.StreamingMessage {
+	return &pb.StreamingMessage{Content: &pb.StreamingMessage_InvocationResponse{
+		InvocationResponse: &pb.InvocationResponse{
+			InvocationId: "invocation-id",
+			ReturnValue:  &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: make([]byte, size)}},
+		},
+	}}
+}
+
+type messageLimitCase struct {
+	name      string
+	limit     int
+	size      int
+	wantError bool
+}
+
+var messageLimitCases = []messageLimitCase{
+	// 5 MiB is above the 4 MiB default of a gRPC server.
+	{name: "above the grpc default when the host allows it", limit: math.MaxInt32, size: 5 << 20},
+	{name: "above the announced limit", limit: 1 << 20, size: 2 << 20, wantError: true},
+}
+
+func TestStartLocalServer_ReceiveLimitFollowsHostMaxMessageLength(t *testing.T) {
+	for _, tt := range messageLimitCases {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &Proxy{
-				config:         &worker.WorkerStartupConfig{FunctionsGrpcMaxMessageLength: tt.limit},
-				childConnected: make(chan struct{}),
-			}
-			if err := p.startLocalServer(); err != nil {
-				t.Fatalf("startLocalServer() error = %v", err)
-			}
-			defer p.server.Stop()
-
-			conn, err := grpc.NewClient(
-				p.listener.Addr().String(),
-				grpc.WithTransportCredentials(insecure.NewCredentials()),
-				grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(math.MaxInt32)),
-			)
-			if err != nil {
-				t.Fatalf("grpc.NewClient() error = %v", err)
-			}
-			defer conn.Close()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			stream, err := pb.NewFunctionRpcClient(conn).EventStream(ctx)
-			if err != nil {
-				t.Fatalf("EventStream() error = %v", err)
-			}
-			select {
-			case <-p.childConnected:
-			case <-ctx.Done():
-				t.Fatal("the child never connected to the proxy")
-			}
-
-			big := &pb.StreamingMessage{Content: &pb.StreamingMessage_InvocationResponse{
-				InvocationResponse: &pb.InvocationResponse{
-					InvocationId: "invocation-id",
-					ReturnValue:  &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: make([]byte, tt.size)}},
-				},
-			}}
-			go func() { _ = stream.Send(big) }()
+			p, stream := connectChild(t, tt.limit)
+			go func() { _ = stream.Send(largeMessage(tt.size)) }()
 
 			p.mutex.Lock()
 			childStream := p.childStream
@@ -135,6 +151,39 @@ func TestStartLocalServer_ChildMessageLimitFollowsHostMaxMessageLength(t *testin
 			}
 			if got := len(msg.GetInvocationResponse().GetReturnValue().GetBytes()); got != tt.size {
 				t.Fatalf("received %d bytes, want %d", got, tt.size)
+			}
+		})
+	}
+}
+
+func TestStartLocalServer_SendLimitFollowsHostMaxMessageLength(t *testing.T) {
+	for _, tt := range messageLimitCases {
+		t.Run(tt.name, func(t *testing.T) {
+			p, stream := connectChild(t, tt.limit)
+
+			p.mutex.Lock()
+			childStream := p.childStream
+			p.mutex.Unlock()
+
+			sendErr := make(chan error, 1)
+			go func() { sendErr <- childStream.Send(largeMessage(tt.size)) }()
+
+			if tt.wantError {
+				if err := <-sendErr; status.Code(err) != codes.ResourceExhausted {
+					t.Fatalf("Send() error = %v, want code %s", err, codes.ResourceExhausted)
+				}
+				return
+			}
+
+			msg, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("the child did not receive a %d byte message from the proxy: %v", tt.size, err)
+			}
+			if got := len(msg.GetInvocationResponse().GetReturnValue().GetBytes()); got != tt.size {
+				t.Fatalf("received %d bytes, want %d", got, tt.size)
+			}
+			if err := <-sendErr; err != nil {
+				t.Fatalf("Send() error = %v", err)
 			}
 		})
 	}
