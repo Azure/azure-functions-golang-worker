@@ -70,7 +70,9 @@ client can reach.
 ## Response headers
 
 Headers set on `w.Header()` are sent to the client. A header added more than
-once is sent as one value joined with `, `, as described in RFC 9110.
+once is sent as one value joined with `, `, as described in RFC 9110. Header
+names are case insensitive, so `x-trace` and `X-Trace` are treated as the same
+header and their values are combined.
 
 ```go
 w.Header().Add("Link", `</style.css>; rel="preload"`)
@@ -108,8 +110,33 @@ These attributes are forwarded.
 - `SameSite`
 
 An attribute the handler did not set stays unset, so the host applies its own
-defaults. The host cookie model has no field for `Partitioned` or for unknown
-attributes, so those are not forwarded.
+defaults. The one exception is `Path`. When it is unset the worker sends an
+empty path, so the cookie keeps Go's default scope, the directory of the
+request, and is not widened to `/`. The host cookie model has no field for
+`Partitioned` or for unknown attributes, so those are not forwarded.
+
+### Cookie values on the buffered gRPC transport
+
+The host escapes the value of every structured cookie, the same way it does for
+the .NET, Node.js and Python workers. Only letters, digits and `-`, `_`, `.`,
+`~` are sent as written. A value such as `abc=` reaches the client as `abc%3D`.
+The default transport sends `Set-Cookie` as written and does not do this.
+
+To get the same cookie on both transports, use a value made only of those
+characters, such as `base64.RawURLEncoding`, or decode it on the way in.
+
+```go
+http.SetCookie(w, &http.Cookie{Name: "token", Value: base64.RawURLEncoding.EncodeToString(raw)})
+
+if c, err := r.Cookie("token"); err == nil {
+	value, _ := url.QueryUnescape(c.Value)
+	_ = value
+}
+```
+
+`r.Cookie` returns the value as the client sent it, so a value the host escaped
+needs `url.QueryUnescape` before use. The .NET isolated worker behaves the same
+way and does not decode request cookies for you.
 
 ## Transports
 

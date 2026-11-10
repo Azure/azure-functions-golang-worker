@@ -3,8 +3,10 @@ package worker
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -51,6 +53,21 @@ func RpcHttpToRequest(rpcHttp *pb.RpcHttp) (*http.Request, error) {
 	return req, nil
 }
 
+// canonicalHeader returns a copy of h with canonical keys, merging values of
+// keys that differ only by case. Handlers can write the header map directly,
+// for example w.Header()["set-cookie"], and a real net/http server accepts any
+// case on the wire. Without this, a lowercase set-cookie key would be missed
+// by http.Response.Cookies and by the Set-Cookie exclusion below.
+func canonicalHeader(h http.Header) http.Header {
+	out := make(http.Header, len(h))
+	for _, k := range slices.Sorted(maps.Keys(h)) {
+		for _, v := range h[k] {
+			out.Add(k, v)
+		}
+	}
+	return out
+}
+
 // encodeResponseHeaders flattens the handler's response headers for the RPC
 // map. Repeated values are joined with ", " per RFC 9110, so none are dropped.
 // Set-Cookie is excluded because it cannot be joined safely, and is sent as
@@ -68,7 +85,10 @@ func encodeResponseHeaders(h http.Header) map[string]string {
 
 // encodeCookies converts parsed Set-Cookie headers into the RPC cookie shape.
 // Attributes the handler did not set stay unset so the host applies its own
-// defaults. The RPC cookie has no field for Partitioned or unknown
+// defaults, except Path. An unset Path is sent as an explicit empty string
+// because the host would otherwise write "path=/" and widen the cookie to the
+// whole site, while net/http and browsers default it to the request's
+// directory. The RPC cookie has no field for Partitioned or unknown
 // attributes, so those are not forwarded.
 func encodeCookies(cookies []*http.Cookie) []*pb.RpcHttpCookie {
 	if len(cookies) == 0 {
@@ -82,9 +102,7 @@ func encodeCookies(cookies []*http.Cookie) []*pb.RpcHttpCookie {
 		if c.Domain != "" {
 			rc.Domain = &shared.NullableString{String_: &shared.NullableString_Value{Value: c.Domain}}
 		}
-		if c.Path != "" {
-			rc.Path = &shared.NullableString{String_: &shared.NullableString_Value{Value: c.Path}}
-		}
+		rc.Path = &shared.NullableString{String_: &shared.NullableString_Value{Value: c.Path}}
 		if !c.Expires.IsZero() {
 			rc.Expires = &shared.NullableTimestamp{Timestamp: &shared.NullableTimestamp_Value{Value: timestamppb.New(c.Expires.UTC())}}
 		}

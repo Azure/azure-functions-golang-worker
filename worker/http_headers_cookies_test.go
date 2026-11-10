@@ -255,6 +255,42 @@ func TestEncodeHTTPResponse_SetCookieBecomesCookies(t *testing.T) {
 	}
 }
 
+func TestEncodeHTTPResponse_NonCanonicalHeaderKeys(t *testing.T) {
+	proxy := NewResponseWriterProxy()
+	h := proxy.Header()
+	h["set-cookie"] = []string{"a=1; Path=/", "b=2; Path=/x"}
+	h["SET-COOKIE"] = []string{"c=3"}
+	h["x-trace"] = []string{"one"}
+	h["X-Trace"] = []string{"two"}
+	h["content-type"] = []string{"text/plain"}
+	proxy.WriteHeader(http.StatusOK)
+
+	httpData := encodeHTTPResponse(proxy).GetHttp()
+
+	for k := range httpData.Headers {
+		if k != http.CanonicalHeaderKey(k) {
+			t.Errorf("header key %q is not canonical", k)
+		}
+	}
+	if _, ok := httpData.Headers["Set-Cookie"]; ok {
+		t.Errorf("Set-Cookie must not be sent as a joined header: %q", httpData.Headers["Set-Cookie"])
+	}
+	if got, want := httpData.Headers["X-Trace"], "two, one"; got != want {
+		t.Errorf("X-Trace = %q, want %q", got, want)
+	}
+	if got := httpData.Headers["Content-Type"]; got != "text/plain" {
+		t.Errorf("Content-Type = %q, want text/plain", got)
+	}
+
+	var names []string
+	for _, c := range httpData.Cookies {
+		names = append(names, c.Name)
+	}
+	if want := []string{"c", "a", "b"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("cookies = %v, want %v", names, want)
+	}
+}
+
 func TestEncodeCookies_Attributes(t *testing.T) {
 	expires := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
 	cookies := []*http.Cookie{
@@ -301,14 +337,20 @@ func TestEncodeCookies_Attributes(t *testing.T) {
 }
 
 // Attributes the handler never set stay unset, so the host applies its own
-// defaults instead of receiving false or zero values.
+// defaults instead of receiving false or zero values. Path is the exception.
+// It is sent as an explicit empty string so the host does not default it to
+// "/", which would widen a cookie that net/http scopes to the request's
+// directory.
 func TestEncodeCookies_UnsetAttributesStayNull(t *testing.T) {
 	out := encodeCookies([]*http.Cookie{{Name: "n", Value: "v"}})
 	c := out[0]
 
-	if c.Domain != nil || c.Path != nil || c.Expires != nil ||
+	if c.Domain != nil || c.Expires != nil ||
 		c.MaxAge != nil || c.Secure != nil || c.HttpOnly != nil {
 		t.Errorf("unset attributes should be nil, got %+v", c)
+	}
+	if c.Path == nil || c.GetPath().GetValue() != "" {
+		t.Errorf("unset path should be an explicit empty string, got %v", c.Path)
 	}
 	if c.SameSite != pb.RpcHttpCookie_None {
 		t.Errorf("samesite = %v, want None", c.SameSite)
