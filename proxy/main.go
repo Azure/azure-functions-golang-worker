@@ -157,7 +157,9 @@ func (p *Proxy) startLocalServer() error {
 	p.listener = lis
 	log.Printf("Proxy listening on %s", lis.Addr().String())
 
-	p.server = grpc.NewServer()
+	// The app's messages follow the same limit as the host connection. The
+	// grpc-go server default of 4 MiB would reject larger messages from the app.
+	p.server = grpc.NewServer(grpc.MaxRecvMsgSize(p.config.FunctionsGrpcMaxMessageLength))
 	pb.RegisterFunctionRpcServer(p.server, p)
 
 	go func() {

@@ -3,16 +3,21 @@ package main
 import (
 	"context"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/azure/azure-functions-golang-worker/worker"
 	pb "github.com/azure/azure-functions-golang-worker/worker/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 type recordingHostStream struct {
@@ -57,6 +62,81 @@ func TestConnectToHostWith_UsesSharedStreamAndSendsProxyStartMessage(t *testing.
 	}
 	if msg.GetStartStream().GetWorkerId() != config.FunctionsWorkerId {
 		t.Fatalf("worker ID = %q, want %q", msg.GetStartStream().GetWorkerId(), config.FunctionsWorkerId)
+	}
+}
+
+func TestStartLocalServer_ChildMessageLimitFollowsHostMaxMessageLength(t *testing.T) {
+	const grpcDefaultLimit = 4 << 20
+
+	tests := []struct {
+		name      string
+		limit     int
+		size      int
+		wantError bool
+	}{
+		{name: "above the grpc default when the host allows it", limit: math.MaxInt32, size: grpcDefaultLimit + 1<<20},
+		{name: "above the announced limit", limit: 1 << 20, size: 2 << 20, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Proxy{
+				config:         &worker.WorkerStartupConfig{FunctionsGrpcMaxMessageLength: tt.limit},
+				childConnected: make(chan struct{}),
+			}
+			if err := p.startLocalServer(); err != nil {
+				t.Fatalf("startLocalServer() error = %v", err)
+			}
+			defer p.server.Stop()
+
+			conn, err := grpc.NewClient(
+				p.listener.Addr().String(),
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(math.MaxInt32)),
+			)
+			if err != nil {
+				t.Fatalf("grpc.NewClient() error = %v", err)
+			}
+			defer conn.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			stream, err := pb.NewFunctionRpcClient(conn).EventStream(ctx)
+			if err != nil {
+				t.Fatalf("EventStream() error = %v", err)
+			}
+			select {
+			case <-p.childConnected:
+			case <-ctx.Done():
+				t.Fatal("the child never connected to the proxy")
+			}
+
+			big := &pb.StreamingMessage{Content: &pb.StreamingMessage_InvocationResponse{
+				InvocationResponse: &pb.InvocationResponse{
+					InvocationId: "invocation-id",
+					ReturnValue:  &pb.TypedData{Data: &pb.TypedData_Bytes{Bytes: make([]byte, tt.size)}},
+				},
+			}}
+			go func() { _ = stream.Send(big) }()
+
+			p.mutex.Lock()
+			childStream := p.childStream
+			p.mutex.Unlock()
+
+			msg, err := childStream.Recv()
+			if tt.wantError {
+				if status.Code(err) != codes.ResourceExhausted {
+					t.Fatalf("Recv() error = %v, want code %s", err, codes.ResourceExhausted)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("the proxy rejected a %d byte message from the child: %v", tt.size, err)
+			}
+			if got := len(msg.GetInvocationResponse().GetReturnValue().GetBytes()); got != tt.size {
+				t.Fatalf("received %d bytes, want %d", got, tt.size)
+			}
+		})
 	}
 }
 
