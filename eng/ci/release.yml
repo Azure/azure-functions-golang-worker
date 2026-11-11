@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------
-# Azure DevOps Pipeline: Release Module Tags
+# Azure DevOps Pipeline: Release Go Modules and Proxy
 #
 # Manually triggered. Releasing is a deliberate, separately-authorized
 # action: only people with permission to run this pipeline in ADO can
@@ -13,10 +13,13 @@
 #     build gate — you can't release a commit that didn't build).
 #   - Reads each submodule's go.mod at that commit and extracts the
 #     version they pin for `github.com/azure/azure-functions-golang-worker`.
-#   - If all submodules agree on a real semver version (e.g. v0.7.0) and
-#     no tag for it exists yet, it tags root + every submodule at that
-#     commit and pushes them. Otherwise (mismatch, pseudo-version, or
-#     tag already exists) it stops without touching tags.
+#   - Builds the proxy version in proxy/version.txt if its tag is new.
+#     An existing proxy tag requires published assets, reused byte for byte.
+#   - Tags root + every submodule at the official commit, rejecting
+#     conflicting tags and accepting retries at the same commit.
+#   - Verifies consumer resolution and completes the artifact checks,
+#     then publishes a GitHub Release in a dependent job with generated
+#     notes, proxy-linux-amd64 and its SHA-256 checksum.
 #
 # A release is therefore: a merged PR that bumps every submodule's
 # `require github.com/azure/azure-functions-golang-worker` line to the
@@ -32,11 +35,13 @@
 #   3. Queue this pipeline. Under "Resources", pick that successful
 #      golang-worker.official run. Leave the rootTag parameter empty to
 #      detect the version from go.mod, or set it to force a version.
-#   4. The pipeline validates the go.mod files and creates + pushes the
-#      root tag vX.Y.Z plus matching submodule tags from the same commit.
-#   5. A human creates the GitHub Release with notes at
-#      https://github.com/Azure/azure-functions-golang-worker/releases/new?tag=vX.Y.Z
-#      (the URL is printed at the end of the pipeline run).
+#   4. The pipeline prepares the proxy, validates go.mod files, creates
+#      module tags and verifies their consumer builds.
+#   5. A new proxy gets a proxy/vX.Y.Z tag and a non-latest GitHub Release
+#      preserving its canonical assets. The Go worker release receives
+#      copies of those assets, even when reusing an older proxy version.
+#      Draft releases are published only after asset upload verification.
+#      Stable Go worker releases are marked latest; proxy releases are not.
 #
 # rootTag override: set the rootTag parameter to force a specific
 # version instead of detecting it from go.mod. Use to re-publish a
@@ -44,14 +49,10 @@
 # updated as part of the change. The selected official run's commit is
 # still the only commit that gets tagged.
 #
-# This pipeline never produces release notes or binary artifacts;
-# release notes are authored once on the GitHub release.
-#
-# NOTE: this pipeline pushes git tags to the GitHub origin using the
-# credentials persisted by the `checkout: self` task. This works when
-# the ADO project's GitHub service connection has write scope on the
-# repo. If that's not the case, switch the 'Push release tags' step
-# to fetch a token from Azure Key Vault and push with it explicitly.
+# The checkout GitHub service connection needs Contents read/write for
+# tags, releases and assets. Its persisted repository Authorization header
+# is reused for the GitHub API without logging or publishing credentials.
+# See proxy/README.md for versioning, Docker consumption and recovery.
 # ---------------------------------------------------------------
 
 trigger: none
@@ -114,8 +115,8 @@ extends:
           enabled: true
 
     sdl:
-      # No binaries are produced or signed; this pipeline only creates
-      # and pushes git tags.
+      # The Linux ELF proxy is not Authenticode-signed. Its SHA-256 checksum
+      # is published alongside it; official-build CodeQL remains the gate.
       codeSignValidation:
         enabled: false
       codeql:
@@ -124,14 +125,20 @@ extends:
 
     stages:
       - stage: Release
-        displayName: 'Release modules'
+        displayName: 'Release modules and proxy'
         jobs:
           - job: TagSubmodules
-            displayName: 'Detect release and tag modules'
+            displayName: 'Build proxy and tag modules'
             pool:
               name: 1es-pool-azfunc
               image: 1es-ubuntu-22.04
               os: linux
+
+            templateContext:
+              outputs:
+                - output: pipelineArtifact
+                  targetPath: $(Build.ArtifactStagingDirectory)/proxy-release
+                  artifactName: proxy-release
 
             variables:
               # Optional version override from the queue-time parameter.
@@ -335,6 +342,21 @@ extends:
                   ROOT_TAG: $(rootTag)
                   SUBMODULES: $(submodules)
 
+              - task: GoTool@0
+                displayName: 'Install Go 1.25'
+                inputs:
+                  version: '1.25'
+
+              - bash: |
+                  set -euo pipefail
+                  python3 eng/ci/scripts/release.py prepare \
+                    --directory "$ASSET_DIRECTORY" --root-tag "$ROOT_TAG" --commit "$COMMIT_SHA"
+                displayName: 'Build new proxy version or reuse published proxy'
+                env:
+                  ASSET_DIRECTORY: $(Build.ArtifactStagingDirectory)/proxy-release
+                  ROOT_TAG: $(rootTag)
+                  COMMIT_SHA: $(commitSha)
+
               # Idempotent and safe: creates each tag if missing; if a tag
               # already exists it must point at the same commit, otherwise the
               # step fails (prevents silently reusing a version for a different
@@ -394,12 +416,6 @@ extends:
                 env:
                   ROOT_TAG: $(rootTag)
                   SUBMODULES: $(submodules)
-
-              # Only the verification step below needs Go.
-              - task: GoTool@0
-                displayName: 'Install Go 1.25'
-                inputs:
-                  version: '1.25'
 
               # Post-publish gate: prove the freshly-pushed tags resolve and
               # build the way an external consumer sees them. This is the only
@@ -464,14 +480,33 @@ extends:
                   ROOT_TAG: $(rootTag)
                   SUBMODULES: $(submodules)
 
+          - job: PublishRelease
+            displayName: 'Publish verified GitHub release assets'
+            dependsOn: TagSubmodules
+            pool:
+              name: 1es-pool-azfunc
+              image: 1es-ubuntu-22.04
+              os: linux
+
+            steps:
+              - checkout: self
+                fetchTags: true
+                fetchDepth: 0
+                persistCredentials: true
+
+              - download: current
+                artifact: proxy-release
+
               - bash: |
                   set -euo pipefail
-                  echo ""
-                  echo "============================================================"
-                  echo "Release tags are in place on origin and verified. To publish"
-                  echo "release notes, create the GitHub Release at:"
-                  echo "  https://github.com/Azure/azure-functions-golang-worker/releases/new?tag=$ROOT_TAG"
-                  echo "============================================================"
-                displayName: 'Next steps: create GitHub Release'
+                  git config user.name "Azure Functions Release Pipeline"
+                  git config user.email "azfuncgo-release@noreply.github.com"
+                  git fetch origin "$COMMIT_SHA"
+                  git checkout --detach "$COMMIT_SHA"
+                  ROOT_TAG=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["root_tag"])' "$ASSET_DIRECTORY/release-plan.json")
+                  python3 eng/ci/scripts/release.py publish \
+                    --directory "$ASSET_DIRECTORY" --root-tag "$ROOT_TAG" --commit "$COMMIT_SHA"
+                displayName: 'Publish GitHub Release with verified proxy assets'
                 env:
-                  ROOT_TAG: $(rootTag)
+                  ASSET_DIRECTORY: $(Pipeline.Workspace)/proxy-release
+                  COMMIT_SHA: $(resources.pipeline.officialBuild.sourceCommit)
