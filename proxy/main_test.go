@@ -5,6 +5,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -23,6 +24,49 @@ import (
 type recordingHostStream struct {
 	mu   sync.Mutex
 	sent []*pb.StreamingMessage
+}
+
+func TestProxyVersionCommand(t *testing.T) {
+	if os.Getenv("PROXY_VERSION_TEST_PROCESS") == "1" {
+		proxyVersion = "1.0.1"
+		proxyCommit = "release-commit"
+		os.Args = []string{"proxy", "--version"}
+		main()
+		os.Exit(0)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProxyVersionCommand$")
+	cmd.Env = append(os.Environ(), "PROXY_VERSION_TEST_PROCESS=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("--version failed without host configuration: %v\n%s", err, output)
+	}
+	if got, want := string(output), "proxy 1.0.1 (commit release-commit)\n"; got != want {
+		t.Fatalf("--version output = %q, want %q", got, want)
+	}
+}
+
+func TestWorkerInitReportsProxyVersion(t *testing.T) {
+	previous := proxyVersion
+	proxyVersion = "1.0.1"
+	t.Cleanup(func() { proxyVersion = previous })
+	stream := &recordingHostStream{}
+	p := &Proxy{hostStream: stream}
+	p.handleHostMessage(&pb.StreamingMessage{
+		RequestId: "init",
+		Content: &pb.StreamingMessage_WorkerInitRequest{
+			WorkerInitRequest: &pb.WorkerInitRequest{},
+		},
+	})
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent %d messages, want one initialization response", len(stream.sent))
+	}
+	response := stream.sent[0].GetWorkerInitResponse()
+	if response.GetWorkerVersion() != "1.0.1" {
+		t.Fatalf("host received proxy version %q, want 1.0.1", response.GetWorkerVersion())
+	}
+	if stream.sent[0].RequestId != "init" || response.GetResult().GetStatus() != pb.StatusResult_Success {
+		t.Fatalf("initialization response changed: %v", stream.sent[0])
+	}
 }
 
 func TestConnectToHostWith_UsesSharedStreamAndSendsProxyStartMessage(t *testing.T) {

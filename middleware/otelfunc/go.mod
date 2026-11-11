@@ -2,7 +2,7 @@ module github.com/azure/azure-functions-golang-worker/middleware/otelfunc
 
 go 1.25.0
 
-require github.com/azure/azure-functions-golang-worker v1.0.2
+require github.com/azure/azure-functions-golang-worker v1.0.3
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

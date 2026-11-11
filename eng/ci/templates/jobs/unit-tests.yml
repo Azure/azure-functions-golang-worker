@@ -81,6 +81,12 @@ jobs:
     - script: go test ./samples/genericTriggers/...
       displayName: 'Test generic trigger examples'
 
+    - script: go test ./proxy
+      displayName: 'Test proxy version reporting and protocol'
+
+    - script: python3 -m unittest discover -s eng/ci/scripts -p 'test_release.py'
+      displayName: 'Test release build, reuse and publication contracts'
+
     - script: |
         cd middleware/otelfunc && go test ./...
       displayName: 'Test middleware/otelfunc'

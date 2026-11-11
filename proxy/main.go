@@ -22,6 +22,14 @@ import (
 const defaultAppDir = "/home/site/wwwroot"
 const defaultAppName = "app"
 
+// Release builds set these with -ldflags.
+var proxyVersion = "dev"
+var proxyCommit = "unknown"
+
+func proxyVersionInfo() string {
+	return fmt.Sprintf("proxy %s (commit %s)", proxyVersion, proxyCommit)
+}
+
 // appBinaryPath returns the full path to the user's app binary,
 // using FUNCTIONS_APP_BINARY_NAME env var with a default of "app".
 func appBinaryPath(dir string) string {
@@ -65,7 +73,11 @@ func (p *Proxy) sendToHost(msg *pb.StreamingMessage) error {
 }
 
 func main() {
-	log.Println("Go Worker Proxy Starting...")
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Println(proxyVersionInfo())
+		return
+	}
+	log.Printf("Go Worker Proxy Starting... %s", proxyVersionInfo())
 
 	// If the real app exists, exec into it directly. This handles the post-
 	// specialization case: after deployment places the real binary at
@@ -262,7 +274,7 @@ func (p *Proxy) handleHostMessage(msg *pb.StreamingMessage) {
 						"UseNullableValueDictionaryForHttp": "true",
 						"HandlesWorkerTerminateMessage":     "true",
 					},
-					WorkerVersion: "1.0.0",
+					WorkerVersion: proxyVersion,
 				},
 			},
 		}
