@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -297,6 +298,12 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 	// Strip the correlation header so user code doesn't see it.
 	r.Header.Del(invocationCorrelationHeader)
 
+	// The listener's own address is meaningless to user code. Restore the
+	// caller-visible origin and the route parameters the host resolved, so
+	// the handler sees the same request it would on the gRPC-body path.
+	applyForwardedOrigin(r)
+	applyTriggerRouteParams(r, arrival.req, arrival.fn)
+
 	// Build the per-invocation MiddlewareContext up here (not inside
 	// invokeHTTPHandler) so that if the user handler panics, the mc we've
 	// already populated up to the point of the panic still reaches the
@@ -347,6 +354,70 @@ func (p *httpProxy) handle(w http.ResponseWriter, r *http.Request) {
 
 	pending.done <- httpResult{status: status, mc: mc}
 	p.deletePending(invocationID)
+}
+
+// applyForwardedOrigin restores the caller-visible origin on a request that
+// arrived through the host's forwarder. Without this, r.Host is the worker's
+// loopback listener, so handlers that build absolute URLs (redirects,
+// Location headers, links) would point at an address no client can reach.
+//
+// The host forwards the original Host and scheme as X-Forwarded-Host and
+// X-Forwarded-Proto. Both are tolerated when absent or malformed, in which
+// case the request is left untouched. r.Host is set from a valid host alone.
+// r.URL additionally becomes absolute only when the scheme is valid too, which
+// matches the absolute URL the gRPC-body path gets from the host. The
+// X-Forwarded-* headers stay in place for code that reads them directly.
+func applyForwardedOrigin(r *http.Request) {
+	host := firstForwardedValue(r.Header.Get("X-Forwarded-Host"))
+	if !validForwardedHost(host) {
+		return
+	}
+	r.Host = host
+
+	proto := strings.ToLower(firstForwardedValue(r.Header.Get("X-Forwarded-Proto")))
+	if proto != "http" && proto != "https" {
+		return
+	}
+	if r.URL == nil {
+		r.URL = &url.URL{}
+	}
+	r.URL.Scheme = proto
+	r.URL.Host = host
+}
+
+// firstForwardedValue returns the first entry of a comma-separated forwarding
+// header, which is the one closest to the original client.
+func firstForwardedValue(v string) string {
+	first, _, _ := strings.Cut(v, ",")
+	return strings.TrimSpace(first)
+}
+
+// validForwardedHost reports whether h is a plain host or host:port. The
+// value comes from a request header, so anything that could smuggle a path,
+// credentials or whitespace into a URL is rejected.
+func validForwardedHost(h string) bool {
+	if h == "" || strings.ContainsAny(h, "/\\?#@ \t") {
+		return false
+	}
+	u, err := url.Parse("//" + h)
+	return err == nil && u.Host == h && u.Hostname() != ""
+}
+
+// applyTriggerRouteParams exposes the route parameters the host resolved so
+// handlers can read them with r.PathValue, as they can on the gRPC-body path.
+// On the HTTP-streaming path the host sends them on the trigger input and
+// nowhere else, because the rest of the request travels over the proxy hop.
+func applyTriggerRouteParams(r *http.Request, req *pb.InvocationRequest, lf *LoadedFunction) {
+	name := triggerBindingName(lf)
+	for _, in := range req.GetInputData() {
+		if name != "" && in.GetName() != name {
+			continue
+		}
+		if rpcHttp := in.GetData().GetHttp(); rpcHttp != nil {
+			applyRouteParams(r, rpcHttp)
+			return
+		}
+	}
 }
 
 // invokeHTTPHandler runs the user's net/http handler through the shared

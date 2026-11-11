@@ -536,6 +536,17 @@ func buildMiddlewareContext(req *pb.InvocationRequest, fn *sdk.RegisteredFunctio
 	}
 }
 
+// triggerBindingName returns the name of the function's primary trigger
+// binding, which is the first "in" binding it declares.
+func triggerBindingName(lf *LoadedFunction) string {
+	for _, b := range lf.Function.RawBindings {
+		if b.Direction == "in" {
+			return b.Name
+		}
+	}
+	return ""
+}
+
 // extractTriggerInput surfaces the raw payload of the function's primary
 // trigger input binding onto mc, so a short-circuiting middleware (e.g.
 // durable orchestration replay) can read the inbound payload directly.
@@ -547,13 +558,7 @@ func buildMiddlewareContext(req *pb.InvocationRequest, fn *sdk.RegisteredFunctio
 // on demand, which means invocations whose middleware never reads the payload
 // pay nothing at all.
 func extractTriggerInput(req *pb.InvocationRequest, lf *LoadedFunction, mc *sdk.MiddlewareContext) {
-	triggerName := ""
-	for _, b := range lf.Function.RawBindings {
-		if b.Direction == "in" {
-			triggerName = b.Name
-			break
-		}
-	}
+	triggerName := triggerBindingName(lf)
 	for _, in := range req.GetInputData() {
 		if triggerName != "" && in.GetName() != triggerName {
 			continue
@@ -582,13 +587,7 @@ func extractTriggerInput(req *pb.InvocationRequest, lf *LoadedFunction, mc *sdk.
 // As with the trigger payload, text is carried as a string and bytes are
 // aliased, so nothing is converted unless middleware asks for it.
 func populateBindingInputs(req *pb.InvocationRequest, lf *LoadedFunction, mc *sdk.MiddlewareContext) {
-	triggerName := ""
-	for _, b := range lf.Function.RawBindings {
-		if b.Direction == "in" {
-			triggerName = b.Name
-			break
-		}
-	}
+	triggerName := triggerBindingName(lf)
 	for _, in := range req.GetInputData() {
 		name := in.GetName()
 		if name == "" || name == triggerName {

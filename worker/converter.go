@@ -452,13 +452,9 @@ func decodeProto(data *pb.TypedData, t reflect.Type) (reflect.Value, error) {
 // encodeHTTPResponse encodes a ResponseWriterProxy result into an RPC HTTP response.
 func encodeHTTPResponse(proxy *ResponseWriterProxy) *pb.TypedData {
 	result := proxy.Result()
+	result.Header = canonicalHeader(result.Header)
 
-	headers := make(map[string]string)
-	for k, v := range result.Header {
-		if len(v) > 0 {
-			headers[k] = v[0]
-		}
-	}
+	headers := encodeResponseHeaders(result.Header)
 
 	var bodyBytes []byte
 	if result.Body != nil {
@@ -471,6 +467,7 @@ func encodeHTTPResponse(proxy *ResponseWriterProxy) *pb.TypedData {
 			Http: &pb.RpcHttp{
 				StatusCode: fmt.Sprintf("%d", result.StatusCode),
 				Headers:    headers,
+				Cookies:    encodeCookies(result.Cookies()),
 				Body: &pb.TypedData{
 					Data: &pb.TypedData_Bytes{
 						Bytes: bodyBytes,
